@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+env/
+.env
+
+# Trained model weights and checkpoints
+*.pth
+*.pt
+checkpoints/
+
+# WandB logs
+wandb/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Webots generated files
+*.wbproj
+
+# Logs
+*.log
+logs/
+
+# Data files
+*.csv
+*.json
+results/
