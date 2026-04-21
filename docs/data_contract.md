@@ -1,9 +1,9 @@
-# Data Contract — Multi-Agent Drone Swarm MARL System
+# Data Contract: Multi-Agent Drone Swarm MARL System
 
 **Project:** Multi-Agent Drone Swarm UTM (Unmanned Traffic Management)  
 **Algorithm:** MAPPO (Multi-Agent Proximal Policy Optimization)  
 **Simulator:** Webots R2025a  
-**Phase:** 2 — Implementation  
+**Phase:** 2- Implementation  
 **Last Updated:** February 2026
 
 ---
@@ -28,16 +28,16 @@
 
 ### Design Decision
 
-Velocity-level control is used instead of raw motor torques. The `WebotsAdapter` internally handles conversion of velocity commands to motor RPM via a PID controller. This stabilizes the learning problem significantly — the RL agent only needs to learn high-level navigation behavior, not low-level motor physics.
+Velocity-level control is used instead of raw motor torques. The `WebotsAdapter` internally handles conversion of velocity commands to motor RPM via a PID controller. This stabilizes the learning problem significantly. The RL agent only needs to learn high-level navigation behavior, not low-level motor physics.
 
 ### Curriculum-Based Action Space
 
-|Curriculum Stage|Shape|Components|
-|---|---|---|
-|Stage 1 — Empty Sandbox|(3,)|Vx, Vy, Vz|
-|Stage 2 — Sparse Obstacles|(3,)|Vx, Vy, Vz|
-|Stage 3 — Urban Grid|(4,)|Vx, Vy, Vz, Yaw Rate|
-|Stage 4 — Validation Map|(4,)|Vx, Vy, Vz, Yaw Rate|
+| Curriculum Stage          | Shape | Components           |
+| ------------------------- | ----- | -------------------- |
+| Stage 1: Empty Sandbox    | (3,)  | Vx, Vy, Vz           |
+| Stage 2: Sparse Obstacles | (3,)  | Vx, Vy, Vz           |
+| Stage 3: Urban Grid       | (4,)  | Vx, Vy, Vz, Yaw Rate |
+| Stage 4: Validation Map   | (4,)  | Vx, Vy, Vz, Yaw Rate |
 
 ### Action Vector Definition
 
@@ -50,7 +50,7 @@ Velocity-level control is used instead of raw motor torques. The `WebotsAdapter`
 
 > **Note:** Yaw rate is added progressively in Stage 3 once basic navigation is stable. This prevents the agent from being overwhelmed by a 4D action space before it has learned to navigate.
 
-> **Real-World Transfer:** Velocity commands map directly to real drone flight controllers (PX4, ArduPilot) via MAVLink. This is not a simulation-only abstraction — it is standard in real UAV systems.
+> **Real-World Transfer:** Velocity commands map directly to real drone flight controllers (PX4, ArduPilot) via MAVLink. This is not a simulation-only abstraction, it is standard in real UAV systems.
 
 ---
 
@@ -60,9 +60,9 @@ Velocity-level control is used instead of raw motor torques. The `WebotsAdapter`
 
 Each drone observes only its own local state. No privileged global information is available at runtime. This enforces the Decentralized Execution part of CTDE (Centralized Training, Decentralized Execution).
 
-Neighbor information is included via K-Nearest Neighbors using relative positions and velocities. K is not hardcoded — it is determined during implementation based on swarm size and computational budget. For small swarms (≤50 drones), brute force KNN is used. H3 hexagonal indexing is reserved for large-scale UTM deployment (100+ drones).
+Neighbor information is included via K-Nearest Neighbors using relative positions and velocities. K is not hardcoded, it is determined during implementation based on swarm size and computational budget. For small swarms (≤50 drones), brute force KNN is used. H3 hexagonal indexing is reserved for large-scale UTM deployment (100+ drones).
 
-LiDAR rays use a 3D coverage pattern — not a flat horizontal disc — to provide full spatial awareness including threats above and below.
+LiDAR rays use a 3D coverage pattern, not a flat horizontal disc, to provide full spatial awareness including threats above and below.
 
 ### Observation Vector Structure
 
@@ -87,7 +87,7 @@ LiDAR rays use a 3D coverage pattern — not a flat horizontal disc — to provi
 |Diagonal downward|4|NE, NW, SE, SW at -45°|Lower spatial awareness|
 |Vertical|2|Straight up, Straight down|Direct vertical threat detection|
 
-> **Reason for 3D coverage:** In a UTM system drones operate at varying altitudes. Flat horizontal rays alone are insufficient — a drone directly above or below is an equal collision risk.
+> **Reason for 3D coverage:** In a UTM system drones operate at varying altitudes. Flat horizontal rays alone are insufficient, a drone directly above or below is an equal collision risk.
 
 ### Neighbor Encoding
 
@@ -99,11 +99,11 @@ LiDAR rays use a 3D coverage pattern — not a flat horizontal disc — to provi
 
 ---
 
-## 4. Global State (Centralized Critic — Training Only)
+## 4. Global State (Centralized Critic: Training Only)
 
 ### Design Decision
 
-The centralized critic sees the full global picture during training. This is strictly a training construct — it does not exist at runtime. The global state enables the critic to give accurate value estimates that account for all agents simultaneously, which is the core advantage of MAPPO over IPPO.
+The centralized critic sees the full global picture during training. This is strictly a training construct, it does not exist at runtime. The global state enables the critic to give accurate value estimates that account for all agents simultaneously, which is the core advantage of MAPPO over IPPO.
 
 LiDAR is summarized into a 4-quadrant format per drone rather than including all 14 raw rays. This preserves directional obstacle awareness while keeping the global state manageable as swarm size scales.
 
@@ -126,16 +126,18 @@ LiDAR is summarized into a 4-quadrant format per drone rather than including all
 
 **Total: N×16**
 
+>Note: Global state uses absolute positions unlike local observation which uses relative positions. The critic requires absolute positions to reason about the full swarm layout.
+
 ### 4-Quadrant LiDAR Summary
 
 The 14 per-agent LiDAR rays are compressed into 4 directional quadrant minimums for the global state:
 
-|Quadrant|Rays Included|Value|
-|---|---|---|
-|Front|Front cardinal + NE upper + NE lower|min distance|
-|Back|Back cardinal + SW upper + SW lower|min distance|
-|Left|Left cardinal + NW upper + NW lower|min distance|
-|Right|Right cardinal + SE upper + SE lower|min distance|
+| Quadrant | Rays Included                        | Value            |
+| -------- | ------------------------------------ | ---------------- |
+| Front    | Front cardinal + NE upper + NE lower | min ray distance |
+| Back     | Back cardinal + SW upper + SW lower  | min ray distance |
+| Left     | Left cardinal + NW upper + NW lower  | min ray distance |
+| Right    | Right cardinal + SE upper + SE lower | min ray distance |
 
 > **Reason for compression:** Full N×14 LiDAR in global state = N×26 total (520 values at N=20). The 4-quadrant summary reduces this to N×4, cutting LiDAR contribution by over 70% while retaining directional awareness. A single risk score was rejected because it loses directional information critical for the critic.
 
@@ -145,21 +147,21 @@ The 14 per-agent LiDAR rays are compressed into 4 directional quadrant minimums 
 
 ### Design Decision
 
-No explicit coordination reward is used. Coordination emerges implicitly from the collision penalties — agents naturally learn to avoid each other. Explicit coordination rewards are better suited for formation flying tasks. For UTM, emergent coordination is more realistic and avoids reward balancing complexity.
+No explicit coordination reward is used. Coordination emerges implicitly from the collision penalties, agents naturally learn to avoid each other. Explicit coordination rewards are better suited for formation flying tasks. For UTM, emergent coordination is more realistic and avoids reward balancing complexity.
 
-Two additional penalties specific to quadrotor physics are included — smoothness penalty and proximity danger zone — which are essential for both simulation stability and real-world transfer.
+Two additional penalties specific to quadrotor physics are included, smoothness penalty and proximity danger zone, which are essential for both simulation stability and real-world transfer.
 
 ### Reward Components
 
-|Component|Type|Formula|Reason|
-|---|---|---|---|
-|Goal progress reward|Continuous positive|Δ(goal_distance) per step|Encourages consistent movement toward goal, provides dense signal|
-|Goal reached bonus|One-time large positive|+R_goal if distance < threshold|Strongly reinforces mission completion|
-|Obstacle collision penalty|Large negative|-R_obs on contact|Hard safety constraint, non-negotiable|
-|Drone hard collision penalty|Large negative|-R_drone on contact|Prevents physical conflicts in shared airspace|
-|Step penalty|Small negative per step|-R_step per timestep|Encourages time efficiency, discourages hovering|
-|Smoothness penalty|Small continuous negative|-λ Σ(a_t - a_{t-1})²|Prevents violent action jerks that break PID and damage real rotors|
-|Proximity danger zone penalty|Continuous negative, proximity-based|-λ × max(0, (r_danger - d_ij) / r_danger)²|Accounts for real-world downwash effect, enforces safe separation before hard collision|
+| Component                     | Type                                 | Formula                                    | Reason                                                                                  |
+| ----------------------------- | ------------------------------------ | ------------------------------------------ | --------------------------------------------------------------------------------------- |
+| Goal progress reward          | Continuous positive                  | Δ(goal_distance) per step                  | Encourages consistent movement toward goal, provides dense signal                       |
+| Goal reached bonus            | One-time large positive              | +R_goal if distance < threshold            | Strongly reinforces mission completion                                                  |
+| Obstacle collision penalty    | Large negative                       | -R_obs on contact                          | Hard safety constraint, non-negotiable                                                  |
+| Drone hard collision penalty  | Large negative                       | -R_drone on contact                        | Prevents physical conflicts in shared airspace                                          |
+| Step penalty                  | Small negative per step              | -R_step per timestep                       | Encourages time efficiency, discourages hovering                                        |
+| Smoothness penalty            | Small continuous negative            | -λ Σ(a_t - a_{t-1})²                       | Prevents violent action jerks that break PID and damage real rotors                     |
+| Proximity danger zone penalty | Continuous negative, proximity-based | -λ × max(0, (r_danger - d_ij) / r_danger)² | Accounts for real-world downwash effect, enforces safe separation before hard collision |
 
 ### Reward Component Details
 
@@ -234,15 +236,15 @@ Applied progressively across curriculum stages to bridge the sim-to-real gap:
 
 ## 8. Pending Decisions
 
-|Item|Status|
-|---|---|
-|Exact reward weight values|Pending — determined during training|
-|K (number of neighbors)|Pending — determined at implementation based on swarm size|
-|v_max (max velocity)|Pending — determined by drone physics in Webots|
-|ω_max (max yaw rate)|Pending — determined by drone physics in Webots|
-|r_danger (danger zone radius)|Starting value 1.5m, subject to tuning|
-|λ_smooth, λ_prox (penalty weights)|Pending — determined during training|
-|Final normalization strategy|Pending|
+| Item                               | Status                                                        |
+| ---------------------------------- | ------------------------------------------------------------- |
+| Exact reward weight values         | **Pending**,determined during training                        |
+| K (number of neighbors)            | **Pending**, determined at implementation based on swarm size |
+| v_max (max velocity)               | **Pending**, determined by drone physics in Webots            |
+| ω_max (max yaw rate)               | **Pending**, determined by drone physics in Webots            |
+| r_danger (danger zone radius)      | Starting value 1.5m, subject to tuning                        |
+| λ_smooth, λ_prox (penalty weights) | **Pending**,determined during training                        |
+| Final normalization strategy       | Pending                                                       |
 
 ---
 

@@ -1,0 +1,306 @@
+# =============================================================================
+# default_config.yaml
+# Multi-Agent Drone Swarm UTM System — MAPPO
+# =============================================================================
+# This file is the single source of truth for all hyperparameters.
+# Every module reads from here. Change a value here, it changes everywhere.
+# Values marked [PENDING] are placeholders — tune during training.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# ENVIRONMENT
+# Core simulation and world settings
+# -----------------------------------------------------------------------------
+environment:
+  n_agents: 3                  # number of drones in swarm — start small, scale after Stage 1 works
+  max_steps: 1000              # max timesteps per episode — 1000 × 32ms = 32 seconds per episode
+  v_max: 2.0                   # [PENDING] max velocity m/s — placeholder, verify against Webots drone physics
+  omega_max: 1.0               # [PENDING] max yaw rate rad/s — placeholder, verify against Webots drone physics
+  world_size: 50               # world is 50×50m for Stage 1-3 — scales to 100×100m for Stage 4 OSM map
+  goal_threshold: 0.5          # distance in meters at which goal is considered reached
+
+  # --- Timestep Design ---
+  # Control frequency and physics frequency are DELIBERATELY DECOUPLED.
+  # The AI always decides at 32ms — this never changes across training, evaluation, or real deployment.
+  # Physics runs at finer resolution underneath via action repeat (frame skipping).
+  # Changing control_timestep would break the MDP and destabilize the PID controller.
+  control_timestep: 0.032      # AI decision frequency — 32ms = 31.25Hz — matches real drone nav loops (PX4/ArduPilot)
+
+  training:
+    physics_timestep: 0.016    # physics runs at 16ms during training — better accuracy than 32ms
+    action_repeat: 2           # 2 × 16ms = 32ms control frequency maintained — MDP consistent
+
+  evaluation:
+    physics_timestep: 0.008    # highest physics accuracy during final evaluation
+    action_repeat: 4           # 4 × 8ms = 32ms control frequency maintained — MDP consistent
+
+
+# -----------------------------------------------------------------------------
+# OBSERVATION
+# What each drone sees — local observation space per agent
+# -----------------------------------------------------------------------------
+observation:
+  # --- Fixed Component (27 values) ---
+  # own state (9) + goal info (4) + lidar (14) = 27
+  local_obs_dim: 27            # fixed component — never changes regardless of swarm size
+
+  # --- Neighbor Encoding via Attention Module ---
+  # Neighbors are encoded through attention, NOT padding.
+  # Attention produces a fixed 32-dim context vector regardless of how many neighbors exist.
+  # This is what allows scaling to H3 indexing later without any architectural changes.
+  # If we used padding: total_obs = 27 + K_max×6 — changes with swarm size, breaks network
+  # With attention:     total_obs = 27 + 32 = 59 — always fixed regardless of K
+  neighbor_obs_dim: 6          # per neighbor: relative position (3) + relative velocity (3)
+  neighbor_context_dim: 32     # attention module output dim — fixed regardless of neighbor count K
+  total_obs_dim: 59            # 27 + 32 = 59 — this is the actual Actor network input size, always fixed
+  k_neighbors_max: 5           # max neighbors considered by KNN — used for memory pre-allocation only
+
+  # --- LiDAR Configuration ---
+  # 14 rays in 3D coverage pattern — NOT a flat horizontal disc
+  # UTM drones fly at varying altitudes — vertical threats are equal collision risks
+  # 4 cardinal horizontal + 4 diagonal upward (+45°) + 4 diagonal downward (-45°) + 2 vertical = 14
+  n_lidar_rays: 14             # total LiDAR rays in local observation
+
+  # For global state compression — 14 rays compressed to 5 quadrant minimums
+  # Front(3 rays) + Back(3 rays) + Left(3 rays) + Right(3 rays) + Vertical(2 rays) = 14 rays, 5 values
+  n_lidar_quadrants: 5         # 4 directional + 1 vertical — all 14 rays accounted for
+
+  # --- Neighbor Selection Strategy ---
+  # KNN for now (small swarm), H3 hexagonal indexing for 100+ drones later
+  # Swapping KNN for H3 only changes neighbor SELECTION — attention module stays identical
+  neighbor_encoding: attention  # options: attention (recommended), padding (not scalable)
+  neighbor_selection: knn       # options: knn (current), h3 (future — 100+ drones)
+
+
+# -----------------------------------------------------------------------------
+# NETWORK
+# Neural network architecture for Actor and Critic
+# -----------------------------------------------------------------------------
+network:
+  # --- Shared MLP settings (Actor and Critic both use these) ---
+  hidden_dim: 256              # hidden layer size — 256 is standard for continuous control tasks
+  n_hidden_layers: 2           # two hidden layers — sufficient for this problem complexity
+  activation: tanh             # tanh for bounded continuous action output — standard for continuous RL
+                               # ReLU is better for classification — tanh suits bounded velocity commands
+
+  # --- Actor specific ---
+  action_dim: 4                # ALWAYS 4 — Vx, Vy, Vz, Yaw Rate
+                               # Yaw rate is MASKED to 0.0 in Stage 1-2 by SwarmEnv.step()
+                               # Network always outputs 4 values — no re-initialization between stages
+                               # This preserves learned weights when transitioning Stage 2 → Stage 3
+
+  # --- Attention Module (neighbor encoding) ---
+  attention_heads: 1           # single attention head — sufficient for small swarms
+                               # increase to 2-4 if policy struggles to differentiate neighbor importance
+  attention_dim: 32            # must match neighbor_context_dim in observation section
+
+
+# -----------------------------------------------------------------------------
+# TRAINING
+# PPO hyperparameters and training loop settings
+# Hardware: Nvidia RTX 4500 Ada — 24GB VRAM dedicated, 64GB shared
+# -----------------------------------------------------------------------------
+training:
+  # --- Core PPO Hyperparameters ---
+  gamma: 0.99                  # discount factor — 0.99 means future rewards matter almost as much as immediate
+                               # lower (0.95) = more myopic, higher (0.999) = very long-term thinking
+                               # 0.99 is standard for navigation tasks with ~1000 step episodes
+
+  lambda_gae: 0.95             # GAE lambda — balances bias vs variance in advantage estimation
+                               # lambda=0: pure critic estimate (low variance, high bias — trusts critic fully)
+                               # lambda=1: pure actual returns (low bias, high variance — trusts experience fully)
+                               # 0.95 is the established sweet spot for most continuous control tasks
+
+  clip_epsilon: 0.2            # PPO clipping range — policy can only change by ±20% per update
+                               # keeps ratio r(θ) within [0.8, 1.2]
+                               # prevents catastrophic policy updates from one bad batch of experience
+
+  # --- Learning Rates ---
+  actor_lr: 0.0003             # actor learning rate — 3e-4 is standard PPO starting point
+  critic_lr: 0.0003            # critic learning rate — same as actor, can tune separately if critic lags
+
+  # --- Update Settings ---
+  n_epochs: 10                 # number of times to reuse each rollout buffer before collecting new data
+                               # more epochs = more sample efficient but risks overfitting to one batch
+                               # 10 is standard for PPO — clipping naturally limits overfitting
+
+  batch_size: 256              # minibatch size per PPO gradient update
+                               # 256 suits 24GB VRAM comfortably — increase to 512 if GPU is underutilised
+
+  buffer_size: 2048            # rollout buffer capacity — collect this many steps before each update
+                               # 2048 steps at 3 agents = 2048×3 = 6144 transitions per update
+                               # larger buffer = more stable gradient estimates, slower iteration
+
+  max_grad_norm: 0.5           # gradient clipping threshold — prevents exploding gradients
+                               # if loss spikes during training, lower this to 0.3
+
+  # --- Loss Coefficients ---
+  entropy_coef: 0.01           # entropy bonus weight — encourages exploration early in training
+                               # prevents policy from collapsing to deterministic behavior too early
+                               # reduce to 0.001 in later training stages once policy is stable
+
+  value_loss_coef: 0.5         # critic loss weight in total loss
+                               # total_loss = actor_loss + 0.5×critic_loss - 0.01×entropy
+                               # 0.5 balances critic loss (which is naturally larger being squared error)
+
+  # --- Training Schedule ---
+  save_interval: 100           # save checkpoint every N episodes
+  eval_interval: 500           # run evaluation every N episodes — expensive so less frequent
+  total_episodes: 5000         # training budget — train until convergence, this is a ceiling not a target
+                               # at ~3 min per episode on RTX 4500 Ada = ~250 hours total budget
+                               # Stage 1 will be much faster (empty world), Stage 3-4 slower (complex world)
+
+  # --- Hardware ---
+  device: cuda                 # use GPU — verified RTX 4500 Ada available on lab system
+  num_workers: 1               # single Webots instance — not parallelised at this stage
+
+
+# -----------------------------------------------------------------------------
+# REWARD
+# All reward component weights and parameters
+# All values are [PENDING] — these are starting points, tune during training
+# Log each component separately via RewardEngine dictionary output
+# -----------------------------------------------------------------------------
+reward:
+  # --- Goal Rewards ---
+  goal_progress_scale: 1.0     # [PENDING] scales the per-step Δ(goal_distance) reward
+                               # if drone is not moving toward goal, reduce this first
+
+  goal_reached_bonus: 100.0    # [PENDING] large one-time bonus when drone reaches goal within threshold
+                               # should be >> total possible step penalties to make completion worthwhile
+
+  # --- Collision Penalties ---
+  obstacle_collision_penalty: -50.0   # [PENDING] hard penalty for hitting static obstacle
+                                      # large enough to dominate over goal rewards in that episode
+
+  drone_collision_penalty: -50.0      # [PENDING] hard penalty for hitting another drone
+                                      # same magnitude as obstacle — both are hard safety constraints
+
+  # --- Efficiency ---
+  step_penalty: -0.01          # [PENDING] small penalty per timestep — discourages hovering in place
+                               # total over 1000 steps = -10, well below goal_reached_bonus of +100
+
+  # --- Quadrotor Physics Penalties ---
+  # These are critical for sim-to-real transfer — do not remove
+
+  lambda_smooth: 0.1           # [PENDING] smoothness penalty weight
+                               # penalises: -lambda_smooth × Σ(a_t - a_{t-1})²
+                               # prevents violent action jerks that break PID and damage real rotors
+
+  lambda_prox: 0.5             # [PENDING] proximity danger zone penalty weight
+                               # penalises: -lambda_prox × max(0, (r_danger - d_ij)/r_danger)²
+                               # quadratic — grows as drones approach, zero outside danger zone
+
+  r_danger: 1.5                # [PENDING] danger zone radius in meters — starting value from data contract
+                               # accounts for aerodynamic downwash — propeller wash destabilizes nearby drones
+                               # before physical contact occurs
+
+
+# -----------------------------------------------------------------------------
+# CURRICULUM
+# Stage definitions and progression settings
+# -----------------------------------------------------------------------------
+curriculum:
+  progression_window: 100      # evaluate success rate over last N episodes before advancing
+  progression_threshold: 0.8   # must exceed 80% success rate to advance to next stage
+
+  stages:
+    1:
+      name: empty_sandbox
+      description: "No obstacles — learn basic navigation first"
+      action_dim_active: 3     # only Vx Vy Vz — yaw masked to 0.0 in SwarmEnv.step()
+      global_state_dim: 12     # N×12 — no LiDAR in global state (no obstacles, LiDAR meaningless)
+      world_size: 50           # 50×50m
+      obstacles: false
+      obstacle_count: 0
+      domain_randomization: none
+      success_threshold: 0.8   # 80% success over last 100 episodes to advance to Stage 2
+
+    2:
+      name: sparse_obstacles
+      description: "Random sparse obstacles — learn obstacle avoidance"
+      action_dim_active: 3     # still Vx Vy Vz only — build on Stage 1 skills
+      global_state_dim: 17     # N×17 — 5-quadrant LiDAR summary added (obstacles now exist)
+      world_size: 50
+      obstacles: true
+      obstacle_count: [3, 8]   # random between 3 and 8 obstacles per episode
+      domain_randomization: mild_noise
+      success_threshold: 0.8
+
+    3:
+      name: urban_grid
+      description: "Dense urban environment — full action space with yaw"
+      action_dim_active: 4     # yaw rate now ACTIVE — policy has learned navigation, ready for rotation
+      global_state_dim: 17     # N×17
+      world_size: 50
+      obstacles: true
+      obstacle_count: [10, 20] # dense urban — 10 to 20 building blocks per episode
+      domain_randomization: noise_and_wind
+      success_threshold: 0.8
+
+    4:
+      name: osm_validation
+      description: "Real OSM city map — final validation before any real-world claims"
+      action_dim_active: 4     # full action space
+      global_state_dim: 17     # N×17
+      world_size: 100          # 100×100m — real city scale
+      obstacles: true
+      domain_randomization: full
+      success_threshold: 0.7   # slightly relaxed — real map is harder than procedural
+
+
+# -----------------------------------------------------------------------------
+# DOMAIN RANDOMIZATION
+# Progressive noise and disturbance settings per curriculum stage
+# Purpose: bridge the sim-to-real gap — policy must handle real-world imperfections
+# -----------------------------------------------------------------------------
+domain_randomization:
+
+  mild_noise:                  # Stage 2 — introduce sensor imperfections
+    position_noise_std: 0.05   # gaussian noise on GPS position readings (meters)
+    imu_noise_std: 0.01        # gaussian noise on IMU readings (rad/s)
+    lidar_noise_std: 0.02      # gaussian noise on distance sensor readings (meters)
+
+  noise_and_wind:              # Stage 3 — add physical disturbances
+    position_noise_std: 0.1
+    imu_noise_std: 0.02
+    lidar_noise_std: 0.05
+    wind_force_max: 0.5        # max random wind force in Newtons applied to drone body
+                               # direction randomised each episode via WebotsAdapter
+
+  full:                        # Stage 4 — maximum realism
+    position_noise_std: 0.15
+    imu_noise_std: 0.05
+    lidar_noise_std: 0.1
+    wind_force_max: 1.0
+    actuation_latency_steps: [1, 2]  # actions held 1-2 timesteps before execution
+                                     # simulates real drone controller response latency
+
+
+# -----------------------------------------------------------------------------
+# SCENARIO MANAGER
+# World generation settings — object pooling is mandatory
+# Never use importMFNodeFromString during the training loop
+# -----------------------------------------------------------------------------
+scenario_manager:
+  obstacle_pool_size: 50       # pre-spawn this many obstacles at startup, hidden at z=-100
+                               # teleport required count to surface at each episode reset
+                               # setSFVec3f is a direct memory update — no string parsing, no memory leak
+                               # 50 covers Stage 3 max of 20 obstacles with comfortable headroom
+
+  spawn_margin: 3.0            # minimum distance between drone spawn position and any obstacle (meters)
+  goal_margin: 2.0             # minimum distance between goal position and any obstacle (meters)
+  min_spawn_separation: 5.0    # minimum distance between any two drone spawn positions (meters)
+
+
+# -----------------------------------------------------------------------------
+# LOGGING
+# WandB and checkpoint settings
+# -----------------------------------------------------------------------------
+logging:
+  wandb_project: utm-swarm-marl        # WandB project name — must match team project
+  wandb_entity: null                   # set to your WandB team name if using shared project
+  log_interval: 10                     # log metrics every N episodes
+  log_reward_components: true          # log each reward component separately — essential for debugging
+  checkpoint_dir: checkpoints/         # directory to save model checkpoints
+  best_checkpoint: checkpoints/best_policy.pth   # path to best performing checkpoint

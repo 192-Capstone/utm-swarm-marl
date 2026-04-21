@@ -44,3 +44,6 @@ logs/
 *.csv
 *.json
 results/
+
+CONTEXT.md
+SETUP.md
