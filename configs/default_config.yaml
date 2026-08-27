@@ -18,6 +18,7 @@ environment:
   omega_max: 1.0               # [PENDING] max yaw rate rad/s — placeholder, verify against Webots drone physics
   world_size: 50               # world is 50×50m for Stage 1-3 — scales to 100×100m for Stage 4 OSM map
   goal_threshold: 0.5          # distance in meters at which goal is considered reached
+  collision_radius: 0.2        # drone-drone collision distance in meters (body half-extent ~0.15m)
 
   # --- Timestep Design ---
   # Control frequency and physics frequency are DELIBERATELY DECOUPLED.
@@ -116,28 +117,37 @@ training:
                                # prevents catastrophic policy updates from one bad batch of experience
 
   # --- Learning Rates ---
-  actor_lr: 0.0003             # actor learning rate — 3e-4 is standard PPO starting point
-  critic_lr: 0.0003            # critic learning rate — same as actor, can tune separately if critic lags
+  actor_lr: 0.0001             # actor learning rate — reduced from 3e-4 for training stability
+  critic_lr: 0.0003            # critic learning rate — kept higher so critic tracks returns faster
 
   # --- Update Settings ---
   n_epochs: 10                 # number of times to reuse each rollout buffer before collecting new data
                                # more epochs = more sample efficient but risks overfitting to one batch
                                # 10 is standard for PPO — clipping naturally limits overfitting
 
-  batch_size: 256              # minibatch size per PPO gradient update
-                               # 256 suits 24GB VRAM comfortably — increase to 512 if GPU is underutilised
+  batch_size: 1024             # minibatch size per PPO gradient update
+                               # larger batches = fewer updates per epoch = less within-epoch policy drift
+                               # with ~3000 buffer samples, this gives ~3 updates per epoch instead of 12
 
   buffer_size: 2048            # rollout buffer capacity — collect this many steps before each update
                                # 2048 steps at 3 agents = 2048×3 = 6144 transitions per update
                                # larger buffer = more stable gradient estimates, slower iteration
 
-  max_grad_norm: 0.5           # gradient clipping threshold — prevents exploding gradients
-                               # if loss spikes during training, lower this to 0.3
+  max_grad_norm: 0.25          # gradient clipping threshold — reduced from 0.5 because
+                               # actor grad norms reached 50+ (100x clip), causing policy
+                               # degradation after ep 600 despite 15% success rate peak
+
+  target_kl: 0.10              # KL early stopping — stop PPO epochs when approx KL exceeds
+                               # 1.5 × target_kl (i.e. 0.15). Raised from 0.05 because
+                               # sensitive initializations were stuck at 1 epoch (threshold
+                               # 0.075 too tight), preventing learning entirely
 
   # --- Loss Coefficients ---
-  entropy_coef: 0.01           # entropy bonus weight — encourages exploration early in training
-                               # prevents policy from collapsing to deterministic behavior too early
-                               # reduce to 0.001 in later training stages once policy is stable
+  entropy_coef: 0.003          # entropy bonus weight — reduced from 0.01 to test whether
+                               # entropy plateau at 5.30 is caused by entropy bonus balancing
+                               # reward gradient. Hypothesis: lowering this lets action_log_std
+                               # decrease, making policy more precise. Watch KL to confirm.
+                               # reduce further to 0.001 in later training stages once policy is stable
 
   value_loss_coef: 0.5         # critic loss weight in total loss
                                # total_loss = actor_loss + 0.5×critic_loss - 0.01×entropy
@@ -183,7 +193,7 @@ reward:
   # --- Quadrotor Physics Penalties ---
   # These are critical for sim-to-real transfer — do not remove
 
-  lambda_smooth: 0.1           # [PENDING] smoothness penalty weight
+  lambda_smooth: 0.02          # [PENDING] smoothness penalty weight (was 0.1 — too harsh for Stage 1)
                                # penalises: -lambda_smooth × Σ(a_t - a_{t-1})²
                                # prevents violent action jerks that break PID and damage real rotors
 
@@ -194,6 +204,22 @@ reward:
   r_danger: 1.5                # [PENDING] danger zone radius in meters — starting value from data contract
                                # accounts for aerodynamic downwash — propeller wash destabilizes nearby drones
                                # before physical contact occurs
+
+
+# -----------------------------------------------------------------------------
+# GOAL CURRICULUM
+# Gradually increase spawn-to-goal distance so early training sees easy wins.
+# A random policy can stumble into a 3m goal but not a 20m one.
+# Once success_rate over `window` episodes exceeds `advance_sr`,
+# goal distance increases by `step_dist` (up to `end_dist`).
+# -----------------------------------------------------------------------------
+goal_curriculum:
+  start_dist: 2.0              # initial max spawn-to-goal distance (meters) — reduced from 3.0
+                               # so even poor initializations stumble into early successes
+  end_dist: 20.0               # final max distance — full Stage 1 difficulty
+  step_dist: 1.0               # increase by 1m each time threshold is met
+  advance_sr: 0.3              # need 30% success rate to widen
+  window: 50                   # evaluate over last 50 episodes
 
 
 # -----------------------------------------------------------------------------

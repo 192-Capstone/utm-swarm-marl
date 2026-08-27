@@ -60,6 +60,7 @@ class RewardEngine:
         rewards = {
             "goal_progress": np.zeros(batch_size),
             "goal_reached": np.zeros(batch_size),
+            "goal_hold": np.zeros(batch_size),
             "obstacle_collision": np.zeros(batch_size),
             "drone_collision": np.zeros(batch_size),
             "step_penalty": np.zeros(batch_size),
@@ -75,9 +76,15 @@ class RewardEngine:
             )
             rewards["goal_progress"][i] = progress
             
-            # 2. Goal Reached Bonus
-            if data["curr_dist"][i] < self.goal_threshold:
+            # 2. Goal Reached Bonus (one-time per drone per episode)
+            if data.get("goal_just_reached", [False] * batch_size)[i]:
                 rewards["goal_reached"][i] = self.goal_reached_bonus
+
+            # 2b. Goal Hold — small per-step reward for staying near goal
+            # after arrival, so the policy learns to stop rather than drift
+            reached = data.get("drone_reached_goal", [False] * batch_size)
+            if reached[i] and data["curr_dist"][i] < self.goal_threshold * 2:
+                rewards["goal_hold"][i] = 0.1
             
             # 3. Obstacle Collision Penalty
             if data["collision"][i]:
@@ -112,6 +119,7 @@ class RewardEngine:
             rewards["total"][i] = sum([
                 rewards["goal_progress"][i],
                 rewards["goal_reached"][i],
+                rewards["goal_hold"][i],
                 rewards["obstacle_collision"][i],
                 rewards["drone_collision"][i],
                 rewards["step_penalty"][i],

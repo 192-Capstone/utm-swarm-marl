@@ -45,13 +45,21 @@ class RunningNormalizer:
     Online running mean and standard deviation normalizer.
     Updates incrementally without storing all past data.
     Applied to local_fixed observations for training stability.
+
+    Warm-up: returns raw observations until min_count samples seen,
+    so statistics are stable before they drive normalization.
+    Clip: normalized output clamped to [-clip, clip] to prevent
+    extreme values from saturating tanh layers.
     """
 
-    def __init__(self, dim: int, epsilon: float = 1e-8):
+    def __init__(self, dim: int, epsilon: float = 1e-8,
+                 min_count: int = 1000, clip: float = 10.0):
         self.mean    = np.zeros(dim, dtype=np.float32)
         self.var     = np.ones(dim,  dtype=np.float32)
         self.count   = 0
         self.epsilon = epsilon
+        self.min_count = min_count
+        self.clip    = clip
 
     def update(self, x: np.ndarray):
         """Update running stats with a batch of observations (B, dim)."""
@@ -71,8 +79,11 @@ class RunningNormalizer:
         self.count = total
 
     def normalize(self, x: np.ndarray) -> np.ndarray:
-        """Normalize x using running statistics."""
-        return (x - self.mean) / (np.sqrt(self.var) + self.epsilon)
+        """Normalize using running stats. Returns raw obs during warm-up."""
+        if self.count < self.min_count:
+            return x
+        normed = (x - self.mean) / (np.sqrt(self.var) + self.epsilon)
+        return np.clip(normed, -self.clip, self.clip)
 
 
 class ObservationProcessor:

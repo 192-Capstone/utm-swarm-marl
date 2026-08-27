@@ -120,10 +120,16 @@ class MAPPOTrainer:
             print(f"WandB not available: {e}. Training without logging.")
             return False
 
-    def train(self):
+    def train(self, optuna_trial=None, report_interval: int = 50):
         """
         Full training loop — requires SwarmEnv to be set.
         Runs until total_episodes is reached.
+
+        Args:
+            optuna_trial    : optuna.Trial instance for hyperparameter tuning.
+                              When provided, reports mean reward every report_interval
+                              episodes and prunes if the trial looks unpromising.
+            report_interval : how often (in episodes) to report to Optuna pruner.
         """
         assert self.env is not None, \
             "env must be set for train(). Use train_on_dummy_data() for Phase B testing."
@@ -135,18 +141,37 @@ class MAPPOTrainer:
         start_time = time.time()
 
         while self.episode_count < self.total_episodes:
-            episode_reward, episode_length, success = self._collect_episode()
+            episode_reward, episode_length, success, min_dist_to_goal, initial_dist_to_goal = \
+                self._collect_episode()
 
             self.episode_rewards.append(episode_reward)
             self.episode_lengths.append(episode_length)
             self.success_history.append(float(success))
             self.episode_count += 1
 
+            # Update goal distance curriculum
+            if self.env is not None and hasattr(self.env, 'update_goal_curriculum'):
+                self.env.update_goal_curriculum(success)
+
             # Update policy when buffer is full
             if self.buffer.is_full():
                 metrics = self._update_policy()
-                self._log(metrics, episode_reward, episode_length, success)
                 self.buffer.reset()
+            else:
+                metrics = None
+
+            # Log EVERY episode to WandB (not just buffer-fill episodes)
+            self._log(metrics, episode_reward, episode_length, success,
+                       min_dist_to_goal, initial_dist_to_goal)
+
+            # Optuna pruning check
+            if optuna_trial is not None and self.episode_count % report_interval == 0:
+                import optuna
+                window = min(report_interval, len(self.episode_rewards))
+                mean_reward = np.mean(self.episode_rewards[-window:])
+                optuna_trial.report(mean_reward, self.episode_count)
+                if optuna_trial.should_prune():
+                    raise optuna.TrialPruned()
 
             # Curriculum check
             self._check_curriculum_advancement()
@@ -185,6 +210,8 @@ class MAPPOTrainer:
         episode_reward = 0.0
         episode_length = 0
         success        = False
+        min_dist_to_goal     = None
+        initial_dist_to_goal = None
 
         # Unpack observations from env reset
         local_fixed, neighbor_states, neighbor_mask, global_state = \
@@ -203,8 +230,16 @@ class MAPPOTrainer:
                 )
                 values = self._as_agent_values(values)
 
-            # Apply yaw mask for Stage 1-2
+            # Apply yaw mask for Stage 1-2. Masking changes the action, so the
+            # stored log_prob must be recomputed for the masked action —
+            # otherwise old_log_prob (sampled yaw) and the action PPO later
+            # re-evaluates (yaw=0) disagree, corrupting the ratio at epoch 0.
             masked_actions = self._apply_yaw_mask(actions)
+            if self.curriculum_stage < 3:
+                with torch.no_grad():
+                    log_probs, _ = self.actor.evaluate_actions(
+                        local_fixed, neighbor_states, masked_actions, neighbor_mask
+                    )
 
             # Step environment
             next_obs_dict, rewards, done, info = self.env.step(
@@ -239,15 +274,13 @@ class MAPPOTrainer:
 
             if done:
                 success = info.get('success', False)
+                min_dist_to_goal     = info.get('min_dist_to_goal')
+                initial_dist_to_goal = info.get('initial_dist_to_goal')
                 break
 
             # Move to next observation
             local_fixed, neighbor_states, neighbor_mask, global_state = \
                 self._unpack_obs(next_obs_dict)
-
-            # Stop collecting if buffer is full mid-episode
-            if self.buffer.is_full():
-                break
 
         # Bootstrap value for GAE if episode didn't terminate
         with torch.no_grad():
@@ -257,7 +290,7 @@ class MAPPOTrainer:
             last_values = self._as_agent_values(last_values)
         self.buffer.compute_gae(last_values)
 
-        return episode_reward, episode_length, success
+        return episode_reward, episode_length, success, min_dist_to_goal, initial_dist_to_goal
 
     def _update_policy(self) -> Dict:
         """Run PPO update. Returns metrics dict for logging."""
@@ -313,6 +346,7 @@ class MAPPOTrainer:
             return
 
         recent_sr = np.mean(self.success_history[-window:])
+
         if recent_sr >= threshold and self.curriculum_stage < 4:
             self.curriculum_stage += 1
             print(f"\n>>> CURRICULUM ADVANCE: Stage {self.curriculum_stage} <<<")
@@ -323,8 +357,10 @@ class MAPPOTrainer:
                 self.obs_processor.reset_normalizer()
             self._save_checkpoint(tag=f"stage{self.curriculum_stage}_start")
 
-    def _log(self, metrics: Dict, episode_reward: float,
-             episode_length: int, success: bool):
+    def _log(self, metrics, episode_reward: float,
+             episode_length: int, success: bool,
+             min_dist_to_goal: Optional[float] = None,
+             initial_dist_to_goal: Optional[float] = None):
         """Log metrics to WandB and local stats."""
         if not self.use_wandb:
             return
@@ -337,10 +373,49 @@ class MAPPOTrainer:
             'curriculum_stage': self.curriculum_stage,
             'global_step':      self.global_step,
         }
-        log_dict.update(metrics)
+        if metrics is not None:
+            log_dict.update(metrics)
+
+        # Closest approach to goal — diagnoses "almost succeeded" (small
+        # min_dist, no success) vs "never made progress" (min_dist ~= initial)
+        if min_dist_to_goal is not None and initial_dist_to_goal is not None:
+            log_dict['episode_min_dist_to_goal']     = min_dist_to_goal
+            log_dict['episode_initial_dist_to_goal'] = initial_dist_to_goal
+            if initial_dist_to_goal > 1e-6:
+                log_dict['episode_progress_ratio'] = (
+                    1.0 - min_dist_to_goal / initial_dist_to_goal
+                )
+
+        # Raw advantage and return stats from the buffer (logged on update episodes)
+        if hasattr(self.buffer, 'raw_adv_mean') and metrics is not None:
+            log_dict['raw_advantage_mean'] = self.buffer.raw_adv_mean
+            log_dict['raw_advantage_std']  = self.buffer.raw_adv_std
+            log_dict['raw_advantage_min']  = self.buffer.raw_adv_min
+            log_dict['raw_advantage_max']  = self.buffer.raw_adv_max
+            log_dict['return_mean']        = self.buffer.return_mean
+            log_dict['return_std']         = self.buffer.return_std
+            log_dict['return_min']         = self.buffer.return_min
+            log_dict['return_max']         = self.buffer.return_max
+            log_dict['value_mean']         = self.buffer.value_mean
+            log_dict['value_std']          = self.buffer.value_std
 
         if len(self.success_history) >= 100:
             log_dict['success_rate_100'] = np.mean(self.success_history[-100:])
+
+        if self.env is not None and hasattr(self.env, 'goal_dist_current'):
+            log_dict['goal_dist_current'] = self.env.goal_dist_current
+
+        clamped = torch.clamp(self.actor.action_log_std, -2.0, 0.5)
+        log_dict['action_log_std_mean'] = clamped.mean().item()
+        for i, name in enumerate(['vx', 'vy', 'vz', 'yaw']):
+            log_dict[f'action_log_std_{name}'] = clamped[i].item()
+        log_dict['action_std_mean'] = torch.exp(clamped).mean().item()
+
+        if self.env is not None and hasattr(self.env, 'obs_processor'):
+            norm = self.env.obs_processor.normalizer
+            log_dict['normalizer_count'] = norm.count
+            log_dict['normalizer_var_min'] = float(norm.var.min())
+            log_dict['normalizer_var_max'] = float(norm.var.max())
 
         wandb.log(log_dict, step=self.episode_count)
 

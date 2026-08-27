@@ -1,0 +1,17 @@
+# Core RL engine
+torch>=2.0
+numpy>=1.24
+pyyaml>=6.0
+
+# Training logging (optional, but recommended for real runs)
+wandb>=0.16
+
+# Plotting / reward-validation figures
+matplotlib>=3.7
+
+# Simulator for early-stage (Stage 1-2) training
+pybullet>=3.2.5
+gymnasium>=0.29
+
+# Real OSM city maps for Stage 4 (optional)
+osmnx>=1.9

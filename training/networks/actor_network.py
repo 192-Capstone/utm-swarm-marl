@@ -243,8 +243,11 @@ class ActorNetwork(nn.Module):
         # --- Step 5: Output action mean ---
         action_mean = self.action_mean_head(features)      # (batch_size, 4)
 
-        # Expand log_std to match batch size
-        action_log_std = self.action_log_std.expand_as(action_mean)
+        # Clamp log_std to prevent numerical instability:
+        # [-2, 0.5] → std in [0.135, 1.65] — enough exploration range,
+        # but can't collapse to near-zero (NaN) or explode
+        clamped_log_std = torch.clamp(self.action_log_std, -2.0, 0.5)
+        action_log_std = clamped_log_std.expand_as(action_mean)
                                                             # (batch_size, 4)
 
         return action_mean, action_log_std

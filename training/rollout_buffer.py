@@ -62,7 +62,8 @@ class RolloutBuffer:
 
     def _init_storage(self):
         """Pre-allocate all storage tensors on device."""
-        B = self.buffer_size
+        max_steps = self.config['environment']['max_steps']
+        B = self.buffer_size + max_steps
         N = self.n_agents
         K = self.k_neighbors_max
 
@@ -100,7 +101,8 @@ class RolloutBuffer:
         Store one timestep of experience for all N agents.
         Called by MAPPOTrainer on every environment step.
         """
-        assert self.ptr < self.buffer_size, \
+        max_steps = self.config['environment']['max_steps']
+        assert self.ptr < self.buffer_size + max_steps, \
             f"Buffer overflow at ptr={self.ptr}. Call compute_gae() before storing more."
 
         # Fail fast on shape contract violations to avoid hard-to-debug training errors.
@@ -185,9 +187,26 @@ class RolloutBuffer:
         # Returns = advantages + value estimates (used for critic loss target)
         self.returns[:T] = self.advantages[:T] + self.values[:T]
 
+        # Snapshot raw advantage stats before normalization
+        adv = self.advantages[:T].reshape(-1)
+        self.raw_adv_mean = adv.mean().item()
+        self.raw_adv_std  = adv.std().item()
+        self.raw_adv_min  = adv.min().item()
+        self.raw_adv_max  = adv.max().item()
+
+        # Snapshot return stats for critic quality assessment
+        ret = self.returns[:T].reshape(-1)
+        self.return_mean = ret.mean().item()
+        self.return_std  = ret.std().item()
+        self.return_min  = ret.min().item()
+        self.return_max  = ret.max().item()
+
+        # Snapshot value prediction stats
+        val = self.values[:T].reshape(-1)
+        self.value_mean = val.mean().item()
+        self.value_std  = val.std().item()
+
         # Normalize advantages across the buffer for training stability
-        # Zero mean, unit variance — standard PPO practice
-        adv = self.advantages[:T].reshape(-1)     # flatten across time and agents
         self.advantages[:T] = (
             (self.advantages[:T] - adv.mean()) / (adv.std() + 1e-8)
         )
@@ -205,11 +224,22 @@ class RolloutBuffer:
         N = self.n_agents
 
         # Flatten time and agent dimensions: (T, N, ...) -> (T*N, ...)
+        # This is correct for the Actor: each (timestep, agent) pair is an
+        # independent decentralized decision.
         lo  = self.local_obs[:T].reshape(T * N, -1)
         ns  = self.neighbor_states[:T].reshape(T * N, self.k_neighbors_max, self.neighbor_obs_dim)
         nm  = self.neighbor_mask[:T].reshape(T * N, self.k_neighbors_max)
-        gs  = self.global_state[:T].reshape(T * N, self.drone_state_dim)
         act = self.actions[:T].reshape(T * N, self.action_dim)
+
+        # The Critic is centralized — it must always see the WHOLE team's
+        # (N, 17) state for a timestep, never a single agent's row. So instead
+        # of flattening global_state per-agent, we repeat each timestep's full
+        # (N, 17) team block once per agent. Sample i (agent a = i % N of
+        # timestep t = i // N) carries gs_team[i] = global_state[t] — the same
+        # (N, 17) block the critic saw live during rollout at that timestep.
+        gs_team = self.global_state[:T]                              # (T, N, 17)
+        gs = gs_team.unsqueeze(1).expand(T, N, N, self.drone_state_dim) \
+                    .reshape(T * N, N, self.drone_state_dim)          # (T*N, N, 17)
         lp  = self.log_probs[:T].reshape(T * N)
         adv = self.advantages[:T].reshape(T * N)
         ret = self.returns[:T].reshape(T * N)

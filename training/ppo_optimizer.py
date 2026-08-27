@@ -59,6 +59,7 @@ class PPOOptimizer:
         self.value_loss_coef = config['training']['value_loss_coef']   # 0.5
         self.entropy_coef    = config['training']['entropy_coef']      # 0.01
         self.max_grad_norm   = config['training']['max_grad_norm']     # 0.5
+        self.target_kl       = config['training'].get('target_kl', 0.02)
 
         # Separate optimizers for actor and critic
         # Allows different learning rates if needed
@@ -73,11 +74,15 @@ class PPOOptimizer:
 
         # Running stats for logging
         self.stats = {
-            'actor_loss':   [],
-            'critic_loss':  [],
-            'entropy':      [],
-            'clip_fraction':[],
-            'approx_kl':    [],
+            'actor_loss':     [],
+            'critic_loss':    [],
+            'entropy':        [],
+            'clip_fraction':  [],
+            'approx_kl':      [],
+            'actor_grad_norm':  [],
+            'critic_grad_norm': [],
+            'advantage_mean':   [],
+            'advantage_std':    [],
         }
 
     def update(self, buffer) -> Dict[str, float]:
@@ -94,45 +99,82 @@ class PPOOptimizer:
             metrics : dict of mean loss values for WandB logging
         """
         epoch_stats = {k: [] for k in self.stats}
+        epochs_completed = 0
 
         for epoch in range(self.n_epochs):
+            epoch_kls = []
+
             for batch in buffer.get_minibatches(self.batch_size):
 
                 actor_loss, critic_loss, entropy, clip_frac, approx_kl = \
                     self._compute_losses(batch)
 
-                # Combined loss
-                # Negative actor loss because we maximize (gradient ascent on reward)
-                # Negative entropy because we maximize entropy (exploration)
+                if torch.isnan(actor_loss) or torch.isnan(critic_loss):
+                    print(f"  [PPO] NaN in loss at epoch {epoch}, skipping batch")
+                    continue
+
+                if approx_kl.item() > 10.0:
+                    print(f"  [PPO] KL exploded ({approx_kl.item():.1f}) at epoch {epoch}, aborting update")
+                    epochs_completed = epoch + 1
+                    metrics = {k: float(torch.tensor(v).mean()) if v else 0.0
+                               for k, v in epoch_stats.items()}
+                    metrics['epochs_used'] = epochs_completed
+                    return metrics
+
                 total_loss = (
                     - actor_loss
                     + self.value_loss_coef * critic_loss
                     - self.entropy_coef    * entropy
                 )
 
-                # Single backward pass updates both networks
                 self.actor_optimizer.zero_grad()
                 self.critic_optimizer.zero_grad()
 
                 total_loss.backward()
 
-                # Gradient clipping — prevents exploding gradients
-                # Clips the norm of all gradients to max_grad_norm
-                nn.utils.clip_grad_norm_(self.actor.parameters(),  self.max_grad_norm)
-                nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+                actor_gn  = nn.utils.clip_grad_norm_(self.actor.parameters(),  self.max_grad_norm)
+                critic_gn = nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
 
                 self.actor_optimizer.step()
                 self.critic_optimizer.step()
 
-                # Record stats
                 epoch_stats['actor_loss'].append(actor_loss.item())
                 epoch_stats['critic_loss'].append(critic_loss.item())
                 epoch_stats['entropy'].append(entropy.item())
                 epoch_stats['clip_fraction'].append(clip_frac.item())
                 epoch_stats['approx_kl'].append(approx_kl.item())
+                epoch_stats['actor_grad_norm'].append(actor_gn.item())
+                epoch_stats['critic_grad_norm'].append(critic_gn.item())
+                epoch_stats['advantage_mean'].append(batch['advantages'].mean().item())
+                epoch_stats['advantage_std'].append(batch['advantages'].std().item())
+                epoch_kls.append(approx_kl.item())
 
-        # Return mean over all epochs and batches
-        return {k: float(torch.tensor(v).mean()) for k, v in epoch_stats.items()}
+            epochs_completed = epoch + 1
+
+            if epoch_kls:
+                mean_epoch_kl = sum(epoch_kls) / len(epoch_kls)
+                if mean_epoch_kl > 1.5 * self.target_kl:
+                    break
+
+        metrics = {k: float(torch.tensor(v).mean()) if v else 0.0
+                   for k, v in epoch_stats.items()}
+        metrics['epochs_used'] = epochs_completed
+
+        # Explained variance: how well does the critic predict returns?
+        # 1.0 = perfect, 0.0 = no better than mean, <0 = worse than mean
+        with torch.no_grad():
+            T = buffer.ptr
+            val_flat = buffer.values[:T].reshape(-1)
+            ret_flat = buffer.returns[:T].reshape(-1)
+            var_ret = ret_flat.var()
+            if var_ret < 1e-8:
+                metrics['explained_variance'] = 0.0
+            else:
+                metrics['explained_variance'] = (
+                    1.0 - (ret_flat - val_flat).var() / var_ret
+                ).item()
+
+        return metrics
 
     def _compute_losses(self, batch: Dict) -> Tuple[torch.Tensor, ...]:
         """
@@ -159,7 +201,7 @@ class PPOOptimizer:
         local_obs       = batch['local_obs']        # (B, 27)
         neighbor_states = batch['neighbor_states']  # (B, K, 6)
         neighbor_mask   = batch['neighbor_mask']    # (B, K)
-        global_state    = batch['global_state']     # (B, 17)
+        global_state    = batch['global_state']     # (B, N, 17) — full team block per sample
         actions         = batch['actions']          # (B, 4)
         old_log_probs   = batch['old_log_probs']    # (B,)
         advantages      = batch['advantages']       # (B,)
@@ -198,13 +240,11 @@ class PPOOptimizer:
 
         # ── Critic Loss ───────────────────────────────────────────────────────
 
-        # Critic sees per-drone global state
-        # global_state here is (B, 17) — one drone's slice
-        # Reshape to (B, 1, 17) for CriticNetwork which expects (B, N, 17)
-        # For minibatch updates we treat each sample as N=1 drone
-        # In full forward pass during rollout, N = n_agents
-        gs_for_critic = global_state.unsqueeze(1)   # (B, 1, 17)
-        values = self.critic(gs_for_critic).squeeze(-1).squeeze(-1)  # (B,)
+        # Critic is centralized: global_state is already (B, N, 17) — the full
+        # team's state block for each sample's timestep (see RolloutBuffer.
+        # get_minibatches). This matches exactly what the critic saw live
+        # during rollout, so update-time and rollout-time predictions agree.
+        values = self.critic(global_state).squeeze(-1)  # (B,)
 
         critic_loss = nn.functional.mse_loss(values, returns)        # scalar
 
@@ -216,8 +256,8 @@ class PPOOptimizer:
             clip_frac = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean()
 
             # Approximate KL divergence — monitors how much policy changed
-            # KL ≈ mean(-log_ratio) for small ratios
-            approx_kl = (-log_ratio).mean()
+            # KL ≈ mean((ratio - 1) - log_ratio), always non-negative
+            approx_kl = ((ratio - 1) - log_ratio).mean()
 
         return actor_loss, critic_loss, entropy.mean(), clip_frac, approx_kl
 
