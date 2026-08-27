@@ -113,6 +113,7 @@ class MAPPOTrainer:
                 project=self.config['logging']['wandb_project'],
                 config=self.config,
                 resume='allow',
+                save_code=True,
             )
             print("WandB initialized.")
             return True

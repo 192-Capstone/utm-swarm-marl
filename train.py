@@ -56,6 +56,7 @@ def main():
 
     if args.seed is not None:
         set_seed(args.seed)
+        config["seed"] = args.seed
 
     if args.episodes is not None:
         config["training"]["total_episodes"] = args.episodes
