@@ -238,7 +238,8 @@ class MAPPOTrainer:
             if self.curriculum_stage < 3:
                 with torch.no_grad():
                     log_probs, _ = self.actor.evaluate_actions(
-                        local_fixed, neighbor_states, masked_actions, neighbor_mask
+                        local_fixed, neighbor_states, masked_actions, neighbor_mask,
+                        active_dims=self._active_action_dims()
                     )
 
             # Step environment
@@ -292,8 +293,15 @@ class MAPPOTrainer:
 
         return episode_reward, episode_length, success, min_dist_to_goal, initial_dist_to_goal
 
+    def _active_action_dims(self) -> int:
+        """Yaw (dim 3) is masked to 0.0 and causally inert before Stage 3 —
+        exclude it from log_prob/entropy so PPO isn't learning a ratio for
+        an action that never affects the environment."""
+        return 3 if self.curriculum_stage < 3 else 4
+
     def _update_policy(self) -> Dict:
         """Run PPO update. Returns metrics dict for logging."""
+        self.optimizer.active_action_dims = self._active_action_dims()
         metrics = self.optimizer.update(self.buffer)
         return metrics
 
@@ -338,7 +346,16 @@ class MAPPOTrainer:
         )
 
     def _check_curriculum_advancement(self):
-        """Advance curriculum stage if success rate threshold met."""
+        """Advance curriculum stage if success rate threshold met.
+
+        Currently disabled: PyBulletAdapter does not implement obstacle
+        spawning, LiDAR, or domain randomization for Stages 2-4 — advancing
+        the stage counter only changes the yaw mask and global_state_dim
+        without changing the actual environment, which is misleading.
+        Re-enable once the adapter supports per-stage world configuration.
+        """
+        return
+
         window = self.config['curriculum']['progression_window']
         threshold = self.config['curriculum']['progression_threshold']
 
@@ -349,6 +366,7 @@ class MAPPOTrainer:
 
         if recent_sr >= threshold and self.curriculum_stage < 4:
             self.curriculum_stage += 1
+            self.success_history.clear()
             print(f"\n>>> CURRICULUM ADVANCE: Stage {self.curriculum_stage} <<<")
             print(f"    Success rate: {recent_sr:.2f} >= {threshold}")
             if self.env is not None:

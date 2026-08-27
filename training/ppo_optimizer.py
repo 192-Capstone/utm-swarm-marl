@@ -61,6 +61,12 @@ class PPOOptimizer:
         self.max_grad_norm   = config['training']['max_grad_norm']     # 0.5
         self.target_kl       = config['training'].get('target_kl', 0.02)
 
+        # Number of action dims PPO should evaluate log_prob/entropy over.
+        # Yaw (dim 3) is masked to 0.0 and has no causal effect on reward in
+        # Stage 1-2, so it must be excluded from the ratio/KL/entropy — set
+        # by MAPPOTrainer before each update() call based on curriculum stage.
+        self.active_action_dims = None
+
         # Separate optimizers for actor and critic
         # Allows different learning rates if needed
         self.actor_optimizer = optim.Adam(
@@ -100,9 +106,10 @@ class PPOOptimizer:
         """
         epoch_stats = {k: [] for k in self.stats}
         epochs_completed = 0
+        kl_limit = 1.5 * self.target_kl
 
         for epoch in range(self.n_epochs):
-            epoch_kls = []
+            stop_update = False
 
             for batch in buffer.get_minibatches(self.batch_size):
 
@@ -113,13 +120,17 @@ class PPOOptimizer:
                     print(f"  [PPO] NaN in loss at epoch {epoch}, skipping batch")
                     continue
 
-                if approx_kl.item() > 10.0:
-                    print(f"  [PPO] KL exploded ({approx_kl.item():.1f}) at epoch {epoch}, aborting update")
-                    epochs_completed = epoch + 1
-                    metrics = {k: float(torch.tensor(v).mean()) if v else 0.0
-                               for k, v in epoch_stats.items()}
-                    metrics['epochs_used'] = epochs_completed
-                    return metrics
+                # Check KL BEFORE stepping — once a policy drifts past the
+                # trust region, applying this batch's update only makes it
+                # worse. Checking after the fact (old behavior: abort only
+                # past KL 10.0) let several bad minibatches compound within
+                # a single epoch before anything stopped them.
+                if not torch.isfinite(approx_kl) or approx_kl.item() > kl_limit:
+                    print(f"  [PPO] KL {approx_kl.item():.4f} exceeded limit "
+                          f"({kl_limit:.4f}) at epoch {epoch}, stopping update "
+                          f"before applying this batch")
+                    stop_update = True
+                    break
 
                 total_loss = (
                     - actor_loss
@@ -147,14 +158,11 @@ class PPOOptimizer:
                 epoch_stats['critic_grad_norm'].append(critic_gn.item())
                 epoch_stats['advantage_mean'].append(batch['advantages'].mean().item())
                 epoch_stats['advantage_std'].append(batch['advantages'].std().item())
-                epoch_kls.append(approx_kl.item())
 
             epochs_completed = epoch + 1
 
-            if epoch_kls:
-                mean_epoch_kl = sum(epoch_kls) / len(epoch_kls)
-                if mean_epoch_kl > 1.5 * self.target_kl:
-                    break
+            if stop_update:
+                break
 
         metrics = {k: float(torch.tensor(v).mean()) if v else 0.0
                    for k, v in epoch_stats.items()}
@@ -212,7 +220,8 @@ class PPOOptimizer:
         # Get log prob of the STORED actions under the CURRENT policy
         # (not sampling new actions — evaluating old ones under new distribution)
         new_log_probs, entropy = self.actor.evaluate_actions(
-            local_obs, neighbor_states, actions, neighbor_mask
+            local_obs, neighbor_states, actions, neighbor_mask,
+            active_dims=self.active_action_dims
         )
         # new_log_probs : (B,)
         # entropy       : (B,)

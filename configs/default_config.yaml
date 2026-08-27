@@ -137,10 +137,12 @@ training:
                                # actor grad norms reached 50+ (100x clip), causing policy
                                # degradation after ep 600 despite 15% success rate peak
 
-  target_kl: 0.10              # KL early stopping — stop PPO epochs when approx KL exceeds
-                               # 1.5 × target_kl (i.e. 0.15). Raised from 0.05 because
-                               # sensitive initializations were stuck at 1 epoch (threshold
-                               # 0.075 too tight), preventing learning entirely
+  target_kl: 0.03              # KL early stopping — stop PPO updates when approx KL exceeds
+                               # 1.5 × target_kl (i.e. 0.045). Checked per-minibatch, not
+                               # just per-epoch (see ppo_optimizer.py) — the old 0.10 combined
+                               # with an epoch-level-only check let several bad minibatches
+                               # compound before anything stopped them, exploding KL to 36-56
+                               # and collapsing the policy around ep 700-800.
 
   # --- Loss Coefficients ---
   entropy_coef: 0.003          # entropy bonus weight — reduced from 0.01 to test whether

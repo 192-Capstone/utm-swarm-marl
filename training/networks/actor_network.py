@@ -255,7 +255,8 @@ class ActorNetwork(nn.Module):
     def get_action(self, local_obs: torch.Tensor,
                    neighbor_states: torch.Tensor,
                    neighbor_mask: torch.Tensor = None,
-                   deterministic: bool = False):
+                   deterministic: bool = False,
+                   active_dims: int = None):
         """
         Sample an action from the policy distribution.
 
@@ -265,6 +266,10 @@ class ActorNetwork(nn.Module):
             neighbor_mask   : (batch_size, K) optional
             deterministic   : if True, return mean (used at deployment/evaluation)
                               if False, sample from distribution (used during training)
+            active_dims     : number of leading action dims to include in log_prob
+                              (yaw is dim 3 — masked to 0.0 and causally inert in
+                              Stage 1-2, so it must be excluded from the ratio/KL).
+                              None = all action_dim dims.
 
         Returns:
             action          : (batch_size, 4)
@@ -289,14 +294,16 @@ class ActorNetwork(nn.Module):
 
         # Log probability of this action — needed for PPO ratio computation
         # Sum across action dimensions (independent Gaussians)
-        log_prob = dist.log_prob(action).sum(dim=-1)        # (batch_size,)
+        d = self.action_dim if active_dims is None else active_dims
+        log_prob = dist.log_prob(action)[:, :d].sum(dim=-1)  # (batch_size,)
 
         return action, log_prob
 
     def evaluate_actions(self, local_obs: torch.Tensor,
                          neighbor_states: torch.Tensor,
                          actions: torch.Tensor,
-                         neighbor_mask: torch.Tensor = None):
+                         neighbor_mask: torch.Tensor = None,
+                         active_dims: int = None):
         """
         Evaluate log probability and entropy of given actions under current policy.
         Called by PPOOptimizer during the update step.
@@ -310,6 +317,8 @@ class ActorNetwork(nn.Module):
             neighbor_states : (batch_size, K, 6)
             actions         : (batch_size, 4)  — actions that were taken during rollout
             neighbor_mask   : (batch_size, K) optional
+            active_dims     : number of leading action dims to include (see get_action).
+                              None = all action_dim dims.
 
         Returns:
             log_prob        : (batch_size,)    — log prob of actions under current policy
@@ -322,8 +331,9 @@ class ActorNetwork(nn.Module):
         action_std = torch.exp(action_log_std)
         dist = torch.distributions.Normal(action_mean, action_std)
 
-        log_prob = dist.log_prob(actions).sum(dim=-1)       # (batch_size,)
-        entropy  = dist.entropy().sum(dim=-1)               # (batch_size,)
+        d = self.action_dim if active_dims is None else active_dims
+        log_prob = dist.log_prob(actions)[:, :d].sum(dim=-1)  # (batch_size,)
+        entropy  = dist.entropy()[:, :d].sum(dim=-1)          # (batch_size,)
 
         return log_prob, entropy
 

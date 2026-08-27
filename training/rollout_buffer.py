@@ -211,6 +211,12 @@ class RolloutBuffer:
             (self.advantages[:T] - adv.mean()) / (adv.std() + 1e-8)
         )
 
+        # Clamp outliers post-normalization. Sparse +goal_reached_bonus
+        # transitions can sit 20-30 std above the typical return, so
+        # normalization alone rescales the outlier instead of taming it —
+        # a single such sample can dominate a minibatch's actor gradient.
+        self.advantages[:T] = self.advantages[:T].clamp(-5.0, 5.0)
+
     def get_minibatches(self, batch_size: int):
         """
         Yield shuffled minibatches for PPO's multiple update epochs.
