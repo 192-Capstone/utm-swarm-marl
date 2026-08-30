@@ -8,6 +8,21 @@
 
 ---
 
+## Changelog (Since Phase 2 Review 1)
+
+| Change                                                             | Reason                                                                                     |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| Action space fixed to always (4,) — yaw masked in Stage 1-2        | Network input layer cannot change shape between stages without re-initialization           |
+| Global state Stage 2+ updated from N×16 to N×17                    | 2 vertical LiDAR rays were unaccounted in original 4-quadrant compression                  |
+| 5th vertical quadrant added to LiDAR compression                   | min(up_ray, down_ray) now explicitly represented                                           |
+| Neighbor encoding changed from padding to attention module         | Scales naturally with H3 indexing, handles variable K without fixed K_max                  |
+| Control timestep decoupled from physics timestep via action repeat | MDP consistency maintained across training and evaluation                                  |
+| World size locked at 50×50m (Stage 1-3), 100×100m (Stage 4)        | Balances drone density, navigation time, and LiDAR relevance                               |
+| Object pooling mandatory for ScenarioManager                       | importMFNodeFromString repeated over 5000+ episodes causes memory leak and SPS degradation |
+| Phase 3 enhancement noted — LiDAR classification flags             | Distinguishes cooperative drones from unknown objects in LiDAR hits                        |
+
+----
+
 ## 1. Coordinate System & Units
 
 |Property|Value|
@@ -66,15 +81,15 @@ LiDAR rays use a 3D coverage pattern, not a flat horizontal disc, to provide ful
 
 ### Observation Vector Structure
 
-|Component|Values|Reason|
-|---|---|---|
-|Own position (x, y, z)|3|Self-localization|
-|Own velocity (vx, vy, vz)|3|Current motion state|
-|Own orientation (roll, pitch, yaw)|3|Attitude awareness|
-|Relative goal vector (gx-x, gy-y, gz-z)|3|Navigation direction toward goal|
-|Goal distance scalar|1|Navigation progress signal|
-|LiDAR rays (14 directional)|14|3D obstacle awareness|
-|K neighbors × 6 (relative pos + vel)|K×6|Drone awareness for collision avoidance|
+| Component                               | Values | Reason                                  |
+| --------------------------------------- | ------ | --------------------------------------- |
+| Own position (x, y, z)                  | 3      | Self-localization                       |
+| Own velocity (vx, vy, vz)               | 3      | Current motion state                    |
+| Own orientation (roll, pitch, yaw)      | 3      | Attitude awareness                      |
+| Relative goal vector (gx-x, gy-y, gz-z) | 3      | Navigation direction toward goal        |
+| Goal distance scalar                    | 1      | Navigation progress signal              |
+| LiDAR rays (14 directional)             | 14     | 3D obstacle awareness                   |
+| K neighbors × 6 (relative pos + vel)    | K×6    | Drone awareness for collision avoidance |
 
 **Fixed component total: 27 + K×6**
 
@@ -116,13 +131,13 @@ LiDAR is summarized into a 4-quadrant format per drone rather than including all
 
 ### Global State Vector Structure (Stage 2+)
 
-|Component|Per Drone|Total|Reason|
-|---|---|---|---|
-|Absolute position (x, y, z)|3|N×3|Full swarm spatial picture|
-|Absolute velocity (vx, vy, vz)|3|N×3|Full swarm motion state|
-|Orientation (roll, pitch, yaw)|3|N×3|Full swarm attitude|
-|Goal position (gx, gy, gz)|3|N×3|Critic understands each drone's intent|
-|4-quadrant LiDAR summary|4|N×4|Directional obstacle context per drone|
+| Component                      | Per Drone | Total | Reason                                 |
+| ------------------------------ | --------- | ----- | -------------------------------------- |
+| Absolute position (x, y, z)    | 3         | N×3   | Full swarm spatial picture             |
+| Absolute velocity (vx, vy, vz) | 3         | N×3   | Full swarm motion state                |
+| Orientation (roll, pitch, yaw) | 3         | N×3   | Full swarm attitude                    |
+| Goal position (gx, gy, gz)     | 3         | N×3   | Critic understands each drone's intent |
+| 4-quadrant LiDAR summary       | 5         | N×4   | Directional obstacle context per drone |
 
 **Total: N×16**
 

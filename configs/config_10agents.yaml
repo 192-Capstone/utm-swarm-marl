@@ -1,0 +1,150 @@
+environment:
+  n_agents: 10
+  max_steps: 1000
+  v_max: 2.0
+  omega_max: 1.0
+  world_size: 100
+  goal_threshold: 0.5
+  collision_radius: 0.2
+  settle_speed: 0.15
+  settle_steps: 31
+  control_timestep: 0.032
+  training:
+    physics_timestep: 0.016
+    action_repeat: 2
+  evaluation:
+    physics_timestep: 0.008
+    action_repeat: 4
+observation:
+  local_obs_dim: 27
+  neighbor_obs_dim: 6
+  neighbor_context_dim: 32
+  total_obs_dim: 59
+  k_neighbors_max: 5
+  n_lidar_rays: 14
+  n_lidar_quadrants: 5
+  neighbor_encoding: attention
+  neighbor_selection: knn
+network:
+  hidden_dim: 256
+  n_hidden_layers: 2
+  activation: tanh
+  action_dim: 4
+  attention_heads: 1
+  attention_dim: 32
+training:
+  gamma: 0.99
+  lambda_gae: 0.95
+  clip_epsilon: 0.2
+  actor_lr: 0.0001
+  critic_lr: 0.0003
+  n_epochs: 10
+  batch_size: 1024
+  buffer_size: 2048
+  max_grad_norm: 0.25
+  target_kl: 0.03
+  entropy_coef: 0.003
+  value_loss_coef: 0.5
+  save_interval: 100
+  eval_interval: 100
+  eval_episodes: 10
+  total_episodes: 5000
+  device: cuda
+  num_workers: 1
+reward:
+  goal_progress_scale: 5.0
+  goal_reached_bonus: 100.0
+  obstacle_collision_penalty: -50.0
+  drone_collision_penalty: -50.0
+  step_penalty: -0.01
+  lambda_smooth: 0.001
+  lambda_prox: 0.5
+  r_danger: 1.5
+  lambda_brake: 0.0
+  lambda_smooth: 0.0
+  goal_entry_bonus: 10.0
+  settle_counter_scale: 2.0
+goal_curriculum:
+  start_dist: 2.0
+  end_dist: 20.0
+  step_dist: 1.0
+  advance_sr: 0.3
+  window: 50
+curriculum:
+  progression_window: 100
+  progression_threshold: 0.8
+  stages:
+    1:
+      name: empty_sandbox
+      description: "No obstacles \u2014 learn basic navigation first"
+      action_dim_active: 3
+      global_state_dim: 12
+      world_size: 50
+      obstacles: false
+      obstacle_count: 0
+      domain_randomization: none
+      success_threshold: 0.8
+    2:
+      name: sparse_obstacles
+      description: "Random sparse obstacles \u2014 learn obstacle avoidance"
+      action_dim_active: 3
+      global_state_dim: 17
+      world_size: 50
+      obstacles: true
+      obstacle_count:
+      - 3
+      - 8
+      domain_randomization: mild_noise
+      success_threshold: 0.8
+    3:
+      name: urban_grid
+      description: "Dense urban environment \u2014 full action space with yaw"
+      action_dim_active: 4
+      global_state_dim: 17
+      world_size: 50
+      obstacles: true
+      obstacle_count:
+      - 10
+      - 20
+      domain_randomization: noise_and_wind
+      success_threshold: 0.8
+    4:
+      name: osm_validation
+      description: "Real OSM city map \u2014 final validation before any real-world\
+        \ claims"
+      action_dim_active: 4
+      global_state_dim: 17
+      world_size: 100
+      obstacles: true
+      domain_randomization: full
+      success_threshold: 0.7
+domain_randomization:
+  mild_noise:
+    position_noise_std: 0.05
+    imu_noise_std: 0.01
+    lidar_noise_std: 0.02
+  noise_and_wind:
+    position_noise_std: 0.1
+    imu_noise_std: 0.02
+    lidar_noise_std: 0.05
+    wind_force_max: 0.5
+  full:
+    position_noise_std: 0.15
+    imu_noise_std: 0.05
+    lidar_noise_std: 0.1
+    wind_force_max: 1.0
+    actuation_latency_steps:
+    - 1
+    - 2
+scenario_manager:
+  obstacle_pool_size: 50
+  spawn_margin: 3.0
+  goal_margin: 2.0
+  min_spawn_separation: 3.0
+logging:
+  wandb_project: utm-swarm-marl
+  wandb_entity: null
+  log_interval: 10
+  log_reward_components: true
+  checkpoint_dir: checkpoints/
+  best_checkpoint: checkpoints/best_policy.pth

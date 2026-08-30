@@ -1,0 +1,8 @@
+Decentralized Brain: Executes flight commands using only onboard sensors (no central server dependency).
+
+The "Peripheral Vision" (Attention): Dynamically calculates threat weights, ignoring safe drones and focusing 100% on collision-course drones.
+
+Dual Flight Modes: 
+Training Mode: Adds stochastic noise to explore new maneuvers.
+
+Deployment Mode: Executes deterministic, mathematically optimal paths.
