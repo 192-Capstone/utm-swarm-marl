@@ -36,6 +36,11 @@ class SwarmEnv:
         self.goal_threshold   = config['environment'].get('goal_threshold', 0.5)
         # collision_radius falls back to 0.2 to match RewardEngine's default
         self.collision_radius = config['environment'].get('collision_radius', 0.2)
+        # Settling: a drone must be inside goal_threshold AND slower than
+        # settle_speed for settle_steps CONSECUTIVE steps before it latches
+        # as "reached" — prevents learning to fly through the goal at speed.
+        self.settle_speed     = config['environment'].get('settle_speed', 0.15)
+        self.settle_steps     = config['environment'].get('settle_steps', 31)
         self.min_spawn_sep    = config.get('scenario_manager', {}).get('min_spawn_separation', 5.0)
         self.curriculum_stage = 1
 
@@ -126,6 +131,9 @@ class SwarmEnv:
         self.prev_dist    = np.linalg.norm(positions - self.goals, axis=1)
         self.prev_actions = np.zeros((self.n_agents, 4), dtype=np.float32)
         self.drone_reached_goal = [False] * self.n_agents
+        self.settle_counter = np.zeros(self.n_agents, dtype=np.int64)
+        self.best_settle_counter = np.zeros(self.n_agents, dtype=np.int64)
+        self.ever_entered_goal = [False] * self.n_agents
 
         # Track closest approach to goal — diagnoses "almost succeeded" vs
         # "never made progress" for episodes that don't reach the goal
@@ -161,34 +169,72 @@ class SwarmEnv:
         actions_arr = np.array([actions_dict[f'drone_{i}'] for i in range(self.n_agents)],
                                dtype=np.float32)
 
-        # 4. track which drones JUST reached their goal (one-time flag)
+        # 4. Settling: a drone must be inside goal_threshold AND slower than
+        # settle_speed for settle_steps CONSECUTIVE steps before it latches
+        # as "reached". Leaving the radius or speeding back up resets its
+        # counter — this is what forces the policy to actually stop instead
+        # of flying through the goal region once and moving on.
+        speed = np.array([np.linalg.norm(raw[f'drone_{i}']['velocity'])
+                          for i in range(self.n_agents)], dtype=np.float32)
+        settled_now = (curr_dist < self.goal_threshold) & (speed < self.settle_speed)
+        self.settle_counter = np.where(settled_now, self.settle_counter + 1, 0)
+
         goal_just_reached = [False] * self.n_agents
         for i in range(self.n_agents):
-            if not self.drone_reached_goal[i] and curr_dist[i] < self.goal_threshold:
+            if not self.drone_reached_goal[i] and self.settle_counter[i] >= self.settle_steps:
                 goal_just_reached[i] = True
                 self.drone_reached_goal[i] = True
 
+        # Detect first-time goal entry
+        goal_entry_just = [False] * self.n_agents
+        for i in range(self.n_agents):
+            if not self.ever_entered_goal[i] and curr_dist[i] < self.goal_threshold:
+                goal_entry_just[i] = True
+                self.ever_entered_goal[i] = True
+
+        # Settle-counter progress uses a highwater mark (never decreases within
+        # an episode) so the reward is bounded at settle_counter_scale ×
+        # settle_steps per drone. Without this, a drone that repeatedly climbs
+        # partway up the counter and resets (e.g. oscillating at the goal
+        # boundary) farms reward every climb — the same class of exploit as
+        # the earlier per-step settle_shaping bug.
+        capped_counter = np.minimum(self.settle_counter, self.settle_steps)
+        new_best = np.maximum(self.best_settle_counter, capped_counter)
+        settle_counter_delta = new_best - self.best_settle_counter
+        self.best_settle_counter = new_best
+
         reward_data = {
-            'prev_dist':         self.prev_dist,
-            'curr_dist':         curr_dist,
-            'collision':         obstacle_collision,
-            'drone_distances':   drone_distances,
-            'action':            actions_arr,
-            'prev_action':       self.prev_actions,
-            'goal_just_reached': goal_just_reached,
-            'drone_reached_goal': list(self.drone_reached_goal),
+            'prev_dist':             self.prev_dist,
+            'curr_dist':             curr_dist,
+            'collision':             obstacle_collision,
+            'drone_distances':       drone_distances,
+            'action':                actions_arr,
+            'prev_action':           self.prev_actions,
+            'speed':                 speed,
+            'goal_just_reached':     goal_just_reached,
+            'drone_reached_goal':    list(self.drone_reached_goal),
+            'goal_entry_just':       goal_entry_just,
+            'settle_counter_delta':  settle_counter_delta,
         }
         rewards = self.reward_engine.compute_rewards(reward_data)
         rewards_dict = {f'drone_{i}': float(rewards['total'][i])
                         for i in range(self.n_agents)}
 
         # 5. termination (collision / all-goals-reached / timeout)
-        # Use latched drone_reached_goal flags: a drone that reached its
-        # goal at ANY point counts, not just drones inside the radius
-        # right now. This avoids penalising successful navigation that
-        # overshoots or drifts after arrival.
+        # Use latched drone_reached_goal flags: a drone counts once it has
+        # SETTLED (inside goal_threshold, under settle_speed, held for
+        # settle_steps — see step 4 above), not on first contact. This is
+        # what keeps a drone from "succeeding" by flying through the goal
+        # at speed and drifting off afterward.
         done, reason = self.episode_manager.check_done(
             positions.tolist(), self.goals.tolist(), drone_collision)
+        # EpisodeManager's own "success" path checks instantaneous position
+        # only (no speed/settling) — it would let a swarm that happens to be
+        # simultaneously inside every goal radius at full speed count as a
+        # success, bypassing the settle logic above entirely. Only accept
+        # collision/timeout from it; success is decided by the settle latch.
+        if done and reason == 'success':
+            done, reason = False, None
         if not done and all(self.drone_reached_goal):
             done, reason = True, 'success'
         if done:
@@ -199,10 +245,51 @@ class SwarmEnv:
         self.prev_actions = actions_arr
 
         drones_at_goal = sum(self.drone_reached_goal)
+        drones_inside = int(np.sum(curr_dist < self.goal_threshold))
+
+        # Minimum inter-drone separation this step — None (not inf/0) for a
+        # single agent, where the concept doesn't apply. drone_distances[i]
+        # is empty when n_agents==1, so min() over all pairs would error;
+        # guard explicitly rather than let evaluators improvise a sentinel.
+        if self.n_agents >= 2:
+            all_pairwise = [d for dd in drone_distances for d in dd]
+            min_inter_drone_distance = float(min(all_pairwise)) if all_pairwise else None
+        else:
+            min_inter_drone_distance = None
+
         info = {'success': reason == 'success', 'reason': reason,
                 'drones_at_goal': drones_at_goal,
-                'min_dist_to_goal': float(self.min_dist_ever.mean()),
-                'initial_dist_to_goal': float(self.initial_dist.mean())}
+                # Per-agent LATCHED success (settled for settle_steps), not
+                # merely "inside goal_threshold on this step" — this is what
+                # per-agent success rate must be computed from.
+                'drone_reached_goal':       list(self.drone_reached_goal),
+                'drone_collision':          list(drone_collision),
+                'obstacle_collision':       list(obstacle_collision),
+                'min_dist_to_goal':         float(self.min_dist_ever.mean()),
+                'per_agent_min_dist':       self.min_dist_ever.tolist(),
+                'initial_dist_to_goal':     float(self.initial_dist.mean()),
+                'drones_inside_goal':       drones_inside,
+                'mean_speed':               float(speed.mean()),
+                'per_agent_speed':          speed.tolist(),
+                'max_settle_counter':       int(self.settle_counter.max()),
+                'per_agent_settle_counter': self.settle_counter.tolist(),
+                # Clamped to [0, 1] per agent — settle_counter keeps
+                # incrementing past settle_steps for an already-latched
+                # agent waiting on its teammates (the counter update above
+                # doesn't freeze once a drone reaches drone_reached_goal),
+                # so an unclamped fraction could exceed 1.0 (observed up to
+                # 1.41 in spring-vortex-58's 3-agent eval logs). Collective
+                # metric uses MIN across agents, not max: the team's
+                # progress toward full settlement is bottlenecked by its
+                # least-progressed agent, not led by its most-progressed one.
+                'settle_fraction':          float(np.min(np.minimum(
+                    self.settle_counter / self.settle_steps, 1.0))),
+                'per_agent_settle_fraction': np.minimum(
+                    self.settle_counter / self.settle_steps, 1.0).tolist(),
+                'min_inter_drone_distance': min_inter_drone_distance,
+                'reward_components': {
+                    k: float(v.sum()) for k, v in rewards.items() if k != 'total'
+                }}
         return self._build_obs(raw), rewards_dict, bool(done), info
 
     def _build_obs(self, raw):

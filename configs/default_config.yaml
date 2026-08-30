@@ -20,6 +20,14 @@ environment:
   goal_threshold: 0.5          # distance in meters at which goal is considered reached
   collision_radius: 0.2        # drone-drone collision distance in meters (body half-extent ~0.15m)
 
+  # --- Settling (arrive-and-stop, not just pass-through) ---
+  # A drone only latches as "reached" after it is inside goal_threshold AND
+  # slower than settle_speed for settle_steps CONSECUTIVE steps. Without this,
+  # first-contact latching lets the policy learn to fly through the goal at
+  # full speed rather than actually stopping there.
+  settle_speed: 0.15           # m/s — must be slower than this to count as settled
+  settle_steps: 31             # consecutive steps required (~1s @ 31.25Hz control rate)
+
   # --- Timestep Design ---
   # Control frequency and physics frequency are DELIBERATELY DECOUPLED.
   # The AI always decides at 32ms — this never changes across training, evaluation, or real deployment.
@@ -157,7 +165,8 @@ training:
 
   # --- Training Schedule ---
   save_interval: 100           # save checkpoint every N episodes
-  eval_interval: 500           # run evaluation every N episodes — expensive so less frequent
+  eval_interval: 100           # run deterministic evaluation every N training episodes
+  eval_episodes: 10            # number of eval episodes per evaluation round
   total_episodes: 5000         # training budget — train until convergence, this is a ceiling not a target
                                # at ~3 min per episode on RTX 4500 Ada = ~250 hours total budget
                                # Stage 1 will be much faster (empty world), Stage 3-4 slower (complex world)
@@ -175,7 +184,7 @@ training:
 # -----------------------------------------------------------------------------
 reward:
   # --- Goal Rewards ---
-  goal_progress_scale: 1.0     # [PENDING] scales the per-step Δ(goal_distance) reward
+  goal_progress_scale: 5.0     # scaled up from 1.0 — at 1.0, smoothness penalty dominated
                                # if drone is not moving toward goal, reduce this first
 
   goal_reached_bonus: 100.0    # [PENDING] large one-time bonus when drone reaches goal within threshold
@@ -195,7 +204,7 @@ reward:
   # --- Quadrotor Physics Penalties ---
   # These are critical for sim-to-real transfer — do not remove
 
-  lambda_smooth: 0.02          # [PENDING] smoothness penalty weight (was 0.1 — too harsh for Stage 1)
+  lambda_smooth: 0.0           # disabled for Stage 1 — reintroduce after navigation + settle works
                                # penalises: -lambda_smooth × Σ(a_t - a_{t-1})²
                                # prevents violent action jerks that break PID and damage real rotors
 
@@ -206,6 +215,27 @@ reward:
   r_danger: 1.5                # [PENDING] danger zone radius in meters — starting value from data contract
                                # accounts for aerodynamic downwash — propeller wash destabilizes nearby drones
                                # before physical contact occurs
+
+  # --- Braking (teaches deceleration near the goal, pairs with settling above) ---
+  lambda_brake: 0.0              # disabled — cumulative negative brake penalty made goal entry
+                               # worse than staying outside in runs 34-36. Reintroduce after
+                               # navigation and settlement are reliable.
+
+  goal_entry_bonus: 10.0        # one-time bonus when drone first enters goal_threshold
+  settle_counter_scale: 2.0     # reward per new consecutive settle step (capped at 2×31=62/drone)
+
+  # --- Settle shaping (continuous gradient toward near-and-slow) ---
+  # The 31-step dwell gate can't fire during stochastic training (exploration
+  # noise at the std floor makes P(speed<0.15 for 31 steps) ≈ 0). This shaped
+  # reward gives the policy gradient toward decelerating near the goal even
+  # though the hard success condition never triggers during training rollouts.
+  settle_shape_scale: 10.0      # bounded improvement shaping — rewards only the first
+                               # time each drone improves its settle quality (near×slow).
+                               # Total capped at 10 per drone (30 for 3 drones) vs
+                               # terminal bonus of 300. Cannot be farmed by hovering.
+  slow_shaping_speed: 0.5       # m/s — shaping ramps as speed drops below this
+                               # deliberately above settle_speed (0.15) so the policy
+                               # gets reward for slowing down before the hard threshold
 
 
 # -----------------------------------------------------------------------------

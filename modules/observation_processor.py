@@ -60,9 +60,24 @@ class RunningNormalizer:
         self.epsilon = epsilon
         self.min_count = min_count
         self.clip    = clip
+        self._frozen = False
+
+    def freeze(self):
+        """Stop accumulating new statistics. Use when evaluating a trained
+        checkpoint whose normalizer stats were restored from training — the
+        actor's weights expect a specific fixed scale, and letting eval
+        observations keep updating mean/var drifts away from it, changing
+        the actor's effective inputs mid-evaluation."""
+        self._frozen = True
+
+    def unfreeze(self):
+        self._frozen = False
 
     def update(self, x: np.ndarray):
-        """Update running stats with a batch of observations (B, dim)."""
+        """Update running stats with a batch of observations (B, dim).
+        No-op while frozen (see freeze())."""
+        if self._frozen:
+            return
         batch_mean  = x.mean(axis=0)
         batch_var   = x.var(axis=0)
         batch_count = x.shape[0]

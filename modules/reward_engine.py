@@ -37,6 +37,18 @@ class RewardEngine:
         # Proximity penalty
         self.lambda_prox = r["lambda_prox"]
         self.r_danger = r["r_danger"]
+
+        # Braking penalty — teaches deceleration near the goal instead of
+        # flying through at full speed. Defaults to 0 (no-op) so callers that
+        # don't supply these keys (e.g. reward_validation.py's minimal config)
+        # keep working unchanged.
+        self.lambda_brake = r.get("lambda_brake", 0.0)
+
+        self.settle_speed = env.get("settle_speed", 0.15)
+        self.settle_shape_scale = r.get("settle_shape_scale", 10.0)
+        self.slow_shaping_speed = r.get("slow_shaping_speed", 0.5)
+        self.goal_entry_bonus = r.get("goal_entry_bonus", 10.0)
+        self.settle_counter_scale = r.get("settle_counter_scale", 2.0)
     
     def compute_rewards(self, data):
         """
@@ -50,22 +62,26 @@ class RewardEngine:
                 - drone_distances: (batch_size, n_pairs) - distances to other drones
                 - action: (batch_size, 4) - current action
                 - prev_action: (batch_size, 4) - previous action
-                
+                - speed: (batch_size,) - current drone speed (optional, defaults to 0)
+
         Returns:
             rewards: Dictionary with arrays of shape (batch_size,) for each component
         """
         batch_size = len(data["curr_dist"])
-        
+        speed = data.get("speed", np.zeros(batch_size))
+
         # Initialize reward arrays
         rewards = {
             "goal_progress": np.zeros(batch_size),
             "goal_reached": np.zeros(batch_size),
+            "goal_entry": np.zeros(batch_size),
             "goal_hold": np.zeros(batch_size),
             "obstacle_collision": np.zeros(batch_size),
             "drone_collision": np.zeros(batch_size),
             "step_penalty": np.zeros(batch_size),
             "smoothness_penalty": np.zeros(batch_size),
             "proximity_penalty": np.zeros(batch_size),
+            "settle_counter_progress": np.zeros(batch_size),
             "total": np.zeros(batch_size)
         }
         
@@ -80,7 +96,12 @@ class RewardEngine:
             if data.get("goal_just_reached", [False] * batch_size)[i]:
                 rewards["goal_reached"][i] = self.goal_reached_bonus
 
-            # 2b. Goal Hold — small per-step reward for staying near goal
+            # 2b. Goal Entry Bonus — one-time reward for first entry into goal zone
+            goal_entry_just = data.get("goal_entry_just", [False] * batch_size)
+            if goal_entry_just[i]:
+                rewards["goal_entry"][i] = self.goal_entry_bonus
+
+            # 2c. Goal Hold — small per-step reward for staying near goal
             # after arrival, so the policy learns to stop rather than drift
             reached = data.get("drone_reached_goal", [False] * batch_size)
             if reached[i] and data["curr_dist"][i] < self.goal_threshold * 2:
@@ -114,17 +135,29 @@ class RewardEngine:
             #     prox_penalty = prox_penalty / len(data["drone_distances"][i])
             
             rewards["proximity_penalty"][i] = -self.lambda_prox * prox_penalty
-            
-            # 8. Total Reward (weighted sum)
+
+            # 8. Settle Counter Progress — rewards highwater-mark improvement
+            # in consecutive settle steps. settle_counter_delta is computed by
+            # SwarmEnv as max(0, new_best - old_best), so it is non-negative
+            # and monotonically bounded at settle_steps per drone per episode
+            # (i.e. settle_counter_scale × 31 = 62). This is what prevents an
+            # oscillating drone from farming reward by repeatedly climbing
+            # partway up the counter and resetting.
+            counter_delta = data.get("settle_counter_delta", np.zeros(batch_size))[i]
+            rewards["settle_counter_progress"][i] = self.settle_counter_scale * counter_delta
+
+            # 9. Total Reward (weighted sum)
             rewards["total"][i] = sum([
                 rewards["goal_progress"][i],
                 rewards["goal_reached"][i],
+                rewards["goal_entry"][i],
                 rewards["goal_hold"][i],
                 rewards["obstacle_collision"][i],
                 rewards["drone_collision"][i],
                 rewards["step_penalty"][i],
                 rewards["smoothness_penalty"][i],
-                rewards["proximity_penalty"][i]
+                rewards["proximity_penalty"][i],
+                rewards["settle_counter_progress"][i],
             ])
         
         return rewards
@@ -143,7 +176,8 @@ class RewardEngine:
             "collision": [data["collision"]],
             "drone_distances": [data["drone_distances"]],
             "action": [data["action"]],
-            "prev_action": [data["prev_action"]]
+            "prev_action": [data["prev_action"]],
+            "speed": [data.get("speed", 0.0)]
         }
         
         rewards_batch = self.compute_rewards(batch_data)

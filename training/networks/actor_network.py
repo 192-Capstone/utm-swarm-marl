@@ -185,8 +185,47 @@ class ActorNetwork(nn.Module):
         # Initialized to 0 → std = exp(0) = 1.0 → reasonable initial exploration
         self.action_log_std = nn.Parameter(torch.zeros(self.action_dim))
 
+        # Clamp bounds for log_std. Both bounds are mutable — MAPPOTrainer
+        # can anneal them over training via set_log_std_ceiling/_floor to
+        # force exploration noise down on a schedule, independent of what
+        # the learned parameter's own gradient does. Without this, log_std
+        # can sit near 0 (std≈1.0) for the whole run because reducing
+        # entropy doesn't reliably reduce PPO's loss when successful settle
+        # rollouts are rare — the sole gradient signal for shrinking log_std
+        # is too weak to compete with high-noise runs.
+        #
+        # Default floor -3.0 (std≈0.05) is the level at which 31-step
+        # settling first becomes probabilistically feasible during
+        # stochastic training (see forward() docstring). But a second,
+        # optional squeeze BELOW -3.0 matters too: with std≈0.05, a seed can
+        # learn a mean action that stops just OUTSIDE goal_threshold and
+        # relies on residual sampling noise to occasionally nudge it across
+        # the boundary — a policy that only works stochastically, not
+        # deterministically (see run honest-thunder-47, seed 1: 93% training
+        # success, 0% deterministic eval, mean_min_dist≈0.53m). Squeezing
+        # the floor further after settlement first emerges removes that
+        # noise crutch and forces PPO to place the MEAN action inside the
+        # goal with real margin.
+        self.log_std_floor   = -3.0
+        self.log_std_ceiling = 0.5
+
         # --- Initialize weights ---
         self._initialize_weights()
+
+    def set_log_std_floor(self, floor: float):
+        """External hook for a second exploration-tightening phase (see
+        MAPPOTrainer._update_exploration_schedule). Symmetric to
+        set_log_std_ceiling — only changes the clamp floor applied in
+        forward(), never the learned parameter itself."""
+        self.log_std_floor = float(floor)
+
+    def set_log_std_ceiling(self, ceiling: float):
+        """External hook for an exploration-annealing schedule (see
+        MAPPOTrainer._update_exploration_schedule). Does not touch the
+        learned action_log_std parameter itself — only the clamp ceiling
+        applied to it in forward(), so annealing is fully reversible and
+        never destroys the learned value outright."""
+        self.log_std_ceiling = float(ceiling)
 
     def _initialize_weights(self):
         """
@@ -243,10 +282,17 @@ class ActorNetwork(nn.Module):
         # --- Step 5: Output action mean ---
         action_mean = self.action_mean_head(features)      # (batch_size, 4)
 
-        # Clamp log_std to prevent numerical instability:
-        # [-2, 0.5] → std in [0.135, 1.65] — enough exploration range,
-        # but can't collapse to near-zero (NaN) or explode
-        clamped_log_std = torch.clamp(self.action_log_std, -2.0, 0.5)
+        # Clamp log_std to prevent numerical instability. Floor fixed at
+        # -3.0 so 3D speed with zero-mean action ≈ 0.097 m/s — at this floor
+        # P(speed<0.15) ≈ 97%, making 31-step settling ≈ 41% probable per
+        # window (previous floor of -2.0 made this effectively impossible).
+        # Ceiling is mutable (see set_log_std_ceiling) so training can anneal
+        # exploration down over time instead of relying solely on the
+        # learned parameter's own gradient, which is too weak a signal when
+        # successful settle rollouts are rare during early training.
+        clamped_log_std = torch.clamp(
+            self.action_log_std, self.log_std_floor, self.log_std_ceiling
+        )
         action_log_std = clamped_log_std.expand_as(action_mean)
                                                             # (batch_size, 4)
 

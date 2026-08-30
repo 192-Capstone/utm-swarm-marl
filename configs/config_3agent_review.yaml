@@ -1,0 +1,178 @@
+# =============================================================================
+# config_3agent_review.yaml
+# Three-drone strict-settlement review run.
+# =============================================================================
+# Base: default_config.yaml already has n_agents=3 and the corrected reward
+# function validated on 1-agent settlement this session (no brake-cliff, one-
+# time entry bonus, bounded settle-counter-progress shaping). This config
+# layers on the pieces default_config.yaml is still missing for a fast,
+# trustworthy review run:
+#   - exploration annealing schedule (was never added to default_config.yaml)
+#   - early stopping (same reasoning as config_1agent_settle.yaml)
+#   - review-scale training budget instead of the 5000-episode production ceiling
+#   - a dedicated checkpoint_dir so this never collides with other runs
+#   - goal distance frozen at 2.0m (matches the validated 1-agent setup —
+#     comparable difficulty, no curriculum-timing confound)
+#
+# Removed: settle_shape_scale / slow_shaping_speed — dead config left over
+# from the old per-step settle_shaping mechanism, fully replaced this session
+# by the bounded settle_counter_progress highwater-mark shaping. RewardEngine
+# reads these keys but never uses them past initialization; harmless to leave
+# but confusing, so dropped here.
+#
+# New this run: n_agents=3 means multi-agent-specific risks apply that never
+# existed in the 1-agent runs — credit assignment across 3 independent settle
+# latches, and the episode only succeeds once ALL THREE have settled
+# simultaneously. Extended eval_checkpoint.py / _run_eval() metrics (per-
+# agent success, collision rate, min inter-drone separation) exist
+# specifically to diagnose this if training struggles — see failure-mode
+# guide at the bottom of this file.
+# =============================================================================
+
+environment:
+  n_agents: 3
+  max_steps: 500                # 2m goal + 3-agent coordination needs more
+                                  # room than 1-agent's 300; still bounded
+  v_max: 2.0
+  omega_max: 1.0
+  world_size: 50
+  goal_threshold: 0.5
+  collision_radius: 0.2
+  settle_speed: 0.15
+  settle_steps: 31
+  control_timestep: 0.032
+  training:
+    physics_timestep: 0.016
+    action_repeat: 2
+  evaluation:
+    physics_timestep: 0.008
+    action_repeat: 4
+
+observation:
+  local_obs_dim: 27
+  neighbor_obs_dim: 6
+  neighbor_context_dim: 32
+  total_obs_dim: 59
+  k_neighbors_max: 5
+  n_lidar_rays: 14
+  n_lidar_quadrants: 5
+  neighbor_encoding: attention
+  neighbor_selection: knn
+
+network:
+  hidden_dim: 256
+  n_hidden_layers: 2
+  activation: tanh
+  action_dim: 4
+  attention_heads: 1
+  attention_dim: 32
+
+training:
+  gamma: 0.99
+  lambda_gae: 0.95
+  clip_epsilon: 0.2
+  actor_lr: 0.0001
+  critic_lr: 0.0003
+  n_epochs: 10
+  batch_size: 1024
+  buffer_size: 2048
+  max_grad_norm: 0.25
+  target_kl: 0.03
+  entropy_coef: 0.003
+  value_loss_coef: 0.5
+  save_interval: 100
+  eval_interval: 50             # finer granularity than default's 100 —
+                                  # review timeline needs early visibility
+  eval_episodes: 20             # matches 1-agent setup for a real sample size
+  total_episodes: 700           # ceiling, not a target — early stopping should
+                                  # cut this short if settlement emerges cleanly
+  device: cuda
+  num_workers: 1
+
+  early_stop_success_rate: 0.8
+  early_stop_patience: 2
+  early_stop_min_episode: 450   # >= floor_anneal_end below, so the streak can
+                                  # only accumulate after the full exploration
+                                  # squeeze has actually completed
+
+reward:
+  goal_progress_scale: 5.0
+  goal_reached_bonus: 100.0
+  obstacle_collision_penalty: -50.0
+  drone_collision_penalty: -50.0
+  step_penalty: -0.01
+  lambda_smooth: 0.0
+  lambda_prox: 0.5
+  r_danger: 1.5
+  lambda_brake: 0.0
+  goal_entry_bonus: 10.0
+  settle_counter_scale: 2.0
+
+# Exploration annealing — ported from config_1agent_settle.yaml's validated
+# two-phase schedule, timeline scaled up for the harder 3-agent task (roughly
+# 1.5x the episode counts that worked for 1 agent, since 3 independent
+# settle latches need more experience to all converge).
+exploration:
+  log_std_init: 0.5
+  log_std_final: -3.0
+  anneal_start_episode: 75
+  anneal_end_episode: 300
+
+  log_std_floor_final: -4.6     # std ≈ 0.01 — same target as the validated
+                                  # 1-agent squeeze, removes the residual-
+                                  # noise crutch for the mean policy here too
+  floor_anneal_start_episode: 300
+  floor_anneal_end_episode: 450
+
+goal_curriculum:
+  start_dist: 2.0
+  end_dist: 2.0                 # frozen — same fixed-difficulty approach
+  step_dist: 0.0                # validated for 1-agent; avoid conflating
+  advance_sr: 0.3                # "did coordination improve" with "did the
+  window: 50                     # task get harder mid-run"
+
+curriculum:
+  progression_window: 100
+  progression_threshold: 0.8
+  stages:
+    1:
+      name: empty_sandbox
+      description: "No obstacles — learn basic navigation first"
+      action_dim_active: 3
+      global_state_dim: 12
+      world_size: 50
+      obstacles: false
+      obstacle_count: 0
+      domain_randomization: none
+      success_threshold: 0.8
+
+domain_randomization:
+  mild_noise:
+    position_noise_std: 0.05
+    imu_noise_std: 0.01
+    lidar_noise_std: 0.02
+
+scenario_manager:
+  obstacle_pool_size: 50
+  spawn_margin: 3.0
+  goal_margin: 2.0
+  min_spawn_separation: 5.0      # keeps the 3 drones spawned well apart —
+                                   # matters more here than for 1-agent runs
+
+logging:
+  wandb_project: utm-swarm-marl
+  wandb_entity: null
+  log_interval: 10
+  log_reward_components: true
+  checkpoint_dir: checkpoints_review_3agent/
+  best_checkpoint: checkpoints_review_3agent/best_policy.pth
+
+# -----------------------------------------------------------------------------
+# Failure-mode guide (using the metrics eval_checkpoint.py / _run_eval() now report)
+# -----------------------------------------------------------------------------
+# eval/all_entered_goal low                        -> navigation/coordination problem
+# eval/all_entered_goal high, settle_fraction low   -> braking/dwell problem (per-agent)
+# eval/drone_collision_rate high                    -> separation/proximity problem
+# train_norm.count != eval_norm.count, or frozen=False -> evaluator regression, not a policy bug
+# agent_i_success_rate uneven across agents         -> credit-assignment asymmetry,
+#                                                       not necessarily a reward bug

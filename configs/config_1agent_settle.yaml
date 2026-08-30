@@ -1,0 +1,177 @@
+# =============================================================================
+# config_1agent_settle.yaml
+# One-drone, strict-settlement PPO learning test.
+# =============================================================================
+# Purpose: config_1agent_smoke.yaml (run daily-snowflake-38) proved PPO can
+# learn basic goal-directed navigation from scratch through the real
+# observation/action/PyBullet pathway — 85% deterministic entry-only success,
+# two consecutive evals ≥80%, mean_min_dist < 0.5m, goal distance held fixed
+# at 2.0m throughout.
+#
+# This config restores the REAL settle condition (31 consecutive steps under
+# 0.15 m/s inside goal_threshold) on top of that same validated navigation
+# setup. It isolates one new question:
+#
+#   Can a navigation-capable actor learn to enter, decelerate, and remain
+#   settled for 31 consecutive steps?
+#
+# Everything else stays frozen from the passing smoke test: one drone, fixed
+# 2m goal distance, same PPO hyperparameters, same observation/action
+# pathway, no braking penalty, no smoothness penalty, no multi-agent
+# coordination. Only settle_speed/settle_steps and settle_counter_scale
+# change back to production values.
+# =============================================================================
+
+environment:
+  n_agents: 1
+  max_steps: 300                # same margin as the smoke test — 2m approach
+                                  # (~20-40 steps) + 31-step hold fits comfortably
+  v_max: 2.0
+  omega_max: 1.0
+  world_size: 50
+  goal_threshold: 0.5
+  collision_radius: 0.2
+  settle_speed: 0.15             # RESTORED — real settle condition
+  settle_steps: 31               # RESTORED — real settle condition
+  control_timestep: 0.032
+  training:
+    physics_timestep: 0.016
+    action_repeat: 2
+  evaluation:
+    physics_timestep: 0.008
+    action_repeat: 4
+
+observation:
+  local_obs_dim: 27
+  neighbor_obs_dim: 6
+  neighbor_context_dim: 32
+  total_obs_dim: 59
+  k_neighbors_max: 5
+  n_lidar_rays: 14
+  n_lidar_quadrants: 5
+  neighbor_encoding: attention
+  neighbor_selection: knn
+
+network:
+  hidden_dim: 256
+  n_hidden_layers: 2
+  activation: tanh
+  action_dim: 4
+  attention_heads: 1
+  attention_dim: 32
+
+training:
+  gamma: 0.99
+  lambda_gae: 0.95
+  clip_epsilon: 0.2
+  actor_lr: 0.0001
+  critic_lr: 0.0003
+  n_epochs: 10
+  batch_size: 512
+  buffer_size: 1024
+  max_grad_norm: 0.25
+  target_kl: 0.03
+  entropy_coef: 0.003
+  value_loss_coef: 0.5
+  save_interval: 50
+  eval_interval: 25
+  eval_episodes: 20
+  total_episodes: 350            # extended from 300 to give the floor-squeeze
+                                   # phase (ep 200-280) room for >=2 evals afterward
+  device: cuda
+  num_workers: 1
+  early_stop_success_rate: 0.8   # stop once deterministic eval sustains this —
+  early_stop_patience: 2         # chocolate-deluge-39 hit 90%+ by ep 50-125 then
+                                   # degraded to 40% by ep 300 with nothing to
+                                   # preserve the good policy; stop instead of
+                                   # continuing to train past that point
+  early_stop_min_episode: 300    # moved from 200 -> 300 so the streak can only
+                                   # accumulate AFTER the floor squeeze (ends ep280)
+                                   # has finished — otherwise a pre-squeeze pass
+                                   # streak (like ethereal-elevator-41's) could
+                                   # stop the run before the squeeze is validated.
+                                   # With eval_interval=25 and total=350, evals at
+                                   # 300/325/350 give 2 genuine post-squeeze checks.
+
+# Anneal actor exploration noise down over training instead of relying on
+# PPO's own gradient to shrink it. chocolate-deluge-39 showed action std
+# stayed near 1.0 for the full 300 episodes because stochastic rollouts
+# almost never produced a successful 31-step settle to reinforce lower
+# noise — the gradient signal for shrinking log_std was too weak on its own.
+# Schedule: full exploration through episode 50 (enough for navigation to
+# emerge, per daily-snowflake-38 reaching 90% by ep 50), then anneal down to
+# the floor by episode 200, leaving 100 episodes of low-noise rollouts for
+# settlement to actually get reinforced by real experience.
+exploration:
+  log_std_init: 0.5              # ceiling early in training — permissive (std up to ~1.65)
+  log_std_final: -3.0            # ceiling late in training — forces down to the existing floor
+  anneal_start_episode: 50
+  anneal_end_episode: 200
+
+  # Second squeeze phase — tightens the FLOOR further below -3.0 (std≈0.05)
+  # after settlement has had a chance to emerge. honest-thunder-47 (seed 1)
+  # showed the risk of stopping at std=0.05: PPO learned a mean action that
+  # stops ~3cm OUTSIDE goal_threshold and relies on residual sampling noise
+  # to nudge it across the boundary — 93% training success, 0% deterministic
+  # eval. Squeezing noise down to std≈0.01 removes that crutch and forces
+  # the mean action itself to enter with real margin.
+  log_std_floor_final: -4.6      # std ≈ 0.01 — 5x tighter than the -3.0 floor
+  floor_anneal_start_episode: 200
+  floor_anneal_end_episode: 280
+
+reward:
+  goal_progress_scale: 5.0
+  goal_reached_bonus: 100.0
+  obstacle_collision_penalty: -50.0
+  drone_collision_penalty: -50.0
+  step_penalty: -0.01
+  lambda_smooth: 0.0              # still disabled — isolate settlement learning
+  lambda_prox: 0.5
+  r_danger: 1.5
+  lambda_brake: 0.0               # still disabled — no braking-cliff complexity
+  goal_entry_bonus: 10.0
+  settle_counter_scale: 2.0       # RESTORED — bounded highwater-mark shaping,
+                                    # capped at 2 x 31 = 62 (verified non-farmable
+                                    # in tests/test_env_validation.py)
+
+goal_curriculum:
+  start_dist: 2.0
+  end_dist: 2.0                  # frozen — same fixed 2m task as the smoke test
+  step_dist: 0.0
+  advance_sr: 0.3
+  window: 50
+
+curriculum:
+  progression_window: 100
+  progression_threshold: 0.8
+  stages:
+    1:
+      name: empty_sandbox
+      description: "No obstacles — learn basic navigation first"
+      action_dim_active: 3
+      global_state_dim: 12
+      world_size: 50
+      obstacles: false
+      obstacle_count: 0
+      domain_randomization: none
+      success_threshold: 0.8
+
+domain_randomization:
+  mild_noise:
+    position_noise_std: 0.05
+    imu_noise_std: 0.01
+    lidar_noise_std: 0.02
+
+scenario_manager:
+  obstacle_pool_size: 50
+  spawn_margin: 3.0
+  goal_margin: 2.0
+  min_spawn_separation: 5.0
+
+logging:
+  wandb_project: utm-swarm-marl
+  wandb_entity: null
+  log_interval: 10
+  log_reward_components: true
+  checkpoint_dir: checkpoints_settle/
+  best_checkpoint: checkpoints_settle/best_policy.pth

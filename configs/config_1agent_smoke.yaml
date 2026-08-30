@@ -1,0 +1,134 @@
+# =============================================================================
+# config_1agent_smoke.yaml
+# One-drone, entry-only PPO learning smoke test.
+# =============================================================================
+# Purpose: isolate ONE question — can PPO learn directed navigation from
+# scratch using the real observation/action/reward pipeline? No settlement,
+# no braking, no multi-agent coordination, no smoothness — those are proven
+# solvable by the P-controller tests in tests/test_env_validation.py, but
+# that controller already knows the movement policy. PPO starts random.
+#
+# "Entry-only" is implemented by reusing the existing settle machinery:
+# settle_speed is set above v_max (so the speed condition is always true)
+# and settle_steps=1 (so a single step inside goal_threshold immediately
+# latches as reached). No new code path — same env, same reward engine.
+#
+# Success criterion for this run: deterministic eval entry rate > 80% and
+# final distance < 0.5m by episode 100-300, with no large stochastic vs
+# deterministic gap. If this fails, the problem is in PPO/network/PPO
+# hyperparameters, not the environment or reward design (already validated).
+# =============================================================================
+
+environment:
+  n_agents: 1
+  max_steps: 300               # 1m goal at v_max=2.0 needs ~16 steps minimum; generous margin
+  v_max: 2.0
+  omega_max: 1.0
+  world_size: 50
+  goal_threshold: 0.5
+  collision_radius: 0.2
+  settle_speed: 10.0            # above v_max — speed condition always satisfied (entry-only)
+  settle_steps: 1               # single step inside goal_threshold = immediate success
+  control_timestep: 0.032
+  training:
+    physics_timestep: 0.016
+    action_repeat: 2
+  evaluation:
+    physics_timestep: 0.008
+    action_repeat: 4
+
+observation:
+  local_obs_dim: 27
+  neighbor_obs_dim: 6
+  neighbor_context_dim: 32
+  total_obs_dim: 59
+  k_neighbors_max: 5
+  n_lidar_rays: 14
+  n_lidar_quadrants: 5
+  neighbor_encoding: attention
+  neighbor_selection: knn
+
+network:
+  hidden_dim: 256
+  n_hidden_layers: 2
+  activation: tanh
+  action_dim: 4
+  attention_heads: 1
+  attention_dim: 32
+
+training:
+  gamma: 0.99
+  lambda_gae: 0.95
+  clip_epsilon: 0.2
+  actor_lr: 0.0001
+  critic_lr: 0.0003
+  n_epochs: 10
+  batch_size: 512
+  buffer_size: 1024
+  max_grad_norm: 0.25
+  target_kl: 0.03
+  entropy_coef: 0.003
+  value_loss_coef: 0.5
+  save_interval: 50
+  eval_interval: 25
+  eval_episodes: 20
+  total_episodes: 300
+  device: cuda
+  num_workers: 1
+
+reward:
+  goal_progress_scale: 5.0
+  goal_reached_bonus: 100.0
+  obstacle_collision_penalty: -50.0
+  drone_collision_penalty: -50.0
+  step_penalty: -0.01
+  lambda_smooth: 0.0             # disabled — isolate navigation learning
+  lambda_prox: 0.5
+  r_danger: 1.5
+  lambda_brake: 0.0              # disabled — no braking complexity for this test
+  goal_entry_bonus: 10.0
+  settle_counter_scale: 0.0      # disabled — settle_steps=1 means this would only ever
+                                  # add a redundant +0/+2 on the same step as goal_reached;
+                                  # zeroed for a minimal, unambiguous reward signal
+
+goal_curriculum:
+  start_dist: 2.0
+  end_dist: 2.0                # frozen — smoke test must hold difficulty constant.
+  step_dist: 0.0                # smart-sun-37 left this at end_dist=20.0/step=1.0,
+  advance_sr: 0.3                # so goal distance silently ramped 2m->6m over the
+  window: 50                     # run and confounded the deterministic eval trend.
+
+curriculum:
+  progression_window: 100
+  progression_threshold: 0.8
+  stages:
+    1:
+      name: empty_sandbox
+      description: "No obstacles — learn basic navigation first"
+      action_dim_active: 3
+      global_state_dim: 12
+      world_size: 50
+      obstacles: false
+      obstacle_count: 0
+      domain_randomization: none
+      success_threshold: 0.8
+
+domain_randomization:
+  mild_noise:
+    position_noise_std: 0.05
+    imu_noise_std: 0.01
+    lidar_noise_std: 0.02
+
+scenario_manager:
+  obstacle_pool_size: 50
+  spawn_margin: 3.0
+  goal_margin: 2.0
+  min_spawn_separation: 5.0
+
+logging:
+  wandb_project: utm-swarm-marl
+  wandb_entity: null
+  log_interval: 10
+  log_reward_components: true
+  checkpoint_dir: checkpoints_smoke/
+  best_checkpoint: checkpoints_smoke/best_policy.pth

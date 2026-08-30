@@ -157,7 +157,7 @@ class PPOOptimizer:
                 epoch_stats['actor_grad_norm'].append(actor_gn.item())
                 epoch_stats['critic_grad_norm'].append(critic_gn.item())
                 epoch_stats['advantage_mean'].append(batch['advantages'].mean().item())
-                epoch_stats['advantage_std'].append(batch['advantages'].std().item())
+                epoch_stats['advantage_std'].append(batch['advantages'].std(unbiased=False).item())
 
             epochs_completed = epoch + 1
 

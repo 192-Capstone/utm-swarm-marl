@@ -87,15 +87,69 @@ class MAPPOTrainer:
         self.total_episodes  = config['training']['total_episodes']
         self.save_interval   = config['training']['save_interval']
         self.eval_interval   = config['training']['eval_interval']
+        self.eval_episodes   = config['training'].get('eval_episodes', 10)
         self.buffer_size     = config['training']['buffer_size']
         self.checkpoint_dir  = config['logging']['checkpoint_dir']
         self.k_max           = config['observation']['k_neighbors_max']
+
+        # Early stopping — stop once deterministic eval sustains a strong
+        # pass rate, instead of continuing to train past the point where
+        # PPO starts overwriting an already-good policy (see chocolate-deluge-39:
+        # settlement was learned by ep 50-125, then degraded by ep 300 because
+        # stochastic rollouts almost never produced successful settle
+        # experience to reinforce it).
+        self.early_stop_success_rate = config['training'].get('early_stop_success_rate', None)
+        self.early_stop_patience     = config['training'].get('early_stop_patience', 2)
+        # Guards against stopping before an exploration-annealing schedule has
+        # had a chance to run: run daily-snowflake-38/chocolate-deluge-39's
+        # successor hit 95% eval by ep 75 purely off the DETERMINISTIC mean
+        # policy, before annealing (ep 50-200) had lowered noise more than
+        # ~6% — early-stopped without ever testing whether lower noise fixes
+        # stochastic training. Default 0 preserves old behavior for configs
+        # without an exploration schedule.
+        self.early_stop_min_episode  = config['training'].get('early_stop_min_episode', 0)
+        self._consecutive_strict_passes = 0
+        self._should_stop = False
+        self._buffer_log_std_ceiling = None
+
+        # Exploration annealing — anneal the actor's log_std ceiling down
+        # over training instead of relying only on PPO's gradient to shrink
+        # it. Absent an 'exploration' config block, init==final==0.5
+        # reproduces the old fixed-ceiling behavior exactly (no schedule).
+        exploration_cfg = config.get('exploration', {})
+        self._exploration_enabled = 'exploration' in config
+        self.log_std_init  = exploration_cfg.get('log_std_init', 0.5)
+        self.log_std_final = exploration_cfg.get('log_std_final', 0.5)
+        self.log_std_anneal_start = exploration_cfg.get('anneal_start_episode', 0)
+        self.log_std_anneal_end   = exploration_cfg.get('anneal_end_episode', 0)
+
+        # Second, optional squeeze phase: tighten the FLOOR further below
+        # log_std_final after settlement has had a chance to emerge. Without
+        # this, a seed can learn a mean action that stops just outside
+        # goal_threshold and relies on residual sampling noise (std≈0.05) to
+        # nudge it across the boundary — succeeds stochastically, fails
+        # deterministically (seed 1, honest-thunder-47: 93% training success,
+        # 0% deterministic eval). Defaults reproduce no-op (floor stays at
+        # log_std_final, i.e. old single-phase behavior) unless configured.
+        self.log_std_floor_final = exploration_cfg.get('log_std_floor_final', self.log_std_final)
+        self.floor_anneal_start  = exploration_cfg.get('floor_anneal_start_episode', self.log_std_anneal_end)
+        self.floor_anneal_end    = exploration_cfg.get('floor_anneal_end_episode', self.log_std_anneal_end)
 
         # State tracking
         self.global_step     = 0
         self.episode_count   = 0
         self.curriculum_stage= 1
         self.best_success_rate = 0.0
+        # Lexicographic ranking key: (success_rate, -mean_min_dist, -final_speed).
+        # Plain success-rate comparison treats every 100% policy as equal —
+        # exalted-sky-56 saved its FIRST 100% (episode 50: min_dist=0.150m)
+        # as "best" while episode 325's policy (min_dist=0.048m, a clearly
+        # tighter and more reliable settle) never replaced it because the
+        # success rate never strictly increased past 1.0. Negating the
+        # lower-is-better fields lets a plain tuple '>' comparison rank all
+        # three criteria at once.
+        self.best_eval_key  = (-1.0, float('-inf'), float('-inf'))
+        self.best_eval_info  = {}
         self.episode_rewards = []
         self.episode_lengths = []
         self.success_history = []
@@ -104,6 +158,9 @@ class MAPPOTrainer:
         self.use_wandb = self._init_wandb()
 
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+
+        self.eval_env = None
+        self._consecutive_eval_passes = 0
 
     def _init_wandb(self) -> bool:
         """Initialize WandB logging. Returns False if unavailable."""
@@ -141,8 +198,12 @@ class MAPPOTrainer:
 
         start_time = time.time()
 
+        # Set exploration bounds ONCE before collection starts, not every
+        # episode — see the loop body below for why this matters.
+        self._update_exploration_schedule()
+
         while self.episode_count < self.total_episodes:
-            episode_reward, episode_length, success, min_dist_to_goal, initial_dist_to_goal = \
+            episode_reward, episode_length, success, min_dist_to_goal, initial_dist_to_goal, ep_info = \
                 self._collect_episode()
 
             self.episode_rewards.append(episode_reward)
@@ -150,20 +211,34 @@ class MAPPOTrainer:
             self.success_history.append(float(success))
             self.episode_count += 1
 
-            # Update goal distance curriculum
-            if self.env is not None and hasattr(self.env, 'update_goal_curriculum'):
-                self.env.update_goal_curriculum(success)
+            # Goal distance curriculum is driven by deterministic eval (see _run_eval),
+            # not stochastic training success — stochastic success stays near zero
+            # because the 31-step dwell gate can't fire through exploration noise.
 
             # Update policy when buffer is full
             if self.buffer.is_full():
                 metrics = self._update_policy()
                 self.buffer.reset()
+                # Only change the exploration schedule BETWEEN buffers, never
+                # mid-collection. A transition's stored old_log_prob reflects
+                # whatever log_std ceiling/floor was active when it was
+                # sampled; if the schedule shifts std mid-buffer (a real risk
+                # during a fast squeeze — one 1024-step buffer can span 7-10+
+                # short successful episodes), PPO's update re-evaluates every
+                # transition under the CURRENT (possibly much lower) std,
+                # producing an inflated old-vs-new divergence that reflects
+                # the schedule change, not actual policy learning. That
+                # artificial KL can trip the trust-region limit and reject
+                # updates during exactly the window we need the mean to
+                # shift (see charmed-meadow-55: repeated "KL exceeded limit"
+                # rejections clustered inside the squeeze phase).
+                self._update_exploration_schedule()
             else:
                 metrics = None
 
             # Log EVERY episode to WandB (not just buffer-fill episodes)
             self._log(metrics, episode_reward, episode_length, success,
-                       min_dist_to_goal, initial_dist_to_goal)
+                       min_dist_to_goal, initial_dist_to_goal, extra_info=ep_info)
 
             # Optuna pruning check
             if optuna_trial is not None and self.episode_count % report_interval == 0:
@@ -173,6 +248,18 @@ class MAPPOTrainer:
                 optuna_trial.report(mean_reward, self.episode_count)
                 if optuna_trial.should_prune():
                     raise optuna.TrialPruned()
+
+            # Deterministic evaluation
+            if self.episode_count % self.eval_interval == 0:
+                eval_metrics = self._run_eval()
+                if self.use_wandb:
+                    import wandb
+                    wandb.log(eval_metrics, step=self.episode_count)
+                if self._should_stop:
+                    print(f"  [EarlyStop] eval/success_rate >= {self.early_stop_success_rate} "
+                          f"for {self.early_stop_patience} consecutive evals — "
+                          f"stopping at episode {self.episode_count}")
+                    break
 
             # Curriculum check
             self._check_curriculum_advancement()
@@ -196,6 +283,75 @@ class MAPPOTrainer:
 
         print("Training complete.")
         self._save_checkpoint(tag="final")
+        if self.best_eval_info:
+            print(f"Best eval checkpoint: episode {self.best_eval_info['episode']} "
+                  f"(success_rate={self.best_eval_info['success_rate']:.2f}, "
+                  f"mean_min_dist={self.best_eval_info['mean_min_dist']:.3f}, "
+                  f"final_speed={self.best_eval_info['final_speed']:.3f})")
+        if self.eval_env is not None:
+            self.eval_env.close()
+
+    def _update_exploration_schedule(self):
+        """Anneal the actor's log_std CEILING through a piecewise-linear
+        schedule with up to three anchor points:
+            (anneal_start_episode,     log_std_init)
+            (anneal_end_episode,       log_std_final)
+            (floor_anneal_end_episode, log_std_floor_final)
+        The FLOOR is a fixed safety bound, not part of the schedule.
+
+        This must drive the CEILING, not the floor: torch.clamp(raw, floor,
+        ceiling) only produces a value below the ceiling if the raw
+        parameter itself is already below it. Once the raw action_log_std
+        parameter saturates at (or above) a ceiling — which is exactly what
+        happens here, since torch.clamp's gradient is zero outside its
+        bounds — lowering the FLOOR further has NO effect on the output.
+        An earlier version of this method animated the floor instead of the
+        ceiling in the second phase; verified via direct forward() testing
+        to be a complete no-op (std stayed pinned at exp(ceiling) regardless
+        of floor) — this rewrite fixes that.
+
+        With no 'exploration' config block at all, this is a true no-op:
+        floor/ceiling are left untouched at the network's own hardcoded
+        defaults (-3.0, 0.5), not recomputed to some derived value.
+        """
+        if not self._exploration_enabled:
+            self._buffer_log_std_ceiling = self.actor.log_std_ceiling
+            return
+
+        def interp(ep, x0, y0, x1, y1):
+            if x1 <= x0:
+                return y0
+            t = min(max((ep - x0) / (x1 - x0), 0.0), 1.0)
+            return y0 + t * (y1 - y0)
+
+        ep = self.episode_count
+        if ep <= self.log_std_anneal_start:
+            ceiling = self.log_std_init
+        elif ep <= self.log_std_anneal_end:
+            ceiling = interp(ep, self.log_std_anneal_start, self.log_std_init,
+                              self.log_std_anneal_end, self.log_std_final)
+        elif ep <= self.floor_anneal_end:
+            ceiling = interp(ep, self.floor_anneal_start, self.log_std_final,
+                              self.floor_anneal_end, self.log_std_floor_final)
+        else:
+            ceiling = self.log_std_floor_final
+
+        # Fixed safety floor — never above the deepest ceiling target this
+        # schedule will ever reach, so the ceiling alone determines
+        # effective noise throughout. Not annealed; no gradient-blocking
+        # concern here since it's the more permissive (lower) bound.
+        floor = min(self.log_std_final, self.log_std_floor_final)
+        floor = min(floor, ceiling)  # safety: floor must never exceed ceiling
+
+        self.actor.set_log_std_ceiling(ceiling)
+        self.actor.set_log_std_floor(floor)
+
+        # Record the ceiling that will govern the ENTIRE next buffer's
+        # collection, so _log can verify at update time that it never
+        # drifted mid-buffer (see exploration/buffer_log_std_start vs
+        # exploration/update_log_std — these must be identical if the
+        # buffer-boundary timing fix is actually holding).
+        self._buffer_log_std_ceiling = ceiling
 
     def _collect_episode(self) -> tuple:
         """
@@ -213,6 +369,9 @@ class MAPPOTrainer:
         success        = False
         min_dist_to_goal     = None
         initial_dist_to_goal = None
+        last_info            = {}
+        reward_component_sums = {}
+        speed_accum = 0.0
 
         # Unpack observations from env reset
         local_fixed, neighbor_states, neighbor_mask, global_state = \
@@ -274,6 +433,12 @@ class MAPPOTrainer:
             episode_length += 1
             self.global_step += 1
 
+            components = info.get('reward_components', {})
+            for k, v in components.items():
+                reward_component_sums[k] = reward_component_sums.get(k, 0.0) + v
+            speed_accum += info.get('mean_speed', 0.0)
+
+            last_info = info
             if done:
                 success = info.get('success', False)
                 min_dist_to_goal     = info.get('min_dist_to_goal')
@@ -284,6 +449,9 @@ class MAPPOTrainer:
             local_fixed, neighbor_states, neighbor_mask, global_state = \
                 self._unpack_obs(next_obs_dict)
 
+        last_info['reward_component_sums'] = reward_component_sums
+        last_info['episode_mean_speed'] = speed_accum / max(episode_length, 1)
+
         # Bootstrap value for GAE if episode didn't terminate
         with torch.no_grad():
             last_values = self.critic.get_value(
@@ -292,7 +460,7 @@ class MAPPOTrainer:
             last_values = self._as_agent_values(last_values)
         self.buffer.compute_gae(last_values)
 
-        return episode_reward, episode_length, success, min_dist_to_goal, initial_dist_to_goal
+        return episode_reward, episode_length, success, min_dist_to_goal, initial_dist_to_goal, last_info
 
     def _active_action_dims(self) -> int:
         """Yaw (dim 3) is masked to 0.0 and causally inert before Stage 3 —
@@ -346,6 +514,210 @@ class MAPPOTrainer:
             obs_dict['global_state'].to(self.device),
         )
 
+    def _run_eval(self) -> Dict:
+        """Run deterministic evaluation episodes on an isolated env.
+
+        Uses a separate SwarmEnv with its own RNG so eval doesn't
+        perturb training trajectories. Returns metrics dict for logging.
+        """
+        if self.eval_env is None:
+            from envs.swarm_env import SwarmEnv
+            self.eval_env = SwarmEnv(self.config, device=self.device, gui=False)
+            self.eval_env.goal_dist_current = self.env.goal_dist_current
+
+        self.eval_env.goal_dist_current = self.env.goal_dist_current
+
+        # CRITICAL: eval_env has its OWN ObservationProcessor with its own
+        # RunningNormalizer, created once and independently accumulating
+        # stats from eval episodes only — completely different from
+        # self.env's normalizer, which is what the actor's weights were
+        # actually trained against. Left unsynced, every deterministic eval
+        # this whole session fed the actor observations scaled by the WRONG
+        # normalizer, corrupting what the deterministic policy actually
+        # produces (verified: standalone eval_checkpoint.py, which restores
+        # and freezes the TRAINING env's exact normalizer snapshot, shows
+        # 100%/100% success on charmed-meadow-55's final checkpoint in both
+        # modes — while this live eval reported 0% deterministic the whole
+        # back half of that run on the identical weights). Re-sync every
+        # call since the training normalizer keeps evolving; freeze so the
+        # ~20 eval episodes in this call don't drift the copy before the
+        # next resync anyway overwrites it.
+        train_norm = self.env.obs_processor.normalizer
+        eval_norm = self.eval_env.obs_processor.normalizer
+        eval_norm.mean  = train_norm.mean.copy()
+        eval_norm.var   = train_norm.var.copy()
+        eval_norm.count = train_norm.count
+        eval_norm.freeze()
+        print(f"  [Eval] train_norm.count={train_norm.count}, "
+              f"eval_norm.count={eval_norm.count}, frozen={eval_norm._frozen}")
+
+        successes = []
+        min_dists = []
+        ep_mean_speeds = []
+        final_speeds = []
+        max_settle_fracs = []
+        drones_inside_counts = []
+        all_entered_goal = []
+
+        # Safety / multi-agent metrics (all N/A-safe for n_agents==1)
+        per_agent_success = [[] for _ in range(self.n_agents)]
+        any_collision_episodes = []
+        drone_collision_episodes = []
+        obstacle_collision_episodes = []
+        min_inter_drone_seps = []       # None entries skipped when aggregating
+        agents_settled_counts = []
+
+        for ep in range(self.eval_episodes):
+            obs_dict = self.eval_env.reset()
+            lf, ns, nm, gs = self._unpack_obs(obs_dict)
+
+            ep_max_settle_frac = 0.0
+            ep_max_drones_inside = 0
+            speed_accum = 0.0
+            steps_done = 0
+            ep_any_drone_collision = False
+            ep_any_obstacle_collision = False
+            ep_min_inter_drone = None
+
+            for step in range(self.max_steps):
+                with torch.no_grad():
+                    actions, _ = self.actor.get_action(
+                        lf, ns, nm, deterministic=True,
+                        active_dims=self._active_action_dims()
+                    )
+                masked_actions = self._apply_yaw_mask(actions)
+
+                next_obs, _, done, info = self.eval_env.step(
+                    self._actions_to_dict(masked_actions)
+                )
+
+                ep_max_settle_frac = max(
+                    ep_max_settle_frac, info.get('settle_fraction', 0.0))
+                ep_max_drones_inside = max(
+                    ep_max_drones_inside, info.get('drones_inside_goal', 0))
+                speed_accum += info.get('mean_speed', 0.0)
+                steps_done += 1
+
+                if any(info.get('drone_collision', [])):
+                    ep_any_drone_collision = True
+                if any(info.get('obstacle_collision', [])):
+                    ep_any_obstacle_collision = True
+                step_sep = info.get('min_inter_drone_distance', None)
+                if step_sep is not None:
+                    ep_min_inter_drone = step_sep if ep_min_inter_drone is None \
+                        else min(ep_min_inter_drone, step_sep)
+
+                if done:
+                    break
+                lf, ns, nm, gs = self._unpack_obs(next_obs)
+
+            successes.append(float(info.get('success', False)))
+            min_dists.append(info.get('min_dist_to_goal', 0.0))
+            ep_mean_speeds.append(speed_accum / max(steps_done, 1))
+            final_speeds.append(info.get('mean_speed', 0.0))
+            max_settle_fracs.append(ep_max_settle_frac)
+            drones_inside_counts.append(ep_max_drones_inside)
+            all_entered_goal.append(float(ep_max_drones_inside >= self.n_agents))
+
+            # Per-agent success uses the LATCHED drone_reached_goal state
+            # (settled for settle_steps), not merely "inside on final step".
+            reached = info.get('drone_reached_goal', [False] * self.n_agents)
+            for i in range(self.n_agents):
+                per_agent_success[i].append(float(reached[i]))
+            agents_settled_counts.append(info.get('drones_at_goal', 0))
+            any_collision_episodes.append(float(ep_any_drone_collision or ep_any_obstacle_collision))
+            drone_collision_episodes.append(float(ep_any_drone_collision))
+            obstacle_collision_episodes.append(float(ep_any_obstacle_collision))
+            min_inter_drone_seps.append(ep_min_inter_drone)
+
+        eval_sr = np.mean(successes)
+        metrics = {
+            'eval/success_rate':        eval_sr,
+            'eval/mean_min_dist':       np.mean(min_dists),
+            'eval/mean_speed':          np.mean(ep_mean_speeds),
+            'eval/final_speed':         np.mean(final_speeds),
+            'eval/max_settle_fraction': np.mean(max_settle_fracs),
+            'eval/max_drones_inside':   np.mean(drones_inside_counts),
+            'eval/all_entered_goal':    np.mean(all_entered_goal),
+            'eval/episodes':            self.eval_episodes,
+            'eval/any_collision_rate':      np.mean(any_collision_episodes),
+            'eval/drone_collision_rate':    np.mean(drone_collision_episodes),
+            'eval/obstacle_collision_rate': np.mean(obstacle_collision_episodes),
+            'eval/mean_agents_settled':     np.mean(agents_settled_counts),
+        }
+        for i in range(self.n_agents):
+            metrics[f'eval/agent_{i}_success_rate'] = np.mean(per_agent_success[i])
+
+        valid_seps = [s for s in min_inter_drone_seps if s is not None]
+        metrics['eval/min_inter_drone_distance'] = float(min(valid_seps)) if valid_seps else None
+
+        min_sep_str = 'N/A' if not valid_seps else f"{metrics['eval/min_inter_drone_distance']:.3f}"
+        print(f"  [Eval] SR={eval_sr:.2f} | min_dist={np.mean(min_dists):.3f} | "
+              f"mean_spd={np.mean(ep_mean_speeds):.3f} | final_spd={np.mean(final_speeds):.3f} | "
+              f"settle_frac={np.mean(max_settle_fracs):.2f} | "
+              f"collision_rate={np.mean(any_collision_episodes):.2f} | "
+              f"min_sep={min_sep_str}")
+
+        # Best-eval checkpointing — driven by DETERMINISTIC eval/success_rate,
+        # not stochastic success_history. The latter stays at 0 for tasks
+        # requiring rare stochastic settling (see chocolate-deluge-39), so the
+        # old best-policy save (gated on rolling stochastic success) never
+        # fired and the final (possibly degraded) checkpoint was the only
+        # saved artifact. This tracks the actual best deterministic policy
+        # seen at any point in training, independent of what happens after.
+        #
+        # Ranked lexicographically — (success_rate, -min_dist, -final_speed) —
+        # not by success_rate alone: once success_rate saturates at 1.0 (as
+        # it did from episode 50 onward in exalted-sky-56), a scalar
+        # comparison never updates again even though later checkpoints keep
+        # settling with a tighter margin (min_dist 0.150m at ep50 vs 0.048m
+        # at ep325) and lower residual speed — real quality improvements a
+        # plain success-rate check is blind to.
+        eval_key = (eval_sr, -float(np.mean(min_dists)), -float(np.mean(final_speeds)))
+        if eval_key > self.best_eval_key:
+            self.best_eval_key = eval_key
+            self.best_eval_info = {
+                'episode':       self.episode_count,
+                'success_rate':  eval_sr,
+                'mean_min_dist': float(np.mean(min_dists)),
+                'final_speed':   float(np.mean(final_speeds)),
+            }
+            self._save_best_eval_checkpoint()
+
+        # Early stopping — stop once eval sustains a strong pass rate rather
+        # than continuing to train past the point where PPO may overwrite an
+        # already-good policy with no reliable training signal to preserve it.
+        # The streak only accumulates once episode_count >= early_stop_min_episode:
+        # effortless-sun-44 had already banked its 2-pass streak from BEFORE
+        # the min-episode gate (passes at ep50/75, gate only blocked stopping,
+        # not counting), so it stopped the instant ep200 arrived instead of
+        # requiring 2 fresh passes measured after annealing completed.
+        if self.early_stop_success_rate is not None:
+            if self.episode_count < self.early_stop_min_episode:
+                self._consecutive_strict_passes = 0
+            elif eval_sr >= self.early_stop_success_rate:
+                self._consecutive_strict_passes += 1
+            else:
+                self._consecutive_strict_passes = 0
+            if self._consecutive_strict_passes >= self.early_stop_patience:
+                self._should_stop = True
+
+        advance_sr = self.config.get('goal_curriculum', {}).get('advance_sr', 0.3)
+        if eval_sr >= advance_sr:
+            self._consecutive_eval_passes += 1
+        else:
+            self._consecutive_eval_passes = 0
+
+        if self._consecutive_eval_passes >= 2 and hasattr(self.env, 'goal_dist_current'):
+            old = self.env.goal_dist_current
+            step = self.config.get('goal_curriculum', {}).get('step_dist', 1.0)
+            end = self.config.get('goal_curriculum', {}).get('end_dist', 20.0)
+            self.env.goal_dist_current = min(old + step, end)
+            self._consecutive_eval_passes = 0
+            print(f"  [GoalCurriculum] Distance {old:.1f}m -> {self.env.goal_dist_current:.1f}m (eval-driven)")
+
+        return metrics
+
     def _check_curriculum_advancement(self):
         """Advance curriculum stage if success rate threshold met.
 
@@ -379,7 +751,8 @@ class MAPPOTrainer:
     def _log(self, metrics, episode_reward: float,
              episode_length: int, success: bool,
              min_dist_to_goal: Optional[float] = None,
-             initial_dist_to_goal: Optional[float] = None):
+             initial_dist_to_goal: Optional[float] = None,
+             extra_info: Optional[Dict] = None):
         """Log metrics to WandB and local stats."""
         if not self.use_wandb:
             return
@@ -418,17 +791,35 @@ class MAPPOTrainer:
             log_dict['value_mean']         = self.buffer.value_mean
             log_dict['value_std']          = self.buffer.value_std
 
+        if extra_info:
+            for key in ['drones_inside_goal', 'mean_speed', 'max_settle_counter',
+                        'settle_fraction']:
+                if key in extra_info:
+                    log_dict[f'settle/{key}'] = extra_info[key]
+
+            if 'episode_mean_speed' in extra_info:
+                log_dict['settle/episode_mean_speed'] = extra_info['episode_mean_speed']
+
+            for k, v in extra_info.get('reward_component_sums', {}).items():
+                log_dict[f'reward/{k}'] = v
+
         if len(self.success_history) >= 100:
             log_dict['success_rate_100'] = np.mean(self.success_history[-100:])
 
         if self.env is not None and hasattr(self.env, 'goal_dist_current'):
             log_dict['goal_dist_current'] = self.env.goal_dist_current
 
-        clamped = torch.clamp(self.actor.action_log_std, -2.0, 0.5)
+        clamped = torch.clamp(
+            self.actor.action_log_std, self.actor.log_std_floor, self.actor.log_std_ceiling
+        )
         log_dict['action_log_std_mean'] = clamped.mean().item()
         for i, name in enumerate(['vx', 'vy', 'vz', 'yaw']):
             log_dict[f'action_log_std_{name}'] = clamped[i].item()
         log_dict['action_std_mean'] = torch.exp(clamped).mean().item()
+        active_d = self._active_action_dims()
+        log_dict['action_std_active_mean'] = torch.exp(clamped[:active_d]).mean().item()
+        log_dict['exploration/log_std_ceiling'] = self.actor.log_std_ceiling
+        log_dict['exploration/log_std_floor']   = self.actor.log_std_floor
 
         if self.env is not None and hasattr(self.env, 'obs_processor'):
             norm = self.env.obs_processor.normalizer
@@ -437,6 +828,20 @@ class MAPPOTrainer:
             log_dict['normalizer_var_max'] = float(norm.var.max())
 
         wandb.log(log_dict, step=self.episode_count)
+
+    def _normalizer_state(self) -> Dict:
+        """Snapshot the training env's observation-normalizer stats, if any,
+        so eval_checkpoint.py can restore the exact normalization the actor
+        was trained under instead of accumulating fresh (and possibly
+        different) stats from scratch."""
+        if self.env is not None and hasattr(self.env, 'obs_processor'):
+            norm = self.env.obs_processor.normalizer
+            return {
+                'normalizer_mean':  norm.mean.copy(),
+                'normalizer_var':   norm.var.copy(),
+                'normalizer_count': norm.count,
+            }
+        return {}
 
     def _save_checkpoint(self, tag: str = ""):
         """Save actor and critic weights."""
@@ -449,11 +854,31 @@ class MAPPOTrainer:
             'episode_count':       self.episode_count,
             'curriculum_stage':    self.curriculum_stage,
             'best_success_rate':   self.best_success_rate,
+            # log_std_floor/ceiling are plain attributes, not part of
+            # actor's state_dict — save the ACTUAL values in effect at this
+            # episode (not the config's eventual annealed targets) since a
+            # checkpoint can be taken mid-anneal.
+            'log_std_ceiling':     self.actor.log_std_ceiling,
+            'log_std_floor':       self.actor.log_std_floor,
             'config':              self.config,
+            **self._normalizer_state(),
         }, path)
         print(f"Checkpoint saved: {path}")
 
-        # Save best policy separately
+        # Upload the FINAL checkpoint to WandB — effortless-sun-44 uploaded
+        # only best_eval_policy.pth (locked to episode 100, the first eval to
+        # hit 100%, before annealing had lowered noise enough to demonstrate
+        # STOCHASTIC settlement). The final checkpoint is the one that
+        # actually saw std anneal down to ~0.05 and produced real training
+        # successes — it must survive independent of the training machine.
+        if tag == "final" and self.use_wandb:
+            import wandb
+            wandb.save(path, base_path=self.checkpoint_dir)
+
+        # Save best policy separately (stochastic training success rate —
+        # kept for backward compatibility, but see _save_best_eval_checkpoint
+        # for the deterministic-eval-driven selection that actually matters
+        # for sparse-success tasks like settlement, where this stays at 0).
         if len(self.success_history) >= 100:
             sr = np.mean(self.success_history[-100:])
             if sr > self.best_success_rate:
@@ -462,6 +887,35 @@ class MAPPOTrainer:
                 os.makedirs(os.path.dirname(best_path), exist_ok=True)
                 torch.save({'actor_state_dict': self.actor.state_dict()}, best_path)
                 print(f"New best policy saved: {best_path} (SR={sr:.2f})")
+
+    def _save_best_eval_checkpoint(self):
+        """Save the actor whenever deterministic eval/success_rate reaches a
+        new best. Distinct from _save_checkpoint's stochastic-success-driven
+        best-policy save, which never fires for sparse-success tasks (e.g.
+        settlement) where stochastic rollouts almost never succeed even
+        though the deterministic policy has learned the task."""
+        path = os.path.join(self.checkpoint_dir, "best_eval_policy.pth")
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        torch.save({
+            'actor_state_dict':  self.actor.state_dict(),
+            'log_std_ceiling':   self.actor.log_std_ceiling,
+            'log_std_floor':     self.actor.log_std_floor,
+            'curriculum_stage':  self.curriculum_stage,
+            **self._normalizer_state(),
+            **self.best_eval_info,
+        }, path)
+        print(f"  [BestEval] New best deterministic policy saved: {path} "
+              f"(episode={self.best_eval_info['episode']}, "
+              f"success_rate={self.best_eval_info['success_rate']:.2f}, "
+              f"mean_min_dist={self.best_eval_info['mean_min_dist']:.3f}, "
+              f"final_speed={self.best_eval_info['final_speed']:.3f})")
+
+        # Upload to WandB so the checkpoint survives beyond the training
+        # machine's local disk — previously only metrics were logged and the
+        # .pth files existed nowhere but checkpoints_dir/.
+        if self.use_wandb:
+            import wandb
+            wandb.save(path, base_path=self.checkpoint_dir)
 
     def load_checkpoint(self, path: str):
         """Load a saved checkpoint to resume training."""
