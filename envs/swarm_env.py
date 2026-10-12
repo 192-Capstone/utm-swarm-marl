@@ -25,6 +25,7 @@ from modules.observation_processor import ObservationProcessor
 from modules.reward_engine import RewardEngine
 from envs.episode_manager import EpisodeManager
 from envs.pybullet_adapter import PyBulletAdapter
+from envs import scenarios
 
 
 class SwarmEnv:
@@ -42,6 +43,13 @@ class SwarmEnv:
         self.settle_speed     = config['environment'].get('settle_speed', 0.15)
         self.settle_steps     = config['environment'].get('settle_steps', 31)
         self.min_spawn_sep    = config.get('scenario_manager', {}).get('min_spawn_separation', 5.0)
+        # Safety cost for constrained RL (MAPPO-Lagrangian), kept separate from
+        # the reward: 1 per step a drone is closer than cost_distance to any
+        # other drone, plus collision_cost on the step it crashes (a crash ends
+        # the episode, so without the extra it would count as one cheap step).
+        safety = config.get('safety', {})
+        self.cost_distance  = safety.get('cost_distance', 0.5)
+        self.collision_cost = safety.get('collision_cost', 0.0)
         self.curriculum_stage = 1
 
         self.adapter        = adapter or PyBulletAdapter(config, gui=gui)
@@ -62,6 +70,20 @@ class SwarmEnv:
         self.goal_dist_threshold = goal_dist_cfg.get('advance_sr', 0.3)
         self.goal_dist_window = goal_dist_cfg.get('window', 50)
         self._recent_successes = []
+
+        # Scenario mix: which kind of episode reset() produces, e.g.
+        # {random: 0.5, headon: 0.2, crossing: 0.2, swap: 0.1}. Without it,
+        # every episode is the plain random task and no extra RNG is drawn,
+        # so existing configs and seeds behave exactly as before.
+        mix = config.get('scenario_mix') or {'random': 1.0}
+        unknown = set(mix) - {'random', *scenarios.GENERATORS}
+        if unknown:
+            raise ValueError(f"scenario_mix has unknown scenarios: {sorted(unknown)}")
+        self.scenario_names = list(mix)
+        weights = np.array([mix[k] for k in self.scenario_names], dtype=np.float64)
+        self.scenario_probs = weights / weights.sum()
+        self._use_mix = self.scenario_names != ['random']
+        self.current_scenario = 'random'
 
     # ---- world layout (a tiny Stage-1 scenario generator) -------------------
     def _sample_positions(self):
@@ -120,7 +142,14 @@ class SwarmEnv:
 
     # ---- RL interface -------------------------------------------------------
     def reset(self):
-        spawns, goals = self._sample_positions()
+        scenario = 'random'
+        if self._use_mix:
+            scenario = str(np.random.choice(self.scenario_names, p=self.scenario_probs))
+        self.current_scenario = scenario
+        if scenario == 'random':
+            spawns, goals = self._sample_positions()
+        else:
+            spawns, goals = scenarios.GENERATORS[scenario](np.random, self.n_agents)
         self.adapter.reset_world(spawns, goals)
         self.goals = np.array([goals[f'drone_{i}'] for i in range(self.n_agents)],
                               dtype=np.float32)
@@ -165,6 +194,9 @@ class SwarmEnv:
                            for d in drone_distances]
         # obstacle collisions: none in Stage 1 (empty world)
         obstacle_collision = [False] * self.n_agents
+        cost = [float(bool(d) and min(d) < self.cost_distance)
+                + self.collision_cost * float(drone_collision[i])
+                for i, d in enumerate(drone_distances)]
 
         actions_arr = np.array([actions_dict[f'drone_{i}'] for i in range(self.n_agents)],
                                dtype=np.float32)
@@ -258,6 +290,7 @@ class SwarmEnv:
             min_inter_drone_distance = None
 
         info = {'success': reason == 'success', 'reason': reason,
+                'scenario': self.current_scenario,
                 'drones_at_goal': drones_at_goal,
                 # Per-agent LATCHED success (settled for settle_steps), not
                 # merely "inside goal_threshold on this step" — this is what
@@ -265,6 +298,7 @@ class SwarmEnv:
                 'drone_reached_goal':       list(self.drone_reached_goal),
                 'drone_collision':          list(drone_collision),
                 'obstacle_collision':       list(obstacle_collision),
+                'cost':                     cost,
                 'min_dist_to_goal':         float(self.min_dist_ever.mean()),
                 'per_agent_min_dist':       self.min_dist_ever.tolist(),
                 'initial_dist_to_goal':     float(self.initial_dist.mean()),

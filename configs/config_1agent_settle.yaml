@@ -173,5 +173,5 @@ logging:
   wandb_entity: null
   log_interval: 10
   log_reward_components: true
-  checkpoint_dir: checkpoints_settle/
-  best_checkpoint: checkpoints_settle/best_policy.pth
+  checkpoint_dir: checkpoints/settle/
+  best_checkpoint: checkpoints/settle/best_policy.pth

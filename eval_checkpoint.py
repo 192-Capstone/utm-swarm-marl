@@ -16,11 +16,11 @@ sample from a frozen checkpoint to check whether that success rate holds up.
 
 Usage:
     python eval_checkpoint.py --config configs/config_1agent_settle.yaml \
-        --checkpoint checkpoints_settle/checkpoint_final.pth \
+        --checkpoint checkpoints/settle/checkpoint_final.pth \
         --episodes 100 --mode stochastic
 
     python eval_checkpoint.py --config configs/config_1agent_settle.yaml \
-        --checkpoint checkpoints_settle/checkpoint_final.pth \
+        --checkpoint checkpoints/settle/checkpoint_final.pth \
         --episodes 20 --mode deterministic
 """
 

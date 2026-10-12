@@ -78,9 +78,15 @@ class RolloutBuffer:
         self.dones           = torch.zeros(B, N,                        device=self.device)
         self.values          = torch.zeros(B, N,                        device=self.device)
 
+        # Safety cost stream (MAPPO-Lagrangian); stays all-zero when unused
+        self.costs           = torch.zeros(B, N,                        device=self.device)
+        self.cost_values     = torch.zeros(B, N,                        device=self.device)
+
         # Computed post-episode
         self.advantages      = torch.zeros(B, N,                        device=self.device)
         self.returns         = torch.zeros(B, N,                        device=self.device)
+        self.cost_advantages = torch.zeros(B, N,                        device=self.device)
+        self.cost_returns    = torch.zeros(B, N,                        device=self.device)
 
         self.ptr   = 0       # current write position
         self.size  = 0       # number of valid entries
@@ -96,6 +102,8 @@ class RolloutBuffer:
         rewards:         torch.Tensor,   # (N,)
         dones:           torch.Tensor,   # (N,)
         values:          torch.Tensor,   # (N,)
+        costs:           Optional[torch.Tensor] = None,   # (N,) safety cost
+        cost_values:     Optional[torch.Tensor] = None,   # (N,) cost critic estimate
     ):
         """
         Store one timestep of experience for all N agents.
@@ -136,9 +144,34 @@ class RolloutBuffer:
         self.rewards[idx]         = rewards.detach()
         self.dones[idx]           = dones.detach()
         self.values[idx]          = values.detach()
+        if costs is not None:
+            self.costs[idx]       = costs.detach()
+            self.cost_values[idx] = cost_values.detach()
 
         self.ptr  += 1
         self.size  = min(self.size + 1, self.buffer_size)
+
+    def _gae(self, rewards, values, last_values, T):
+        """GAE over the first T steps of one reward-like stream. Returns
+        (advantages, returns), both (T, N), un-normalized."""
+        adv = torch.zeros(T, self.n_agents, device=self.device)
+        gae = torch.zeros(self.n_agents, device=self.device)
+        for t in reversed(range(T)):
+            next_values = last_values if t == T - 1 else values[t + 1]
+            next_done = self.dones[t]
+            delta = rewards[t] + self.gamma * next_values * (1.0 - next_done) - values[t]
+            gae = delta + self.gamma * self.lambda_gae * (1.0 - next_done) * gae
+            adv[t] = gae
+        return adv, adv + values[:T]
+
+    def compute_cost_gae(self, last_cost_values: torch.Tensor):
+        """Same GAE as compute_gae, for the safety cost stream. Advantages are
+        normalized the same way, so lambda weighs two comparable signals."""
+        T = self.ptr
+        adv, ret = self._gae(self.costs, self.cost_values, last_cost_values, T)
+        self.cost_returns[:T] = ret
+        flat = adv.reshape(-1)
+        self.cost_advantages[:T] = ((adv - flat.mean()) / (flat.std() + 1e-8)).clamp(-5.0, 5.0)
 
     def compute_gae(self, last_values: torch.Tensor):
         """
@@ -249,6 +282,8 @@ class RolloutBuffer:
         lp  = self.log_probs[:T].reshape(T * N)
         adv = self.advantages[:T].reshape(T * N)
         ret = self.returns[:T].reshape(T * N)
+        cadv = self.cost_advantages[:T].reshape(T * N)
+        cret = self.cost_returns[:T].reshape(T * N)
 
         total = T * N
         indices = torch.randperm(total, device=self.device)
@@ -266,6 +301,8 @@ class RolloutBuffer:
                 'old_log_probs':   lp[idx],
                 'advantages':      adv[idx],
                 'returns':         ret[idx],
+                'cost_advantages': cadv[idx],
+                'cost_returns':    cret[idx],
             }
 
     def reset(self):

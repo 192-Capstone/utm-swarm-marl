@@ -1,0 +1,185 @@
+# =============================================================================
+# config_3agent_deconfliction_v2.yaml
+# Second attempt at teaching the 3-drone Stage-1 model to avoid other drones.
+# =============================================================================
+# Same as config_3agent_deconfliction.yaml (v1), resumed from the same
+# baseline checkpoint (spring-vortex-58, episode 500), with two changes,
+# marked "V2" below:
+#
+#   1. lambda_prox 0.5 -> 2.0   In v1 almost all of the push to avoid came from
+#                               the -50 crash, which only happened in a few % of
+#                               episodes. A 4x proximity penalty gives a steady
+#                               signal every time drones get within 1.5 m, before
+#                               they crash. No effect on the normal task, where
+#                               drones never get that close.
+#   2. scenario_mix             70% conflict episodes (was 50%), including the new
+#                               "flythrough" scenario: one drone hovers on its goal
+#                               while the others fly straight through it. The
+#                               intruder / blocker situations never appeared in
+#                               v1's training, and those tests stayed at 100% hits.
+#
+# v1 also ran with the shared-PyBullet-world bug (fixed in pybullet_adapter.py
+# since), so this is the first clean run of the idea.
+#
+# Run one seed at a time, in a visible terminal (from the repo root):
+#   python train.py --config configs/config_3agent_deconfliction_v2.yaml --resume checkpoints/stage1_v1/checkpoint_final.pth --seed 0 --checkpoint-dir checkpoints/deconfliction_v2/seed0
+# =============================================================================
+
+environment:
+  n_agents: 3
+  max_steps: 500                # 2m goal + 3-agent coordination needs more
+                                  # room than 1-agent's 300; still bounded
+  v_max: 2.0
+  omega_max: 1.0
+  world_size: 50
+  goal_threshold: 0.5
+  collision_radius: 0.2
+  collision_physics: false       # DECONFLICTION: PyBullet no longer pushes touching
+                                 # drones apart, so the 0.2 m crash check can fire
+  settle_speed: 0.15
+  settle_steps: 31
+  control_timestep: 0.032
+  training:
+    physics_timestep: 0.016
+    action_repeat: 2
+  evaluation:
+    physics_timestep: 0.008
+    action_repeat: 4
+
+observation:
+  local_obs_dim: 27
+  neighbor_obs_dim: 6
+  neighbor_context_dim: 32
+  total_obs_dim: 59
+  k_neighbors_max: 5
+  n_lidar_rays: 14
+  n_lidar_quadrants: 5
+  neighbor_encoding: attention
+  neighbor_selection: knn
+  sensing_radius: 30.0           # DECONFLICTION: drones further than 30 m are invisible
+  neighbor_pos_scale: 30.0       # relative position / 30 -> visible neighbours in [-1, 1]
+  neighbor_vel_scale: 4.0        # relative velocity / 4 m/s (fastest two drones can close)
+
+network:
+  hidden_dim: 256
+  n_hidden_layers: 2
+  activation: tanh
+  action_dim: 4
+  attention_heads: 1
+  attention_dim: 32
+
+training:
+  gamma: 0.99
+  lambda_gae: 0.95
+  clip_epsilon: 0.2
+  actor_lr: 0.0001
+  critic_lr: 0.0003
+  n_epochs: 10
+  batch_size: 1024
+  buffer_size: 2048
+  max_grad_norm: 0.25
+  target_kl: 0.03
+  entropy_coef: 0.003
+  value_loss_coef: 0.5
+  save_interval: 100
+  eval_interval: 50             # finer granularity than default's 100 —
+                                  # review timeline needs early visibility
+  eval_episodes: 20             # matches 1-agent setup for a real sample size
+  total_episodes: 1500          # DECONFLICTION: counts from the checkpoint's 500,
+                                  # so this is 1000 new episodes
+  device: cuda
+  num_workers: 1
+
+  early_stop_success_rate: null # DECONFLICTION: off. The model already scores ~95%
+                                  # on the scenario mix, so an 80% rule would stop
+                                  # training before it learns anything new
+
+reward:
+  goal_progress_scale: 5.0
+  goal_reached_bonus: 100.0
+  obstacle_collision_penalty: -50.0
+  drone_collision_penalty: -50.0
+  step_penalty: -0.01
+  lambda_smooth: 0.0
+  lambda_prox: 2.0               # V2: was 0.5 (see header)
+  r_danger: 1.5
+  lambda_brake: 0.0
+  goal_entry_bonus: 10.0
+  settle_counter_scale: 2.0
+
+# DECONFLICTION: fresh exploration schedule for the fine-tune. Episode numbers
+# continue from the checkpoint (500). At 500 the noise reopens to std ~0.37 m/s
+# so drones try new moves (swerving, waiting), then shrinks back to the same
+# end point as the original run (std ~0.01) so settling still works.
+exploration:
+  log_std_init: -1.0             # std ~0.37
+  log_std_final: -3.0            # std ~0.05
+  anneal_start_episode: 500
+  anneal_end_episode: 1000
+
+  log_std_floor_final: -4.6      # std ~0.01, same as the original run
+  floor_anneal_start_episode: 1000
+  floor_anneal_end_episode: 1300
+
+# DECONFLICTION: which kind of episode each reset produces. Random is the
+# original 1-2 m task; head-on, crossing and swap force drones to meet
+# (generators in envs/scenarios.py).
+scenario_mix:                    # V2: 70% conflicts (was 50%), plus flythrough
+  random: 0.3
+  headon: 0.2
+  crossing: 0.15
+  swap: 0.1
+  flythrough: 0.25
+
+goal_curriculum:
+  start_dist: 2.0
+  end_dist: 2.0                 # frozen — same fixed-difficulty approach
+  step_dist: 0.0                # validated for 1-agent; avoid conflating
+  advance_sr: 0.3                # "did coordination improve" with "did the
+  window: 50                     # task get harder mid-run"
+
+curriculum:
+  progression_window: 100
+  progression_threshold: 0.8
+  stages:
+    1:
+      name: empty_sandbox
+      description: "No obstacles — learn basic navigation first"
+      action_dim_active: 3
+      global_state_dim: 12
+      world_size: 50
+      obstacles: false
+      obstacle_count: 0
+      domain_randomization: none
+      success_threshold: 0.8
+
+domain_randomization:
+  mild_noise:
+    position_noise_std: 0.05
+    imu_noise_std: 0.01
+    lidar_noise_std: 0.02
+
+scenario_manager:
+  obstacle_pool_size: 50
+  spawn_margin: 3.0
+  goal_margin: 2.0
+  min_spawn_separation: 5.0      # keeps the 3 drones spawned well apart —
+                                   # matters more here than for 1-agent runs
+
+logging:
+  wandb_project: utm-swarm-marl
+  wandb_entity: null
+  log_interval: 10
+  log_reward_components: true
+  checkpoint_dir: checkpoints/deconfliction_v2/          # V2: own folder
+  best_checkpoint: checkpoints/deconfliction_v2/best_policy.pth
+
+# -----------------------------------------------------------------------------
+# Failure-mode guide (using the metrics eval_checkpoint.py / _run_eval() now report)
+# -----------------------------------------------------------------------------
+# eval/all_entered_goal low                        -> navigation/coordination problem
+# eval/all_entered_goal high, settle_fraction low   -> braking/dwell problem (per-agent)
+# eval/drone_collision_rate high                    -> separation/proximity problem
+# train_norm.count != eval_norm.count, or frozen=False -> evaluator regression, not a policy bug
+# agent_i_success_rate uneven across agents         -> credit-assignment asymmetry,
+#                                                       not necessarily a reward bug

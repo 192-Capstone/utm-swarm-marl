@@ -5,7 +5,7 @@ Usage:
     python train.py                     # default: Stage 1 on CPU
     python train.py --gui               # with PyBullet GUI window
     python train.py --episodes 2000     # custom episode count
-    python train.py --resume checkpoints/checkpoint_ep500.pth
+    python train.py --resume checkpoints/<run>/checkpoint_ep500.pth
 
 This wires SwarmEnv (PyBullet backend) to the MAPPO engine and starts
 curriculum-based training. Stage 1 = empty world, no obstacles, yaw masked.
@@ -48,6 +48,9 @@ def main():
                         help="Force device (cpu/cuda)")
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for reproducible runs (network init + env spawns)")
+    parser.add_argument("--checkpoint-dir", type=str, default=None,
+                        help="Override logging.checkpoint_dir, e.g. one folder per seed so "
+                             "parallel runs don't overwrite each other's checkpoints")
     args = parser.parse_args()
 
     config_path = os.path.join(os.path.dirname(__file__), args.config)
@@ -60,6 +63,11 @@ def main():
 
     if args.episodes is not None:
         config["training"]["total_episodes"] = args.episodes
+
+    if args.checkpoint_dir:
+        ckpt_dir = args.checkpoint_dir.rstrip("/\\") + "/"
+        config["logging"]["checkpoint_dir"] = ckpt_dir
+        config["logging"]["best_checkpoint"] = ckpt_dir + "best_policy.pth"
 
     if args.device:
         device = torch.device(args.device)

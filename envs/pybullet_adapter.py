@@ -51,12 +51,18 @@ class PyBulletAdapter:
         self.drone_ids = []
         self.goals     = {}          # {'drone_i': np.array([x, y, z])}
 
+        # Every PyBullet call below passes physicsClientId=self.client. Without
+        # it, calls go to world 0 by default, so a second adapter in the same
+        # process (the trainer's eval env) put its drones into the TRAINING
+        # world: eval ran with collision physics on, and its drones sat in the
+        # training world as invisible obstacles after every evaluation.
         self.client = p.connect(p.GUI if gui else p.DIRECT)
-        p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.setGravity(0, 0, 0)                # Stage 1: free velocity control
-        p.setTimeStep(self.physics_dt)
-        p.setRealTimeSimulation(0)
-        p.loadURDF("plane.urdf")
+        cid = self.client
+        p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=cid)
+        p.setGravity(0, 0, 0, physicsClientId=cid)    # Stage 1: free velocity control
+        p.setTimeStep(self.physics_dt, physicsClientId=cid)
+        p.setRealTimeSimulation(0, physicsClientId=cid)
+        p.loadURDF("plane.urdf", physicsClientId=cid)
 
         self._spawn_drones()
 
@@ -64,23 +70,38 @@ class PyBulletAdapter:
         """Spawn N simple velocity-controlled bodies (no external URDF needed)."""
         half = 0.15
         for i in range(self.n_agents):
-            col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[half] * 3)
+            col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[half] * 3,
+                                         physicsClientId=self.client)
             vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[half] * 3,
-                                      rgbaColor=[0.1, 0.4, 0.9, 1])
+                                      rgbaColor=[0.1, 0.4, 0.9, 1],
+                                      physicsClientId=self.client)
             body = p.createMultiBody(
                 baseMass=1.0,
                 baseCollisionShapeIndex=col,
                 baseVisualShapeIndex=vis,
                 basePosition=[i * 2.0, 0.0, 1.0],
+                physicsClientId=self.client,
             )
             self.drone_ids.append(body)
+
+        # environment.collision_physics: false switches off PyBullet's
+        # contact response between drones. With it on (the default), touching
+        # boxes get pushed apart by the physics engine, so centres can't get
+        # closer than ~0.3 m and the 0.2 m collision check (and its penalty)
+        # never fires. Off means drones can overlap and a crash is a crash.
+        if not self.config['environment'].get('collision_physics', True):
+            for i in range(self.n_agents):
+                for j in range(i + 1, self.n_agents):
+                    p.setCollisionFilterPair(self.drone_ids[i], self.drone_ids[j], -1, -1,
+                                             enableCollision=0, physicsClientId=self.client)
 
     def reset_world(self, spawn_positions: dict, goal_positions: dict):
         """spawn_positions / goal_positions: {'drone_i': [x, y, z]}."""
         for i, body in enumerate(self.drone_ids):
             key = f'drone_{i}'
-            p.resetBasePositionAndOrientation(body, spawn_positions[key], [0, 0, 0, 1])
-            p.resetBaseVelocity(body, [0, 0, 0], [0, 0, 0])
+            p.resetBasePositionAndOrientation(body, spawn_positions[key], [0, 0, 0, 1],
+                                              physicsClientId=self.client)
+            p.resetBaseVelocity(body, [0, 0, 0], [0, 0, 0], physicsClientId=self.client)
             self.goals[key] = np.array(goal_positions[key], dtype=np.float32)
 
     def apply_actions(self, actions: dict):
@@ -90,18 +111,19 @@ class PyBulletAdapter:
             v = np.clip(np.asarray(a[:3], dtype=np.float32), -self.v_max, self.v_max)
             yaw_rate = float(np.clip(a[3], -self.omega_max, self.omega_max)) if len(a) > 3 else 0.0
             p.resetBaseVelocity(body, linearVelocity=v.tolist(),
-                                angularVelocity=[0.0, 0.0, yaw_rate])
+                                angularVelocity=[0.0, 0.0, yaw_rate],
+                                physicsClientId=self.client)
 
     def step_simulation(self):
         for _ in range(self.action_repeat):
-            p.stepSimulation()
+            p.stepSimulation(physicsClientId=self.client)
 
     def get_raw_state(self) -> dict:
         state = {'goals': {}}
         for i, body in enumerate(self.drone_ids):
             key = f'drone_{i}'
-            pos, orn = p.getBasePositionAndOrientation(body)
-            lin, _   = p.getBaseVelocity(body)
+            pos, orn = p.getBasePositionAndOrientation(body, physicsClientId=self.client)
+            lin, _   = p.getBaseVelocity(body, physicsClientId=self.client)
             euler    = p.getEulerFromQuaternion(orn)     # (roll, pitch, yaw)
             state[key] = {
                 'position':    list(pos),
@@ -114,12 +136,13 @@ class PyBulletAdapter:
 
     def get_positions(self) -> np.ndarray:
         return np.array(
-            [p.getBasePositionAndOrientation(b)[0] for b in self.drone_ids],
+            [p.getBasePositionAndOrientation(b, physicsClientId=self.client)[0]
+             for b in self.drone_ids],
             dtype=np.float32,
         )
 
     def close(self):
         try:
-            p.disconnect(self.client)
+            p.disconnect(physicsClientId=self.client)
         except Exception:
             pass

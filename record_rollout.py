@@ -4,7 +4,7 @@ as an MP4, using PyBullet's GUI window + built-in video logger.
 
 Usage:
     python record_rollout.py --config configs/config_3agent_review.yaml \
-        --checkpoint checkpoints_review_3agent/checkpoint_3agent_review_seed1_ep500.pth \
+        --checkpoint checkpoints/review_3agent/checkpoint_3agent_review_seed1_ep500.pth \
         --out rollout_3agent.mp4
 
 Requires a real display (DISPLAY set) and ffmpeg on PATH — PyBullet's
@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from training.networks.actor_network import ActorNetwork
 from envs.swarm_env import SwarmEnv
+from envs import scenarios
 
 
 def unpack_obs(obs_dict, device):
@@ -72,7 +73,8 @@ def disable_all_collision_physics(env, n_agents):
     for i in range(n_agents):
         for j in range(i + 1, n_agents):
             p.setCollisionFilterPair(
-                env.adapter.drone_ids[i], env.adapter.drone_ids[j], -1, -1, enableCollision=0
+                env.adapter.drone_ids[i], env.adapter.drone_ids[j], -1, -1, enableCollision=0,
+                physicsClientId=env.adapter.client
             )
 
 
@@ -100,114 +102,20 @@ def _apply_scenario(env, spawns, goals, n_agents):
 
 
 def setup_crossing_scenario(env, rng, n_agents, r_min=2.5, r_max=6.0, shared_altitude=True):
-    """Force a genuine path-crossing scenario: agents placed on a circle,
-    each one's goal is the diametrically OPPOSITE point — all straight-line
-    paths cross near the shared center. Randomized radius + per-drone
-    angular/radial jitter so no two calls produce an identical geometry.
-
-    shared_altitude=True puts every drone at the SAME z — verified via a
-    30-trial batch at forced-identical altitude that avoidance is genuinely
-    lateral (100% success, 0% collision, min separation 0.289m), not an
-    artifact of drones incidentally flying at different heights. Also makes
-    the demo visually unambiguous: with independently random per-drone z
-    (the old default), a visible near-pass can look like a collision from
-    some camera angles even when the drones are meters apart in altitude —
-    same-altitude removes that ambiguity entirely.
-
-    Note on visual near-misses even at same altitude: the collision_radius
-    used by the sim (0.2m, center-to-center) is smaller than the rendered
-    drone body (0.15m half-extent, i.e. 0.3m wide) — so a near-miss with
-    centers between 0.2m and 0.3m apart is NOT a collision by the physics/
-    reward logic, but the rendered boxes visually overlap on screen. Some
-    of the 50-trial batch's successful, non-colliding runs had min
-    separation as low as 0.26-0.29m, squarely in that "looks like a
-    collision but isn't" zone. Filter for a larger min-separation margin at
-    the call site (see --min-demo-separation) to avoid recording one of those.
-    """
-    R = rng.uniform(r_min, r_max)
-    base_angle = rng.uniform(0, 360)
-    jitter = rng.uniform(-15, 15, size=n_agents)
-    radius_jitter = rng.uniform(0.8, 1.2, size=n_agents)
-    shared_z = rng.uniform(1.5, 3.5)
-    z_vals = np.full(n_agents, shared_z) if shared_altitude else rng.uniform(1.5, 3.5, size=n_agents)
-
-    angles = base_angle + np.linspace(0, 360, n_agents, endpoint=False) + jitter
-    spawns, goals = {}, {}
-    for i, ang in enumerate(angles):
-        rad = np.radians(ang)
-        r = R * radius_jitter[i]
-        spawn = np.array([r * np.cos(rad), r * np.sin(rad), z_vals[i]])
-        goal = np.array([-r * np.cos(rad), -r * np.sin(rad), z_vals[i]])
-        spawns[f'drone_{i}'] = spawn.tolist()
-        goals[f'drone_{i}'] = goal.tolist()
-
+    """Crossing scenario (see envs/scenarios.py), applied to the env."""
+    spawns, goals = scenarios.crossing(rng, n_agents, r_min, r_max, shared_altitude)
     return _apply_scenario(env, spawns, goals, n_agents)
 
 
 def setup_swap_scenario(env, rng, n_agents, reach=10.0, min_spawn_sep=5.0):
-    """Scatter agents at fully random 3D positions (no circle symmetry),
-    then assign each one's goal to ANOTHER agent's exact spawn point via a
-    derangement (a permutation with no fixed points, so no drone's goal is
-    its own spawn) — guarantees genuine, non-trivial crossing paths across
-    varied distances and altitudes, without an artificial formation.
-
-    Verified via a 40-trial batch: 100% success, 0% collision, min
-    separation as low as 0.266m (same 'looks-worse-than-it-is' zone as the
-    crossing scenario — still filter with --min-demo-separation), mean
-    travel distance 11.53m (max 16.53m) — much more visually dramatic than
-    the crossing scenario's 2-6m radius flights.
-    """
-    def rand_xyz():
-        return np.array([rng.uniform(-reach, reach), rng.uniform(-reach, reach),
-                          rng.uniform(1.0, 5.0)])
-
-    spawns_arr = []
-    for _ in range(n_agents):
-        cand = rand_xyz()
-        tries = 0
-        while any(np.linalg.norm(cand - s) < min_spawn_sep for s in spawns_arr) and tries < 50:
-            cand = rand_xyz()
-            tries += 1
-        spawns_arr.append(cand)
-
-    perm = rng.permutation(n_agents)
-    while any(perm == np.arange(n_agents)):  # derangement: no drone's goal is its own spawn
-        perm = rng.permutation(n_agents)
-
-    spawns = {f'drone_{i}': spawns_arr[i].tolist() for i in range(n_agents)}
-    goals = {f'drone_{i}': spawns_arr[perm[i]].tolist() for i in range(n_agents)}
-
+    """Swap scenario (see envs/scenarios.py), applied to the env."""
+    spawns, goals = scenarios.swap(rng, n_agents, reach, min_spawn_sep)
     return _apply_scenario(env, spawns, goals, n_agents)
 
 
 def setup_headon_scenario(env, rng, n_agents, r_min=3.0, r_max=5.0):
-    """Maximum-drama version of the crossing scenario: NO jitter at all —
-    an exact symmetric formation (equilateral for 3 agents) on a circle,
-    same radius, same altitude, goals at the exact diametrically opposite
-    point. All agents are on paths that would collide dead-center at the
-    same instant if flown at matched constant speed — a genuine 'this WILL
-    collide unless something changes' setup, not just a mild proximity dip.
-
-    Verified via a 15-trial batch: 100% success, 0% collision, but mean
-    minimum separation only 0.49m (vs 0.85-3.57m for the jittered crossing/
-    swap scenarios) — several trials land in the 0.28-0.5m range (genuine
-    close call) and others in 0.6-0.8m (clear, visible swerve). Use
-    --min-demo-separation ~0.35 (not the default 0.5) to keep the dramatic
-    tight calls without dropping into the <0.3m visually-ambiguous zone.
-    """
-    R = rng.uniform(r_min, r_max)
-    z = rng.uniform(2.0, 3.0)
-    base_angle = rng.uniform(0, 360)  # only the overall orientation is randomized
-
-    angles = base_angle + np.linspace(0, 360, n_agents, endpoint=False)
-    spawns, goals = {}, {}
-    for i, ang in enumerate(angles):
-        rad = np.radians(ang)
-        spawn = np.array([R * np.cos(rad), R * np.sin(rad), z])
-        goal = np.array([-R * np.cos(rad), -R * np.sin(rad), z])
-        spawns[f'drone_{i}'] = spawn.tolist()
-        goals[f'drone_{i}'] = goal.tolist()
-
+    """Head-on scenario (see envs/scenarios.py), applied to the env."""
+    spawns, goals = scenarios.headon(rng, n_agents, r_min, r_max)
     return _apply_scenario(env, spawns, goals, n_agents)
 
 

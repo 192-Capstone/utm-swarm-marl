@@ -78,8 +78,28 @@ class MAPPOTrainer:
             from rollout_buffer import RolloutBuffer
             from ppo_optimizer import PPOOptimizer
 
+        # MAPPO-Lagrangian (optional 'lagrangian' config block). Safety becomes
+        # a constraint instead of a fixed price in the reward: a second,
+        # centralized cost critic predicts future safety cost (near-misses,
+        # crashes), and the multiplier lambda rises whenever the measured cost
+        # is above cost_limit and falls when it is below. Without the block,
+        # everything below is skipped and training is plain MAPPO as before.
+        lag_cfg = config.get('lagrangian', {})
+        self.use_lagrangian = bool(lag_cfg.get('enabled', False))
+        self.cost_limit     = lag_cfg.get('cost_limit', 0.0)
+        self.lambda_lr      = lag_cfg.get('lambda_lr', 0.05)
+        self.lambda_max     = lag_cfg.get('lambda_max', 20.0)
+        self.cost_critic    = None
+        if self.use_lagrangian:
+            from .networks.critic_network import CriticNetwork
+            self.cost_critic = CriticNetwork(config).to(self.device)
+        self._buffer_episode_costs = []   # per-drone episode cost, this buffer
+
         self.buffer    = RolloutBuffer(config, self.device)
-        self.optimizer = PPOOptimizer(actor, critic, config, self.device)
+        self.optimizer = PPOOptimizer(actor, critic, config, self.device,
+                                      cost_critic=self.cost_critic)
+        if self.use_lagrangian:
+            self.optimizer.lagrange_lambda = float(lag_cfg.get('lambda_init', 1.0))
 
         # Training settings
         self.n_agents        = config['environment']['n_agents']
@@ -218,6 +238,8 @@ class MAPPOTrainer:
             # Update policy when buffer is full
             if self.buffer.is_full():
                 metrics = self._update_policy()
+                if self.use_lagrangian:
+                    metrics.update(self._update_lagrange_multiplier())
                 self.buffer.reset()
                 # Only change the exploration schedule BETWEEN buffers, never
                 # mid-collection. A transition's stored old_log_prob reflects
@@ -272,11 +294,15 @@ class MAPPOTrainer:
             if self.episode_count % 10 == 0:
                 elapsed = time.time() - start_time
                 sr = np.mean(self.success_history[-100:]) if self.success_history else 0
+                lag = (f"Cost: {ep_info.get('episode_cost', 0.0):5.2f} | "
+                       f"lambda: {self.optimizer.lagrange_lambda:5.2f} | "
+                       if self.use_lagrangian else "")
                 print(
                     f"Ep {self.episode_count:5d} | "
                     f"Reward: {episode_reward:7.2f} | "
                     f"Length: {episode_length:4d} | "
                     f"Success: {sr:.2f} | "
+                    f"{lag}"
                     f"Stage: {self.curriculum_stage} | "
                     f"Time: {elapsed:.0f}s"
                 )
@@ -372,6 +398,7 @@ class MAPPOTrainer:
         last_info            = {}
         reward_component_sums = {}
         speed_accum = 0.0
+        episode_cost = 0.0     # safety cost summed over steps, averaged over drones
 
         # Unpack observations from env reset
         local_fixed, neighbor_states, neighbor_mask, global_state = \
@@ -389,6 +416,10 @@ class MAPPOTrainer:
                     global_state.unsqueeze(0)
                 )
                 values = self._as_agent_values(values)
+                cost_values = None
+                if self.use_lagrangian:
+                    cost_values = self._as_agent_values(
+                        self.cost_critic.get_value(global_state.unsqueeze(0)))
 
             # Apply yaw mask for Stage 1-2. Masking changes the action, so the
             # stored log_prob must be recomputed for the masked action —
@@ -415,6 +446,10 @@ class MAPPOTrainer:
                 [float(done)] * self.n_agents,
                 dtype=torch.float32, device=self.device
             )
+            cost_tensor = None
+            if self.use_lagrangian:
+                cost_tensor = torch.tensor(info['cost'], dtype=torch.float32, device=self.device)
+                episode_cost += cost_tensor.mean().item()
 
             # Store transition
             self.buffer.store(
@@ -427,6 +462,8 @@ class MAPPOTrainer:
                 rewards         = rewards_tensor,
                 dones           = done_tensor,
                 values          = values,
+                costs           = cost_tensor,
+                cost_values     = cost_values,
             )
 
             episode_reward += rewards_tensor.sum().item()
@@ -459,6 +496,13 @@ class MAPPOTrainer:
             )
             last_values = self._as_agent_values(last_values)
         self.buffer.compute_gae(last_values)
+        if self.use_lagrangian:
+            with torch.no_grad():
+                last_cost_values = self._as_agent_values(
+                    self.cost_critic.get_value(global_state.unsqueeze(0)))
+            self.buffer.compute_cost_gae(last_cost_values)
+            last_info['episode_cost'] = episode_cost
+            self._buffer_episode_costs.append(episode_cost)
 
         return episode_reward, episode_length, success, min_dist_to_goal, initial_dist_to_goal, last_info
 
@@ -471,8 +515,33 @@ class MAPPOTrainer:
     def _update_policy(self) -> Dict:
         """Run PPO update. Returns metrics dict for logging."""
         self.optimizer.active_action_dims = self._active_action_dims()
+        # training.actor_warmup_until_episode: until this episode only the
+        # critic learns (default 0 = no warm-up, the old behaviour).
+        warmup_until = self.config['training'].get('actor_warmup_until_episode', 0)
+        self.optimizer.freeze_actor = self.episode_count < warmup_until
+        if self.optimizer.freeze_actor:
+            print(f"  [Warmup] critic-only update (actor frozen until episode {warmup_until})")
         metrics = self.optimizer.update(self.buffer)
         return metrics
+
+    def _update_lagrange_multiplier(self) -> Dict:
+        """One step of the lambda 'thermostat' after each buffer:
+            lambda <- clip(lambda + lambda_lr * (mean episode cost - cost_limit), 0, lambda_max)
+        Too many near-misses in the episodes just collected -> lambda rises and
+        safety weighs more in the next update; safely below the limit ->
+        lambda falls and the reward (getting to the goal) weighs more. Held
+        fixed during the critic warm-up, while the actor isn't changing."""
+        mean_cost = float(np.mean(self._buffer_episode_costs)) if self._buffer_episode_costs else 0.0
+        self._buffer_episode_costs = []
+        lam = self.optimizer.lagrange_lambda
+        if not self.optimizer.freeze_actor:
+            lam = float(np.clip(lam + self.lambda_lr * (mean_cost - self.cost_limit),
+                                0.0, self.lambda_max))
+            self.optimizer.lagrange_lambda = lam
+        return {'lagrange/lambda': lam,
+                'lagrange/buffer_episode_cost': mean_cost,
+                'lagrange/cost_limit': self.cost_limit,
+                'lagrange/cost_value_mean': self.buffer.cost_values[:self.buffer.ptr].mean().item()}
 
     def _as_agent_values(self, value_tensor: torch.Tensor) -> torch.Tensor:
         """
@@ -800,6 +869,10 @@ class MAPPOTrainer:
             if 'episode_mean_speed' in extra_info:
                 log_dict['settle/episode_mean_speed'] = extra_info['episode_mean_speed']
 
+            if 'episode_cost' in extra_info:
+                log_dict['lagrange/episode_cost'] = extra_info['episode_cost']
+                log_dict['lagrange/lambda_now'] = self.optimizer.lagrange_lambda
+
             for k, v in extra_info.get('reward_component_sums', {}).items():
                 log_dict[f'reward/{k}'] = v
 
@@ -843,6 +916,17 @@ class MAPPOTrainer:
             }
         return {}
 
+    def _lagrangian_state(self) -> Dict:
+        """Cost critic, its optimizer and lambda, so a Lagrangian run resumes
+        where it stopped. Empty for plain MAPPO runs."""
+        if not self.use_lagrangian:
+            return {}
+        return {
+            'cost_critic_state_dict': self.cost_critic.state_dict(),
+            'cost_critic_optim':      self.optimizer.cost_critic_optimizer.state_dict(),
+            'lagrange_lambda':        self.optimizer.lagrange_lambda,
+        }
+
     def _save_checkpoint(self, tag: str = ""):
         """Save actor and critic weights."""
         path = os.path.join(self.checkpoint_dir, f"checkpoint_{tag}.pth")
@@ -862,6 +946,7 @@ class MAPPOTrainer:
             'log_std_floor':       self.actor.log_std_floor,
             'config':              self.config,
             **self._normalizer_state(),
+            **self._lagrangian_state(),
         }, path)
         print(f"Checkpoint saved: {path}")
 
@@ -917,17 +1002,57 @@ class MAPPOTrainer:
             import wandb
             wandb.save(path, base_path=self.checkpoint_dir)
 
-    def load_checkpoint(self, path: str):
+    def load_checkpoint(self, path: str, restore_normalizer: bool = True):
         """Load a saved checkpoint to resume training."""
         ckpt = torch.load(path, map_location=self.device)
         self.actor.load_state_dict(ckpt['actor_state_dict'])
         self.critic.load_state_dict(ckpt['critic_state_dict'])
         self.optimizer.actor_optimizer.load_state_dict(ckpt['actor_optim'])
         self.optimizer.critic_optimizer.load_state_dict(ckpt['critic_optim'])
+        # load_state_dict also restores the learning rate saved in the
+        # checkpoint, which silently overrode whatever the resumed run's config
+        # asked for. Re-apply the config's rates.
+        for group in self.optimizer.actor_optimizer.param_groups:
+            group['lr'] = self.config['training']['actor_lr']
+        for group in self.optimizer.critic_optimizer.param_groups:
+            group['lr'] = self.config['training']['critic_lr']
         self.episode_count    = ckpt['episode_count']
         self.curriculum_stage = ckpt['curriculum_stage']
         self.best_success_rate= ckpt['best_success_rate']
         print(f"Checkpoint loaded: {path} (episode {self.episode_count})")
+
+        # Restore the observation normalizer the actor was trained with.
+        # Without this a resumed run starts from a blank normalizer: for the
+        # first ~1000 samples the actor gets raw, unscaled inputs, and after
+        # that a freshly built scaling, neither of which it learned on. It
+        # keeps updating during training as usual (not frozen).
+        # restore_normalizer=False exists only to demonstrate the difference.
+        if restore_normalizer and 'normalizer_mean' in ckpt and self.env is not None:
+            norm = self.env.obs_processor.normalizer
+            norm.mean  = np.asarray(ckpt['normalizer_mean'], dtype=np.float32).copy()
+            norm.var   = np.asarray(ckpt['normalizer_var'],  dtype=np.float32).copy()
+            norm.count = int(ckpt['normalizer_count'])
+            print(f"  normalizer restored (count={norm.count})")
+
+        # training.freeze_normalizer: keep the restored normalizer fixed. The
+        # imitation actor learned on the baseline's frozen statistics (2 m
+        # goals); left updating, the conflict scenarios' 5-10 m goals widened
+        # the goal-input statistics ~6x during rl-from-imitation, and the
+        # untouched imitation actor run with those drifted statistics crashed
+        # in 13-19% of head-on/crossing/fly-through episodes instead of 0-1%.
+        if self.config['training'].get('freeze_normalizer', False) and self.env is not None:
+            self.env.obs_processor.normalizer.freeze()
+            print("  normalizer frozen (training.freeze_normalizer)")
+
+        if self.use_lagrangian and 'cost_critic_state_dict' in ckpt:
+            self.cost_critic.load_state_dict(ckpt['cost_critic_state_dict'])
+            self.optimizer.cost_critic_optimizer.load_state_dict(ckpt['cost_critic_optim'])
+            for group in self.optimizer.cost_critic_optimizer.param_groups:
+                group['lr'] = self.config['training']['critic_lr']
+            self.optimizer.lagrange_lambda = float(ckpt['lagrange_lambda'])
+            print(f"  cost critic and lambda restored (lambda={self.optimizer.lagrange_lambda:.3f})")
+        elif self.use_lagrangian:
+            print(f"  new cost critic, lambda starts at {self.optimizer.lagrange_lambda:.3f}")
 
     # ── Phase B Testing: Dummy Data Training ─────────────────────────────────
 

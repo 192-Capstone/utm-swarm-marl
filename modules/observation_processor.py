@@ -39,6 +39,8 @@ from typing import Dict, List, Tuple, Optional
 import yaml
 import os
 
+from modules.neighbour_source import TruthNeighbourSource
+
 
 class RunningNormalizer:
     """
@@ -130,6 +132,19 @@ class ObservationProcessor:
 
         # Running normalizer for local fixed observations
         self.normalizer = RunningNormalizer(self.local_obs_dim)
+
+        # Neighbour information (see docs/neighbour_information_design.md).
+        #   sensing_radius     : drones further away than this are invisible
+        #                        (null = no limit, the old behaviour)
+        #   neighbor_pos_scale : relative positions are divided by this
+        #   neighbor_vel_scale : relative velocities are divided by this
+        # Defaults reproduce the old raw, unlimited neighbour inputs exactly,
+        # so existing configs and checkpoints are unaffected.
+        obs_cfg = config['observation']
+        self.sensing_radius     = obs_cfg.get('sensing_radius', None)
+        self.neighbor_pos_scale = float(obs_cfg.get('neighbor_pos_scale', 1.0))
+        self.neighbor_vel_scale = float(obs_cfg.get('neighbor_vel_scale', 1.0))
+        self.neighbour_source   = TruthNeighbourSource()
 
         # LiDAR quadrant ray assignments
         # Front: rays 0 (F), 6 (NE_up), 10 (NE_down)
@@ -260,6 +275,11 @@ class ObservationProcessor:
 
         Relative (not absolute) for translation invariance.
 
+        Steps, per observing drone i:
+            1. ask the neighbour source what i knows about the others
+            2. drop drones beyond the sensing radius (if one is set)
+            3. keep the K nearest, scale them, mask the empty slots
+
         Returns:
             neighbor_states : (N, K_max, 6)  — padded neighbor matrix
             neighbor_mask   : (N, K_max) bool — True = padded empty slot
@@ -270,13 +290,22 @@ class ObservationProcessor:
         neighbor_states = np.zeros((N, K, 6), dtype=np.float32)
         neighbor_mask   = np.ones( (N, K),    dtype=bool)   # True = masked (empty)
 
-        for i in range(N):
-            # Compute distances to all other drones
-            others = [j for j in range(N) if j != i]
-            if not others:
-                continue   # single drone — no neighbors
+        known_pos, known_vel, known = self.neighbour_source.observe(positions, velocities)
 
-            dists = np.linalg.norm(positions[others] - positions[i], axis=1)
+        for i in range(N):
+            others = [j for j in range(N) if j != i and known[i, j]]
+            if not others:
+                continue   # single drone, or nothing known about anyone
+
+            dists = np.linalg.norm(known_pos[i, others] - positions[i], axis=1)
+
+            # Sensing radius: anything further away is invisible
+            if self.sensing_radius is not None:
+                in_range = dists <= self.sensing_radius
+                others = [j for j, ok in zip(others, in_range) if ok]
+                dists = dists[in_range]
+                if not others:
+                    continue
 
             # Sort by distance — K nearest neighbors
             k_actual = min(len(others), K)
@@ -284,11 +313,11 @@ class ObservationProcessor:
             neighbor_indices = [others[s] for s in sorted_idx]
 
             for slot, j in enumerate(neighbor_indices):
-                rel_pos  = positions[j]  - positions[i]    # relative position
-                rel_vel  = velocities[j] - velocities[i]   # relative velocity
-                neighbor_states[i, slot, :3] = rel_pos
-                neighbor_states[i, slot, 3:] = rel_vel
-                neighbor_mask[i, slot]        = False       # slot is populated
+                rel_pos  = known_pos[i, j] - positions[i]    # relative position
+                rel_vel  = known_vel[i, j] - velocities[i]   # relative velocity
+                neighbor_states[i, slot, :3] = rel_pos / self.neighbor_pos_scale
+                neighbor_states[i, slot, 3:] = rel_vel / self.neighbor_vel_scale
+                neighbor_mask[i, slot]        = False         # slot is populated
 
         return neighbor_states, neighbor_mask   # (N, K, 6), (N, K)
 
