@@ -67,6 +67,12 @@ class PPOOptimizer:
         # by MAPPOTrainer before each update() call based on curriculum stage.
         self.active_action_dims = None
 
+        # When True, PPO updates only the critic (the actor's weights are left
+        # untouched). Set by MAPPOTrainer for a short critic warm-up after
+        # resuming an actor that was trained some other way (e.g. imitation),
+        # so the actor isn't steered by a critic that doesn't fit it yet.
+        self.freeze_actor = False
+
         # Separate optimizers for actor and critic
         # Allows different learning rates if needed
         self.actor_optimizer = optim.Adam(
@@ -146,7 +152,8 @@ class PPOOptimizer:
                 actor_gn  = nn.utils.clip_grad_norm_(self.actor.parameters(),  self.max_grad_norm)
                 critic_gn = nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
 
-                self.actor_optimizer.step()
+                if not self.freeze_actor:
+                    self.actor_optimizer.step()
                 self.critic_optimizer.step()
 
                 epoch_stats['actor_loss'].append(actor_loss.item())

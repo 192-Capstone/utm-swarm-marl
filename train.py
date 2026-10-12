@@ -48,6 +48,9 @@ def main():
                         help="Force device (cpu/cuda)")
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for reproducible runs (network init + env spawns)")
+    parser.add_argument("--checkpoint-dir", type=str, default=None,
+                        help="Override logging.checkpoint_dir, e.g. one folder per seed so "
+                             "parallel runs don't overwrite each other's checkpoints")
     args = parser.parse_args()
 
     config_path = os.path.join(os.path.dirname(__file__), args.config)
@@ -60,6 +63,11 @@ def main():
 
     if args.episodes is not None:
         config["training"]["total_episodes"] = args.episodes
+
+    if args.checkpoint_dir:
+        ckpt_dir = args.checkpoint_dir.rstrip("/\\") + "/"
+        config["logging"]["checkpoint_dir"] = ckpt_dir
+        config["logging"]["best_checkpoint"] = ckpt_dir + "best_policy.pth"
 
     if args.device:
         device = torch.device(args.device)

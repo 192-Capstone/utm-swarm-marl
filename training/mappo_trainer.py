@@ -471,6 +471,12 @@ class MAPPOTrainer:
     def _update_policy(self) -> Dict:
         """Run PPO update. Returns metrics dict for logging."""
         self.optimizer.active_action_dims = self._active_action_dims()
+        # training.actor_warmup_until_episode: until this episode only the
+        # critic learns (default 0 = no warm-up, the old behaviour).
+        warmup_until = self.config['training'].get('actor_warmup_until_episode', 0)
+        self.optimizer.freeze_actor = self.episode_count < warmup_until
+        if self.optimizer.freeze_actor:
+            print(f"  [Warmup] critic-only update (actor frozen until episode {warmup_until})")
         metrics = self.optimizer.update(self.buffer)
         return metrics
 
@@ -917,17 +923,37 @@ class MAPPOTrainer:
             import wandb
             wandb.save(path, base_path=self.checkpoint_dir)
 
-    def load_checkpoint(self, path: str):
+    def load_checkpoint(self, path: str, restore_normalizer: bool = True):
         """Load a saved checkpoint to resume training."""
         ckpt = torch.load(path, map_location=self.device)
         self.actor.load_state_dict(ckpt['actor_state_dict'])
         self.critic.load_state_dict(ckpt['critic_state_dict'])
         self.optimizer.actor_optimizer.load_state_dict(ckpt['actor_optim'])
         self.optimizer.critic_optimizer.load_state_dict(ckpt['critic_optim'])
+        # load_state_dict also restores the learning rate saved in the
+        # checkpoint, which silently overrode whatever the resumed run's config
+        # asked for. Re-apply the config's rates.
+        for group in self.optimizer.actor_optimizer.param_groups:
+            group['lr'] = self.config['training']['actor_lr']
+        for group in self.optimizer.critic_optimizer.param_groups:
+            group['lr'] = self.config['training']['critic_lr']
         self.episode_count    = ckpt['episode_count']
         self.curriculum_stage = ckpt['curriculum_stage']
         self.best_success_rate= ckpt['best_success_rate']
         print(f"Checkpoint loaded: {path} (episode {self.episode_count})")
+
+        # Restore the observation normalizer the actor was trained with.
+        # Without this a resumed run starts from a blank normalizer: for the
+        # first ~1000 samples the actor gets raw, unscaled inputs, and after
+        # that a freshly built scaling, neither of which it learned on. It
+        # keeps updating during training as usual (not frozen).
+        # restore_normalizer=False exists only to demonstrate the difference.
+        if restore_normalizer and 'normalizer_mean' in ckpt and self.env is not None:
+            norm = self.env.obs_processor.normalizer
+            norm.mean  = np.asarray(ckpt['normalizer_mean'], dtype=np.float32).copy()
+            norm.var   = np.asarray(ckpt['normalizer_var'],  dtype=np.float32).copy()
+            norm.count = int(ckpt['normalizer_count'])
+            print(f"  normalizer restored (count={norm.count})")
 
     # ── Phase B Testing: Dummy Data Training ─────────────────────────────────
 
