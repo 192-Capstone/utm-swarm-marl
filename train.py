@@ -5,7 +5,7 @@ Usage:
     python train.py                     # default: Stage 1 on CPU
     python train.py --gui               # with PyBullet GUI window
     python train.py --episodes 2000     # custom episode count
-    python train.py --resume checkpoints/checkpoint_ep500.pth
+    python train.py --resume checkpoints/<run>/checkpoint_ep500.pth
 
 This wires SwarmEnv (PyBullet backend) to the MAPPO engine and starts
 curriculum-based training. Stage 1 = empty world, no obstacles, yaw masked.

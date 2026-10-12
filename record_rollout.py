@@ -4,7 +4,7 @@ as an MP4, using PyBullet's GUI window + built-in video logger.
 
 Usage:
     python record_rollout.py --config configs/config_3agent_review.yaml \
-        --checkpoint checkpoints_review_3agent/checkpoint_3agent_review_seed1_ep500.pth \
+        --checkpoint checkpoints/review_3agent/checkpoint_3agent_review_seed1_ep500.pth \
         --out rollout_3agent.mp4
 
 Requires a real display (DISPLAY set) and ffmpeg on PATH — PyBullet's

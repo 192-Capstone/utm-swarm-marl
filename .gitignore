@@ -51,3 +51,9 @@ SETUP.md
 # Review/PPT prep docs and demo recordings (not part of the codebase)
 PHASE3_REVIEW1_SLIDES.md
 *.mp4
+
+# Evaluation outputs (eval_suite.py writes one folder per test; regenerate locally)
+eval_results/
+
+# Local-only notes, not for the shared repository
+docs/pybullet_to_webots_transfer.md

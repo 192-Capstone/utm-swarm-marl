@@ -164,8 +164,8 @@ logging:
   wandb_entity: null
   log_interval: 10
   log_reward_components: true
-  checkpoint_dir: checkpoints_review_3agent/
-  best_checkpoint: checkpoints_review_3agent/best_policy.pth
+  checkpoint_dir: checkpoints/review_3agent/
+  best_checkpoint: checkpoints/review_3agent/best_policy.pth
 
 # -----------------------------------------------------------------------------
 # Failure-mode guide (using the metrics eval_checkpoint.py / _run_eval() now report)

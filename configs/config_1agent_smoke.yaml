@@ -130,5 +130,5 @@ logging:
   wandb_entity: null
   log_interval: 10
   log_reward_components: true
-  checkpoint_dir: checkpoints_smoke/
-  best_checkpoint: checkpoints_smoke/best_policy.pth
+  checkpoint_dir: checkpoints/smoke/
+  best_checkpoint: checkpoints/smoke/best_policy.pth
