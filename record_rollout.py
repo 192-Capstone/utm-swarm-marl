@@ -72,7 +72,8 @@ def disable_all_collision_physics(env, n_agents):
     for i in range(n_agents):
         for j in range(i + 1, n_agents):
             p.setCollisionFilterPair(
-                env.adapter.drone_ids[i], env.adapter.drone_ids[j], -1, -1, enableCollision=0
+                env.adapter.drone_ids[i], env.adapter.drone_ids[j], -1, -1, enableCollision=0,
+                physicsClientId=env.adapter.client
             )
 
 
