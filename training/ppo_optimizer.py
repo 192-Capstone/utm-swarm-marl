@@ -40,17 +40,25 @@ class PPOOptimizer:
         L_entropy = policy entropy bonus (maximize, encourages exploration)
     """
 
-    def __init__(self, actor, critic, config: dict, device: torch.device):
+    def __init__(self, actor, critic, config: dict, device: torch.device, cost_critic=None):
         """
         Args:
-            actor   : ActorNetwork instance
-            critic  : CriticNetwork instance
-            config  : loaded default_config.yaml
-            device  : torch.device
+            actor       : ActorNetwork instance
+            critic      : CriticNetwork instance
+            config      : loaded default_config.yaml
+            device      : torch.device
+            cost_critic : optional second CriticNetwork for MAPPO-Lagrangian;
+                          None = plain MAPPO (the old behaviour)
         """
         self.actor  = actor
         self.critic = critic
+        self.cost_critic = cost_critic
         self.device = device
+
+        # Lagrange multiplier: how much the actor cares about the safety cost
+        # relative to the reward. Updated by MAPPOTrainer after each buffer,
+        # read here when forming the actor's advantage.
+        self.lagrange_lambda = 0.0
 
         # PPO hyperparameters
         self.clip_epsilon    = config['training']['clip_epsilon']      # 0.2
@@ -83,6 +91,10 @@ class PPOOptimizer:
             critic.parameters(),
             lr=config['training']['critic_lr']   # 3e-4
         )
+        self.cost_critic_optimizer = None
+        if cost_critic is not None:
+            self.cost_critic_optimizer = optim.Adam(
+                cost_critic.parameters(), lr=config['training']['critic_lr'])
 
         # Running stats for logging
         self.stats = {
@@ -95,6 +107,7 @@ class PPOOptimizer:
             'critic_grad_norm': [],
             'advantage_mean':   [],
             'advantage_std':    [],
+            'cost_critic_loss': [],
         }
 
     def update(self, buffer) -> Dict[str, float]:
@@ -119,7 +132,7 @@ class PPOOptimizer:
 
             for batch in buffer.get_minibatches(self.batch_size):
 
-                actor_loss, critic_loss, entropy, clip_frac, approx_kl = \
+                actor_loss, critic_loss, entropy, clip_frac, approx_kl, cost_critic_loss = \
                     self._compute_losses(batch)
 
                 if torch.isnan(actor_loss) or torch.isnan(critic_loss):
@@ -143,9 +156,13 @@ class PPOOptimizer:
                     + self.value_loss_coef * critic_loss
                     - self.entropy_coef    * entropy
                 )
+                if cost_critic_loss is not None:
+                    total_loss = total_loss + self.value_loss_coef * cost_critic_loss
 
                 self.actor_optimizer.zero_grad()
                 self.critic_optimizer.zero_grad()
+                if self.cost_critic_optimizer is not None:
+                    self.cost_critic_optimizer.zero_grad()
 
                 total_loss.backward()
 
@@ -155,6 +172,10 @@ class PPOOptimizer:
                 if not self.freeze_actor:
                     self.actor_optimizer.step()
                 self.critic_optimizer.step()
+                if self.cost_critic_optimizer is not None:
+                    nn.utils.clip_grad_norm_(self.cost_critic.parameters(), self.max_grad_norm)
+                    self.cost_critic_optimizer.step()
+                    epoch_stats['cost_critic_loss'].append(cost_critic_loss.item())
 
                 epoch_stats['actor_loss'].append(actor_loss.item())
                 epoch_stats['critic_loss'].append(critic_loss.item())
@@ -239,6 +260,14 @@ class PPOOptimizer:
         log_ratio = new_log_probs - old_log_probs
         ratio     = torch.exp(log_ratio)            # (B,)
 
+        # MAPPO-Lagrangian: the actor maximizes reward minus lambda x cost.
+        # Both advantages are normalized; dividing by (1 + lambda) keeps the
+        # combined advantage on the same scale however large lambda gets, so
+        # the PPO clip and learning rate keep their meaning.
+        if self.cost_critic is not None:
+            lam = self.lagrange_lambda
+            advantages = (advantages - lam * batch['cost_advantages']) / (1.0 + lam)
+
         # Clipped surrogate objective
         # surr1: unclipped — ratio * advantage
         # surr2: clipped   — clamp ratio to [1-eps, 1+eps] * advantage
@@ -264,6 +293,11 @@ class PPOOptimizer:
 
         critic_loss = nn.functional.mse_loss(values, returns)        # scalar
 
+        cost_critic_loss = None
+        if self.cost_critic is not None:
+            cost_values = self.cost_critic(global_state).squeeze(-1)
+            cost_critic_loss = nn.functional.mse_loss(cost_values, batch['cost_returns'])
+
         # ── Diagnostics ───────────────────────────────────────────────────────
 
         # Clip fraction — fraction of ratios that were clipped
@@ -275,7 +309,7 @@ class PPOOptimizer:
             # KL ≈ mean((ratio - 1) - log_ratio), always non-negative
             approx_kl = ((ratio - 1) - log_ratio).mean()
 
-        return actor_loss, critic_loss, entropy.mean(), clip_frac, approx_kl
+        return actor_loss, critic_loss, entropy.mean(), clip_frac, approx_kl, cost_critic_loss
 
     def get_lr(self) -> Dict[str, float]:
         """Return current learning rates for logging."""

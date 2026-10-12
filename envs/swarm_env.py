@@ -43,6 +43,13 @@ class SwarmEnv:
         self.settle_speed     = config['environment'].get('settle_speed', 0.15)
         self.settle_steps     = config['environment'].get('settle_steps', 31)
         self.min_spawn_sep    = config.get('scenario_manager', {}).get('min_spawn_separation', 5.0)
+        # Safety cost for constrained RL (MAPPO-Lagrangian), kept separate from
+        # the reward: 1 per step a drone is closer than cost_distance to any
+        # other drone, plus collision_cost on the step it crashes (a crash ends
+        # the episode, so without the extra it would count as one cheap step).
+        safety = config.get('safety', {})
+        self.cost_distance  = safety.get('cost_distance', 0.5)
+        self.collision_cost = safety.get('collision_cost', 0.0)
         self.curriculum_stage = 1
 
         self.adapter        = adapter or PyBulletAdapter(config, gui=gui)
@@ -187,6 +194,9 @@ class SwarmEnv:
                            for d in drone_distances]
         # obstacle collisions: none in Stage 1 (empty world)
         obstacle_collision = [False] * self.n_agents
+        cost = [float(bool(d) and min(d) < self.cost_distance)
+                + self.collision_cost * float(drone_collision[i])
+                for i, d in enumerate(drone_distances)]
 
         actions_arr = np.array([actions_dict[f'drone_{i}'] for i in range(self.n_agents)],
                                dtype=np.float32)
@@ -288,6 +298,7 @@ class SwarmEnv:
                 'drone_reached_goal':       list(self.drone_reached_goal),
                 'drone_collision':          list(drone_collision),
                 'obstacle_collision':       list(obstacle_collision),
+                'cost':                     cost,
                 'min_dist_to_goal':         float(self.min_dist_ever.mean()),
                 'per_agent_min_dist':       self.min_dist_ever.tolist(),
                 'initial_dist_to_goal':     float(self.initial_dist.mean()),
