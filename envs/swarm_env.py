@@ -25,6 +25,7 @@ from modules.observation_processor import ObservationProcessor
 from modules.reward_engine import RewardEngine
 from envs.episode_manager import EpisodeManager
 from envs.pybullet_adapter import PyBulletAdapter
+from envs import scenarios
 
 
 class SwarmEnv:
@@ -62,6 +63,20 @@ class SwarmEnv:
         self.goal_dist_threshold = goal_dist_cfg.get('advance_sr', 0.3)
         self.goal_dist_window = goal_dist_cfg.get('window', 50)
         self._recent_successes = []
+
+        # Scenario mix: which kind of episode reset() produces, e.g.
+        # {random: 0.5, headon: 0.2, crossing: 0.2, swap: 0.1}. Without it,
+        # every episode is the plain random task and no extra RNG is drawn,
+        # so existing configs and seeds behave exactly as before.
+        mix = config.get('scenario_mix') or {'random': 1.0}
+        unknown = set(mix) - {'random', *scenarios.GENERATORS}
+        if unknown:
+            raise ValueError(f"scenario_mix has unknown scenarios: {sorted(unknown)}")
+        self.scenario_names = list(mix)
+        weights = np.array([mix[k] for k in self.scenario_names], dtype=np.float64)
+        self.scenario_probs = weights / weights.sum()
+        self._use_mix = self.scenario_names != ['random']
+        self.current_scenario = 'random'
 
     # ---- world layout (a tiny Stage-1 scenario generator) -------------------
     def _sample_positions(self):
@@ -120,7 +135,14 @@ class SwarmEnv:
 
     # ---- RL interface -------------------------------------------------------
     def reset(self):
-        spawns, goals = self._sample_positions()
+        scenario = 'random'
+        if self._use_mix:
+            scenario = str(np.random.choice(self.scenario_names, p=self.scenario_probs))
+        self.current_scenario = scenario
+        if scenario == 'random':
+            spawns, goals = self._sample_positions()
+        else:
+            spawns, goals = scenarios.GENERATORS[scenario](np.random, self.n_agents)
         self.adapter.reset_world(spawns, goals)
         self.goals = np.array([goals[f'drone_{i}'] for i in range(self.n_agents)],
                               dtype=np.float32)
@@ -258,6 +280,7 @@ class SwarmEnv:
             min_inter_drone_distance = None
 
         info = {'success': reason == 'success', 'reason': reason,
+                'scenario': self.current_scenario,
                 'drones_at_goal': drones_at_goal,
                 # Per-agent LATCHED success (settled for settle_steps), not
                 # merely "inside goal_threshold on this step" — this is what
