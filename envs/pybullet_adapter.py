@@ -7,7 +7,7 @@ This is the "hands" that touch the simulator. It is the ONLY file that knows we
 are using PyBullet. It exposes the same small interface a WebotsAdapter would,
 so SwarmEnv never has to care which simulator is underneath:
 
-    reset_world(spawn_positions, goal_positions)
+    reset_world(spawn_positions, goal_positions, obstacles=None)
     apply_actions(actions)          # {'drone_i': [vx, vy, vz, yaw_rate]}
     step_simulation()
     get_raw_state()  -> dict in the exact schema ObservationProcessor expects
@@ -21,19 +21,29 @@ The raw-state schema (the "contract" a Webots adapter must also satisfy):
       'drone_1': {...}, ...
       'goals':   {'drone_0':[gx,gy,gz], ...}
     }
+'lidar' holds 14 distances in metres in the ray order of envs/lidar.py, with
+the fan rotated so ray 0 points at the drone's goal; a ray that hits nothing
+reports the LiDAR range. The ground is not reported.
 
-Stage-1 simplifications (deliberate, documented):
-  - Empty world, no obstacles.
+Simplifications (deliberate, documented):
   - Velocity control: the policy's velocity command is applied directly to the
     drone body (resetBaseVelocity). Stable and ideal for learning basic
     navigation; realistic motor dynamics come later / in Webots.
   - Gravity disabled -> the drone is a free-flying velocity-controlled body.
-  - LiDAR returns zeros (Stage 1 has nothing to sense; the config zero-pads it).
+  - Obstacles (Stage 2) are static bodies built from a layout produced by
+    envs/scenario_manager.py; collisions with them are detected
+    geometrically by SwarmEnv, so contact physics with them can be off.
+  - LiDAR is off unless lidar.enabled is set; then every ray reports
+    "nothing seen", exactly what Stage-1 checkpoints were trained on.
 """
 
 import numpy as np
 import pybullet as p
 import pybullet_data
+
+from envs import lidar as lidar_mod
+
+RAY_START = 0.3     # rays start this far from the drone centre, outside its own body
 
 
 class PyBulletAdapter:
@@ -50,6 +60,10 @@ class PyBulletAdapter:
 
         self.drone_ids = []
         self.goals     = {}          # {'drone_i': np.array([x, y, z])}
+        self.obstacle_ids = []       # bodies of the current episode's obstacles
+        self.layout       = []       # the layout they were built from
+        self.lidar_cfg    = lidar_mod.lidar_config(config)
+        self._heading     = {}       # last LiDAR heading per drone (used when on the goal)
 
         # Every PyBullet call below passes physicsClientId=self.client. Without
         # it, calls go to world 0 by default, so a second adapter in the same
@@ -62,7 +76,7 @@ class PyBulletAdapter:
         p.setGravity(0, 0, 0, physicsClientId=cid)    # Stage 1: free velocity control
         p.setTimeStep(self.physics_dt, physicsClientId=cid)
         p.setRealTimeSimulation(0, physicsClientId=cid)
-        p.loadURDF("plane.urdf", physicsClientId=cid)
+        self.plane_id = p.loadURDF("plane.urdf", physicsClientId=cid)
 
         self._spawn_drones()
 
@@ -95,14 +109,48 @@ class PyBulletAdapter:
                     p.setCollisionFilterPair(self.drone_ids[i], self.drone_ids[j], -1, -1,
                                              enableCollision=0, physicsClientId=self.client)
 
-    def reset_world(self, spawn_positions: dict, goal_positions: dict):
-        """spawn_positions / goal_positions: {'drone_i': [x, y, z]}."""
+    def reset_world(self, spawn_positions: dict, goal_positions: dict, obstacles=None):
+        """spawn_positions / goal_positions: {'drone_i': [x, y, z]}.
+        obstacles: layout from envs/scenario_manager.py (None or [] = empty world)."""
         for i, body in enumerate(self.drone_ids):
             key = f'drone_{i}'
             p.resetBasePositionAndOrientation(body, spawn_positions[key], [0, 0, 0, 1],
                                               physicsClientId=self.client)
             p.resetBaseVelocity(body, [0, 0, 0], [0, 0, 0], physicsClientId=self.client)
             self.goals[key] = np.array(goal_positions[key], dtype=np.float32)
+        self._heading = {}
+        self._build_obstacles(obstacles or [])
+
+    def _build_obstacles(self, layout):
+        """Replace the previous episode's obstacles with static bodies for this
+        layout. Shapes change size every episode, so bodies are rebuilt rather
+        than pooled (cheap in PyBullet; pooling matters in Webots)."""
+        for b in self.obstacle_ids:
+            p.removeBody(b, physicsClientId=self.client)
+        self.obstacle_ids, self.layout = [], list(layout)
+        contact = self.config['environment'].get('collision_physics', True)
+        for ob in layout:
+            h = ob['height']
+            if ob['type'] == 'pillar':
+                col = p.createCollisionShape(p.GEOM_CYLINDER, radius=ob['radius'], height=h,
+                                             physicsClientId=self.client)
+                vis = p.createVisualShape(p.GEOM_CYLINDER, radius=ob['radius'], length=h,
+                                          rgbaColor=[0.55, 0.43, 0.39, 1], physicsClientId=self.client)
+            else:
+                hx, hy = ob['half']
+                col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[hx, hy, h / 2],
+                                             physicsClientId=self.client)
+                vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[hx, hy, h / 2],
+                                          rgbaColor=[0.6, 0.6, 0.62, 1], physicsClientId=self.client)
+            body = p.createMultiBody(baseMass=0.0, baseCollisionShapeIndex=col,
+                                     baseVisualShapeIndex=vis,
+                                     basePosition=[ob['center'][0], ob['center'][1], h / 2],
+                                     physicsClientId=self.client)
+            if not contact:
+                for d in self.drone_ids:
+                    p.setCollisionFilterPair(d, body, -1, -1, enableCollision=0,
+                                             physicsClientId=self.client)
+            self.obstacle_ids.append(body)
 
     def apply_actions(self, actions: dict):
         """actions: {'drone_i': [vx, vy, vz, yaw_rate]} (yaw_rate optional)."""
@@ -120,19 +168,51 @@ class PyBulletAdapter:
 
     def get_raw_state(self) -> dict:
         state = {'goals': {}}
+        positions = []
         for i, body in enumerate(self.drone_ids):
             key = f'drone_{i}'
             pos, orn = p.getBasePositionAndOrientation(body, physicsClientId=self.client)
             lin, _   = p.getBaseVelocity(body, physicsClientId=self.client)
             euler    = p.getEulerFromQuaternion(orn)     # (roll, pitch, yaw)
+            positions.append(np.array(pos))
             state[key] = {
                 'position':    list(pos),
                 'velocity':    list(lin),
                 'orientation': list(euler),
-                'lidar':       [0.0] * self.n_lidar,     # Stage 1: nothing to sense
             }
             state['goals'][key] = self.goals[key].tolist()
+        scans = self._scan_lidar(positions)
+        for i in range(self.n_agents):
+            state[f'drone_{i}']['lidar'] = scans[i]
         return state
+
+    def _scan_lidar(self, positions):
+        """14 distances per drone (metres, range = nothing hit), one batched
+        ray test for the whole swarm. Ground hits are ignored; hits on other
+        drones count only when lidar.sees_drones is set."""
+        rng = self.lidar_cfg['range']
+        if not self.lidar_cfg['enabled']:
+            return [[rng] * self.n_lidar for _ in range(self.n_agents)]
+        starts, ends = [], []
+        for i, pos in enumerate(positions):
+            key = f'drone_{i}'
+            yaw = lidar_mod.heading_to_goal(pos, self.goals[key], self._heading.get(key, 0.0))
+            self._heading[key] = yaw
+            for d in lidar_mod.ray_directions(yaw):
+                starts.append((pos + RAY_START * d).tolist())
+                ends.append((pos + rng * d).tolist())
+        hits = p.rayTestBatch(starts, ends, physicsClientId=self.client)
+        drones = set(self.drone_ids)
+        out = []
+        for i in range(self.n_agents):
+            row = []
+            for k in range(self.n_lidar):
+                obj, _, frac = hits[i * self.n_lidar + k][:3]
+                seen = obj >= 0 and obj != self.plane_id and \
+                    (obj not in drones or self.lidar_cfg['sees_drones'])
+                row.append(RAY_START + frac * (rng - RAY_START) if seen else rng)
+            out.append(row)
+        return out
 
     def get_positions(self) -> np.ndarray:
         return np.array(
