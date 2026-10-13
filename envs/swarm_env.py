@@ -26,6 +26,7 @@ from modules.reward_engine import RewardEngine
 from envs.episode_manager import EpisodeManager
 from envs.pybullet_adapter import PyBulletAdapter
 from envs import scenarios
+from envs import scenario_manager
 
 
 class SwarmEnv:
@@ -50,7 +51,14 @@ class SwarmEnv:
         safety = config.get('safety', {})
         self.cost_distance  = safety.get('cost_distance', 0.5)
         self.collision_cost = safety.get('collision_cost', 0.0)
+        # Obstacles count too: 1 per step closer than obstacle_cost_distance
+        # (drone centre to obstacle surface), plus collision_cost on a hit.
+        self.obstacle_cost_distance = safety.get('obstacle_cost_distance', 0.5)
         self.curriculum_stage = 1
+
+        # Stage-2 static obstacles (config block 'obstacles'; None = empty world)
+        self.obstacle_cfg = scenario_manager.obstacle_config(config)
+        self.layout = []
 
         self.adapter        = adapter or PyBulletAdapter(config, gui=gui)
         self.obs_processor  = ObservationProcessor(config, self.device)
@@ -150,7 +158,23 @@ class SwarmEnv:
             spawns, goals = self._sample_positions()
         else:
             spawns, goals = scenarios.GENERATORS[scenario](np.random, self.n_agents)
-        self.adapter.reset_world(spawns, goals)
+        return self.start_episode(spawns, goals)
+
+    def start_episode(self, spawns, goals, rng=None, obstacles='auto'):
+        """Begin an episode with the given spawns and goals ({'drone_i': [x, y, z]}).
+        reset() uses this, and so do the evaluation and analysis scripts that
+        build their own scenarios, so nothing (obstacles included) is skipped.
+
+        rng       : random generator for the obstacle layout (default np.random)
+        obstacles : 'auto' = generate a layout if obstacles are enabled,
+                    or an explicit layout list ([] for an empty world)
+        """
+        rng = np.random if rng is None else rng
+        if obstacles == 'auto':
+            obstacles = (scenario_manager.generate_layout(rng, spawns, goals, self.obstacle_cfg)
+                         if self.obstacle_cfg else [])
+        self.layout = list(obstacles)
+        self.adapter.reset_world(spawns, goals, self.layout)
         self.goals = np.array([goals[f'drone_{i}'] for i in range(self.n_agents)],
                               dtype=np.float32)
         self.episode_manager.reset()
@@ -192,10 +216,15 @@ class SwarmEnv:
         # drone-drone collision flags (used for termination)
         drone_collision = [bool(d and min(d) < self.collision_radius)
                            for d in drone_distances]
-        # obstacle collisions: none in Stage 1 (empty world)
-        obstacle_collision = [False] * self.n_agents
+        # obstacle collisions: geometric check against this episode's layout
+        # (empty in Stage 1), so it works with contact physics off
+        obstacle_gap = [scenario_manager.distance_to_obstacles(self.layout, positions[i])
+                        for i in range(self.n_agents)]
+        obstacle_collision = [g < scenario_manager.DRONE_RADIUS for g in obstacle_gap]
         cost = [float(bool(d) and min(d) < self.cost_distance)
                 + self.collision_cost * float(drone_collision[i])
+                + float(obstacle_gap[i] < self.obstacle_cost_distance)
+                + self.collision_cost * float(obstacle_collision[i])
                 for i, d in enumerate(drone_distances)]
 
         actions_arr = np.array([actions_dict[f'drone_{i}'] for i in range(self.n_agents)],
@@ -259,7 +288,8 @@ class SwarmEnv:
         # what keeps a drone from "succeeding" by flying through the goal
         # at speed and drifting off afterward.
         done, reason = self.episode_manager.check_done(
-            positions.tolist(), self.goals.tolist(), drone_collision)
+            positions.tolist(), self.goals.tolist(),
+            [a or b for a, b in zip(drone_collision, obstacle_collision)])
         # EpisodeManager's own "success" path checks instantaneous position
         # only (no speed/settling) — it would let a swarm that happens to be
         # simultaneously inside every goal radius at full speed count as a
@@ -298,6 +328,7 @@ class SwarmEnv:
                 'drone_reached_goal':       list(self.drone_reached_goal),
                 'drone_collision':          list(drone_collision),
                 'obstacle_collision':       list(obstacle_collision),
+                'obstacle_distance':        [float(g) for g in obstacle_gap],
                 'cost':                     cost,
                 'min_dist_to_goal':         float(self.min_dist_ever.mean()),
                 'per_agent_min_dist':       self.min_dist_ever.tolist(),
