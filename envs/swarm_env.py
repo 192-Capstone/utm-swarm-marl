@@ -193,6 +193,7 @@ class SwarmEnv:
         self.initial_dist   = self.prev_dist.copy()
         self.min_dist_ever  = self.prev_dist.copy()
 
+        self.obs_processor.reset_history()
         return self._build_obs(raw)
 
     def step(self, actions_dict):

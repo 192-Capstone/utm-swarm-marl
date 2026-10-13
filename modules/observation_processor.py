@@ -156,6 +156,28 @@ class ObservationProcessor:
         # Stage-1 checkpoints were trained on.
         self.lidar_range = lidar_mod.lidar_config(config)['range']
 
+        # Observation schema (scripts/convert_checkpoint_inputs.py turns v1 actors into v2):
+        #   v1 : 27 inputs, everything but LiDAR through the running normalizer
+        #   v2 : 42 inputs, every input on a fixed, documented scale (no
+        #        normalizer, so nothing can drift), plus the previous LiDAR
+        #        reading (14) and a log goal distance (1)
+        self.schema = obs_cfg.get('schema', 'v1')
+        expected_dim = {'v1': 27, 'v2': 42}[self.schema]
+        if self.local_obs_dim != expected_dim:
+            raise ValueError(f"observation.schema {self.schema} needs local_obs_dim "
+                             f"{expected_dim}, config has {self.local_obs_dim}")
+        env_cfg = config['environment']
+        self.position_scale = np.array([env_cfg.get('world_size', 50) / 2.0] * 2
+                                       + [obs_cfg.get('altitude_scale', 10.0)], dtype=np.float32)
+        self.velocity_scale = float(env_cfg.get('v_max', 2.0))
+        # Caps chosen where the v1 normalizer clipped (goal axes ~2.4-2.9 m,
+        # distance ~4 m), so converted v1 actors see the same values below
+        # them. Beyond the cap the goal vector keeps its direction (v1 clipped
+        # each axis separately, which bent the direction of far goals).
+        self.goal_vector_cap   = float(obs_cfg.get('goal_vector_cap', 2.5))
+        self.goal_distance_cap = float(obs_cfg.get('goal_distance_cap', 4.0))
+        self._prev_prox = None    # v2: last step's LiDAR proximity, per drone
+
         # LiDAR quadrant ray assignments
         # Front: rays 0 (F), 6 (NE_up), 10 (NE_down)
         # Back:  rays 1 (B), 7 (SW_up), 11 (SW_down)
@@ -266,12 +288,51 @@ class ObservationProcessor:
         prox              = lidar_mod.proximity(lidars, self.lidar_range)
         obs[:, 13:27]     = prox
 
+        if self.schema == 'v2':
+            return self._fixed_scale(obs, prox)
+
         # Update running normalizer and normalize; LiDAR bypasses it
         self.normalizer.update(obs)
         obs = self.normalizer.normalize(obs)
         obs[:, 13:27]     = prox
 
         return obs    # (N, 27)
+
+    def _fixed_scale(self, raw: np.ndarray, prox: np.ndarray) -> np.ndarray:
+        """
+        Schema v2: the 27 v1 inputs on fixed scales, plus 15 new ones.
+
+            [0:3]   position / (world_size/2, world_size/2, altitude_scale)
+            [3:6]   velocity / v_max
+            [6:9]   orientation / pi
+            [9:12]  goal vector, length capped at goal_vector_cap, / cap
+            [12]    goal distance, capped at goal_distance_cap, / cap
+            [13:27] LiDAR proximity               (as v1)
+            [27:41] previous step's LiDAR proximity (approaching vs receding)
+            [41]    log(1 + goal distance) / 4     (far goals stay distinguishable)
+        """
+        N = raw.shape[0]
+        obs = np.zeros((N, 42), dtype=np.float32)
+        obs[:, 0:3]   = raw[:, 0:3] / self.position_scale
+        obs[:, 3:6]   = raw[:, 3:6] / self.velocity_scale
+        obs[:, 6:9]   = raw[:, 6:9] / np.pi
+        dist          = raw[:, 12:13]
+        shrink        = np.minimum(1.0, self.goal_vector_cap / np.maximum(dist, 1e-6))
+        obs[:, 9:12]  = raw[:, 9:12] * shrink / self.goal_vector_cap
+        obs[:, 12:13] = np.minimum(dist, self.goal_distance_cap) / self.goal_distance_cap
+        obs[:, 13:27] = prox
+        # First step of an episode (or a change in drone count): no history
+        # yet, so "previous" = current, i.e. nothing approaching.
+        if self._prev_prox is None or self._prev_prox.shape != prox.shape:
+            self._prev_prox = prox
+        obs[:, 27:41] = self._prev_prox
+        obs[:, 41:42] = np.log1p(dist) / 4.0
+        self._prev_prox = prox.copy()
+        return obs    # (N, 42)
+
+    def reset_history(self):
+        """Forget the previous LiDAR reading — call at the start of every episode."""
+        self._prev_prox = None
 
     def _build_neighbor_states(
         self,

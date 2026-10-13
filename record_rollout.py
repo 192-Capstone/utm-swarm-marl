@@ -222,7 +222,9 @@ def main():
     # and goals actually are.
     p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
 
-    if 'normalizer_mean' in ckpt:
+    if env.obs_processor.schema != 'v1':
+        print("Observation schema v2: fixed input scaling, no normalizer to restore.")
+    elif 'normalizer_mean' in ckpt:
         norm = env.obs_processor.normalizer
         norm.mean  = ckpt['normalizer_mean']
         norm.var   = ckpt['normalizer_var']

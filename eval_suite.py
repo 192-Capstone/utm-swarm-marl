@@ -166,8 +166,15 @@ class MappoPolicy:
         if 'log_std_floor' in self.ckpt:
             self.actor.set_log_std_floor(self.ckpt['log_std_floor'])
         self.n_active = 3 if self.ckpt.get('curriculum_stage', 1) < 3 else 4
+        schema = config['observation'].get('schema', 'v1')
+        if self.ckpt.get('observation_schema', 'v1') != schema:
+            raise RuntimeError(f"checkpoint uses observation schema "
+                               f"{self.ckpt.get('observation_schema', 'v1')}, config uses {schema} "
+                               f"(scripts/convert_checkpoint_inputs.py converts v1 to v2)")
 
     def restore_normalizer(self, env):
+        if env.obs_processor.schema != 'v1':
+            return                        # fixed input scaling, no normalizer
         if 'normalizer_mean' not in self.ckpt:
             raise RuntimeError("Checkpoint has no normalizer state. Suite v1 requires "
                                "a checkpoint saved with normalizer_mean/var/count.")
@@ -187,6 +194,7 @@ class MappoPolicy:
         if self.blind_lidar:
             lf = lf.clone()
             lf[:, 13:27] = 0.0
+            lf[:, 27:41] = 0.0            # schema v2: previous LiDAR reading (no-op for v1)
         with torch.no_grad():
             actions, _ = self.actor.get_action(lf, ns, nm, deterministic=self.deterministic,
                                                active_dims=self.n_active)
@@ -741,18 +749,21 @@ def main():
     else:
         policy = PController(config, args.kp) if args.policy == 'pcontroller' else RepulsionController(config)
         ckpt_episode = None
-    clip_val = env.obs_processor.normalizer.clip
+    # clip_hits counts inputs pinned at the normalizer's limit; schema v2 has
+    # no normalizer, so nothing can be clipped
+    schema = env.obs_processor.schema
+    clip_val = env.obs_processor.normalizer.clip if schema == 'v1' else float('inf')
 
     run_cfg = {
         'evaluation_suite_version': SUITE_VERSION,
-        'observation_schema_version': 'v1',
+        'observation_schema_version': schema,
         'policy': policy_label,
         'neighbor_view': 'blind' if args.blind_neighbors else 'normal',
         'policy_mode': args.mode if args.policy == 'mappo' else 'n/a',
         'checkpoint': args.checkpoint,
         'checkpoint_episode': ckpt_episode,
         'source_run': args.source_run if args.policy == 'mappo' else None,
-        'normalizer_frozen': args.policy == 'mappo',
+        'normalizer_frozen': args.policy == 'mappo' and schema == 'v1',
         'config_file': args.config,
         'scenario': args.scenario,
         'goal_dist_min': d_min, 'goal_dist_max': d_max,

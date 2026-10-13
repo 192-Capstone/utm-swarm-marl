@@ -906,8 +906,11 @@ class MAPPOTrainer:
         """Snapshot the training env's observation-normalizer stats, if any,
         so eval_checkpoint.py can restore the exact normalization the actor
         was trained under instead of accumulating fresh (and possibly
-        different) stats from scratch."""
+        different) stats from scratch. Schema v2 has no normalizer, only
+        the schema tag, so loaders know which inputs the actor expects."""
         if self.env is not None and hasattr(self.env, 'obs_processor'):
+            if self.env.obs_processor.schema != 'v1':
+                return {'observation_schema': self.env.obs_processor.schema}
             norm = self.env.obs_processor.normalizer
             return {
                 'normalizer_mean':  norm.mean.copy(),
@@ -1005,9 +1008,19 @@ class MAPPOTrainer:
     def load_checkpoint(self, path: str, restore_normalizer: bool = True):
         """Load a saved checkpoint to resume training."""
         ckpt = torch.load(path, map_location=self.device)
+        schema = self.config['observation'].get('schema', 'v1')
+        if ckpt.get('observation_schema', 'v1') != schema:
+            raise RuntimeError(f"checkpoint uses observation schema "
+                               f"{ckpt.get('observation_schema', 'v1')}, config uses {schema} "
+                               f"(scripts/convert_checkpoint_inputs.py converts v1 to v2)")
         self.actor.load_state_dict(ckpt['actor_state_dict'])
         self.critic.load_state_dict(ckpt['critic_state_dict'])
-        self.optimizer.actor_optimizer.load_state_dict(ckpt['actor_optim'])
+        # A converted checkpoint (v1 -> v2) has no actor optimizer state: its
+        # first-layer weights changed shape, so Adam starts fresh for the actor.
+        if 'actor_optim' in ckpt:
+            self.optimizer.actor_optimizer.load_state_dict(ckpt['actor_optim'])
+        else:
+            print("  no actor optimizer state in checkpoint: actor optimizer starts fresh")
         self.optimizer.critic_optimizer.load_state_dict(ckpt['critic_optim'])
         # load_state_dict also restores the learning rate saved in the
         # checkpoint, which silently overrode whatever the resumed run's config
@@ -1040,7 +1053,8 @@ class MAPPOTrainer:
         # the goal-input statistics ~6x during rl-from-imitation, and the
         # untouched imitation actor run with those drifted statistics crashed
         # in 13-19% of head-on/crossing/fly-through episodes instead of 0-1%.
-        if self.config['training'].get('freeze_normalizer', False) and self.env is not None:
+        if (self.config['training'].get('freeze_normalizer', False) and self.env is not None
+                and schema == 'v1'):
             self.env.obs_processor.normalizer.freeze()
             print("  normalizer frozen (training.freeze_normalizer)")
 
