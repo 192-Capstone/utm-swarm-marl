@@ -40,6 +40,7 @@ import yaml
 import os
 
 from modules.neighbour_source import TruthNeighbourSource
+from envs import lidar as lidar_mod
 
 
 class RunningNormalizer:
@@ -146,6 +147,15 @@ class ObservationProcessor:
         self.neighbor_vel_scale = float(obs_cfg.get('neighbor_vel_scale', 1.0))
         self.neighbour_source   = TruthNeighbourSource()
 
+        # LiDAR uses a fixed scale instead of the running normalizer:
+        # proximity = 1 - distance / range (0 = nothing seen, 1 = touching).
+        # In Stage 1 the LiDAR inputs were always 0, so a normalizer frozen
+        # then has zero variance for them and would blow any real reading up
+        # to the clip limit; a fixed formula also can't drift and means the
+        # same in every simulator. Nothing seen gives 0, exactly the value
+        # Stage-1 checkpoints were trained on.
+        self.lidar_range = lidar_mod.lidar_config(config)['range']
+
         # LiDAR quadrant ray assignments
         # Front: rays 0 (F), 6 (NE_up), 10 (NE_down)
         # Back:  rays 1 (B), 7 (SW_up), 11 (SW_down)
@@ -233,7 +243,7 @@ class ObservationProcessor:
             [6:9]   own orientation       (3)
             [9:12]  relative goal vector  (3)  = goal - position
             [12]    goal distance scalar  (1)
-            [13:27] 14 LiDAR ray values   (14)
+            [13:27] 14 LiDAR proximities  (14)  = 1 - distance / range, not normalized
 
         Total: 27
         """
@@ -252,12 +262,14 @@ class ObservationProcessor:
         goal_dist         = np.linalg.norm(rel_goal, axis=1, keepdims=True)  # (N, 1)
         obs[:, 12:13]     = goal_dist
 
-        # 14 LiDAR rays
-        obs[:, 13:27]     = lidars
+        # 14 LiDAR rays as proximity on a fixed scale
+        prox              = lidar_mod.proximity(lidars, self.lidar_range)
+        obs[:, 13:27]     = prox
 
-        # Update running normalizer and normalize
+        # Update running normalizer and normalize; LiDAR bypasses it
         self.normalizer.update(obs)
         obs = self.normalizer.normalize(obs)
+        obs[:, 13:27]     = prox
 
         return obs    # (N, 27)
 
@@ -338,10 +350,15 @@ class ObservationProcessor:
             [3:6]   absolute velocity     (3)
             [6:9]   orientation           (3)
             [9:12]  goal position         (3)   — critic understands each drone's intent
-            [12:17] 5-quadrant LiDAR      (5)   — zero in Stage 1 (no obstacles)
+            [12:17] 5-quadrant LiDAR      (5)   — closest proximity per quadrant
+                                                   (0 when nothing is seen, as in Stage 1)
 
         NOTE: Global state uses ABSOLUTE positions (not relative).
         The critic needs the full spatial picture of the swarm.
+
+        The LiDAR slots no longer depend on curriculum_stage (the stage counter
+        never advances while curriculum advancement is disabled); with LiDAR
+        off or nothing in range they are exactly 0, as before.
         """
         N = positions.shape[0]
         gs = np.zeros((N, 17), dtype=np.float32)
@@ -350,21 +367,15 @@ class ObservationProcessor:
         gs[:, 3:6]  = velocities
         gs[:, 6:9]  = orientations
         gs[:, 9:12] = goals
-
-        # LiDAR quadrant compression — Stage 2+ only
-        if curriculum_stage >= 2:
-            quads = self._compress_lidar_to_quadrants(lidars)   # (N, 5)
-            gs[:, 12:17] = quads
-        # else: Stage 1 — LiDAR slots stay zero (no obstacles exist)
+        gs[:, 12:17] = self._compress_lidar_to_quadrants(
+            lidar_mod.proximity(lidars, self.lidar_range))      # (N, 5)
 
         return gs   # (N, 17)
 
     def _compress_lidar_to_quadrants(self, lidars: np.ndarray) -> np.ndarray:
         """
-        Compress 14 LiDAR rays into 5 directional quadrant minimums.
-
-        Each quadrant value = minimum ray distance in that quadrant.
-        Minimum represents the closest threat — conservative and safety-appropriate.
+        Compress 14 LiDAR proximities into 5 directional quadrant maximums
+        (the closest thing seen in each direction).
 
         Quadrant assignments:
             Front    : rays [0, 6, 10]   — front cardinal + NE upper/lower
@@ -378,11 +389,11 @@ class ObservationProcessor:
         N = lidars.shape[0]
         quads = np.zeros((N, 5), dtype=np.float32)
 
-        quads[:, 0] = lidars[:, self.lidar_quadrants['front']].min(axis=1)
-        quads[:, 1] = lidars[:, self.lidar_quadrants['back']].min(axis=1)
-        quads[:, 2] = lidars[:, self.lidar_quadrants['left']].min(axis=1)
-        quads[:, 3] = lidars[:, self.lidar_quadrants['right']].min(axis=1)
-        quads[:, 4] = lidars[:, self.lidar_quadrants['vertical']].min(axis=1)
+        quads[:, 0] = lidars[:, self.lidar_quadrants['front']].max(axis=1)
+        quads[:, 1] = lidars[:, self.lidar_quadrants['back']].max(axis=1)
+        quads[:, 2] = lidars[:, self.lidar_quadrants['left']].max(axis=1)
+        quads[:, 3] = lidars[:, self.lidar_quadrants['right']].max(axis=1)
+        quads[:, 4] = lidars[:, self.lidar_quadrants['vertical']].max(axis=1)
 
         return quads   # (N, 5)
 
