@@ -16,8 +16,12 @@
 #   - 1000 new episodes, own checkpoint folder
 # The LiDAR inputs start untrained (the Stage-1 model only ever saw 0).
 #
+# The inputs use schema v2, so the Stage-1 checkpoint is converted first
+# (same behaviour, new input layout; see scripts/convert_checkpoint_inputs.py).
+#
 # Run (from the repo root):
-#   python train.py --config configs/config_stage2_rl_direct.yaml --resume checkpoints/rl_frozen_norm/seed1/checkpoint_final.pth --seed 1 --checkpoint-dir checkpoints/stage2_rl_direct/seed1
+#   python scripts/convert_checkpoint_inputs.py --checkpoint checkpoints/rl_frozen_norm/seed1/checkpoint_final.pth --config configs/config_stage2_rl_direct.yaml --out checkpoints/rl_frozen_norm/seed1/checkpoint_final_v2.pth
+#   python train.py --config configs/config_stage2_rl_direct.yaml --resume checkpoints/rl_frozen_norm/seed1/checkpoint_final_v2.pth --seed 1 --checkpoint-dir checkpoints/stage2_rl_direct/seed1
 # =============================================================================
 
 environment:
@@ -42,10 +46,13 @@ environment:
     action_repeat: 4
 
 observation:
-  local_obs_dim: 27
+  schema: v2                     # INPUTS: fixed scaling, no running normalizer, plus the
+                                 # previous LiDAR reading and a log goal distance
+                                 # (modules/observation_processor.py, _fixed_scale)
+  local_obs_dim: 42              # INPUTS: was 27
   neighbor_obs_dim: 6
   neighbor_context_dim: 32
-  total_obs_dim: 59
+  total_obs_dim: 74              # INPUTS: was 59
   k_neighbors_max: 5
   n_lidar_rays: 14
   n_lidar_quadrants: 5
@@ -69,7 +76,7 @@ training:
   clip_epsilon: 0.2
   actor_lr: 0.0001                # DIRECT: back to 1e-4; obstacle avoidance has to be learned, not polished
   actor_warmup_until_episode: 1400 # DIRECT: critic-only for the first 100 episodes (it has never seen obstacles)
-  freeze_normalizer: true          # FIX: keep imitation's input scaling (see header)
+  freeze_normalizer: true          # no effect with observation schema v2 (no normalizer)
   critic_lr: 0.0003
   n_epochs: 10
   batch_size: 1024

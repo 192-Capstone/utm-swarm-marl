@@ -35,10 +35,13 @@ environment:
     action_repeat: 4
 
 observation:
-  local_obs_dim: 27
+  schema: v2                     # INPUTS: fixed scaling, no running normalizer, plus the
+                                 # previous LiDAR reading and a log goal distance
+                                 # (modules/observation_processor.py, _fixed_scale)
+  local_obs_dim: 42              # INPUTS: was 27
   neighbor_obs_dim: 6
   neighbor_context_dim: 32
-  total_obs_dim: 59
+  total_obs_dim: 74              # INPUTS: was 59
   k_neighbors_max: 5
   n_lidar_rays: 14
   n_lidar_quadrants: 5
@@ -62,7 +65,7 @@ training:
   clip_epsilon: 0.2
   actor_lr: 0.00003               # RLFI: was 1e-4, small steps
   actor_warmup_until_episode: 600  # critic-only updates until episode 600
-  freeze_normalizer: true          # FIX: keep imitation's input scaling (see header)
+  freeze_normalizer: true          # no effect with observation schema v2 (no normalizer)
   critic_lr: 0.0003
   n_epochs: 10
   batch_size: 1024
