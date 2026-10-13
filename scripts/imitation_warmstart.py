@@ -33,6 +33,12 @@ weights, with its own scenario mix and DAgger schedule):
         --init-actor checkpoints/imitation/bc_policy.pth \
         --mix headon=0.35,crossing=0.35,flythrough=0.15,swap=0.05,random=0.1 \
         --betas 0.3,0.1,0.0 --lr 1e-4 --out-dir checkpoints/imitation_v2
+
+Stage 2 (obstacles): the teacher gets each episode's obstacle layout, the
+actor only its LiDAR. --n-agents 3-8 picks the drone count per episode, so
+the actor sees crowded and sparse traffic. With observation schema v2 the
+base and init checkpoints must be converted first
+(scripts/convert_checkpoint_inputs.py); there is no normalizer to restore.
 """
 
 import argparse
@@ -53,18 +59,20 @@ from envs.swarm_env import SwarmEnv
 from training.networks.actor_network import ActorNetwork
 
 
-def rollout(env, teacher, actor, episodes, beta, device, data):
+def rollout(pick_env, teacher, actor, episodes, beta, device, data):
     """Fly `episodes` episodes. Each step the executed action comes from the
     teacher with probability beta, else from the actor; the TEACHER's action is
-    always stored as the label."""
-    n = env.n_agents
+    always stored as the label. pick_env() gives the environment for each
+    episode (one per drone count)."""
     for _ in range(episodes):
+        env = pick_env()
+        n = env.n_agents
         obs = env.reset()
         for _ in range(env.config['environment']['max_steps']):
             raw = env.adapter.get_raw_state()
             pos = np.array([raw[f'drone_{i}']['position'] for i in range(n)])
             vel = np.array([raw[f'drone_{i}']['velocity'] for i in range(n)])
-            target = teacher.velocities(pos, vel, env.goals)
+            target = teacher.velocities(pos, vel, env.goals, env.layout)
             data['lf'].append(obs['local_fixed'].numpy().copy())
             data['ns'].append(obs['neighbor_states'].numpy().copy())
             data['nm'].append(obs['neighbor_mask'].numpy().copy())
@@ -119,6 +127,8 @@ def main():
     ap.add_argument("--betas", default=None,
                     help="teacher share per DAgger round, e.g. 0.3,0.1,0.0 (overrides --dagger-rounds)")
     ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--n-agents", default=None,
+                    help="drone count per episode, e.g. 3-8 (uniform); default: the config's n_agents")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -132,14 +142,34 @@ def main():
              else [0.5 / (r + 1) for r in range(args.dagger_rounds)])
     base = torch.load(os.path.join(ROOT, args.base), map_location="cpu", weights_only=False)
 
-    env = SwarmEnv(cfg)
-    norm = env.obs_processor.normalizer
-    norm.mean, norm.var, norm.count = base['normalizer_mean'], base['normalizer_var'], base['normalizer_count']
-    norm.freeze()
+    schema = cfg['observation'].get('schema', 'v1')
+    if base.get('observation_schema', 'v1') != schema:
+        sys.exit(f"--base uses observation schema {base.get('observation_schema', 'v1')}, config uses "
+                 f"{schema}; convert it with scripts/convert_checkpoint_inputs.py")
+
+    if args.n_agents:
+        lo, hi = (int(x) for x in args.n_agents.split("-"))
+        counts = list(range(lo, hi + 1))
+    else:
+        counts = [cfg['environment']['n_agents']]
+    envs = {}
+    for n in counts:
+        c = copy.deepcopy(cfg)
+        c['environment']['n_agents'] = n
+        envs[n] = SwarmEnv(c)
+        if schema == 'v1':
+            norm = envs[n].obs_processor.normalizer
+            norm.mean, norm.var, norm.count = (base['normalizer_mean'], base['normalizer_var'],
+                                               base['normalizer_count'])
+            norm.freeze()
+    pick_env = lambda: envs[counts[np.random.randint(len(counts))]]
 
     actor = ActorNetwork(cfg).to(device)
     if args.init_actor:
         init = torch.load(os.path.join(ROOT, args.init_actor), map_location="cpu", weights_only=False)
+        if init.get('observation_schema', 'v1') != schema:
+            sys.exit(f"--init-actor uses observation schema {init.get('observation_schema', 'v1')}, "
+                     f"config uses {schema}; convert it with scripts/convert_checkpoint_inputs.py")
         actor.load_state_dict(init['actor_state_dict'])
         print(f"starting from actor in {args.init_actor}")
     else:
@@ -148,8 +178,9 @@ def main():
     data = {'lf': [], 'ns': [], 'nm': [], 'y': []}
 
     t0 = time.time()
-    print(f"[1] teacher flies {args.episodes} episodes of the scenario mix {cfg.get('scenario_mix')}")
-    rollout(env, teacher, None, args.episodes, 1.0, device, data)
+    print(f"[1] teacher flies {args.episodes} episodes of the scenario mix {cfg.get('scenario_mix')}, "
+          f"{counts[0]}-{counts[-1]} drones")
+    rollout(pick_env, teacher, None, args.episodes, 1.0, device, data)
     print(f"    collected {sum(len(x) for x in data['y'])} drone-steps ({time.time() - t0:.0f}s)")
     print("[2] cloning")
     actor.train(); train(actor, data, args.epochs, device, args.lr)
@@ -157,20 +188,25 @@ def main():
     for r, beta in enumerate(betas):
         print(f"[3.{r + 1}] DAgger: cloned actor flies {args.dagger_episodes} episodes (teacher steps in {beta:.0%} of the time)")
         actor.eval()
-        rollout(env, teacher, actor, args.dagger_episodes, beta, device, data)
+        rollout(pick_env, teacher, actor, args.dagger_episodes, beta, device, data)
         print(f"    dataset now {sum(len(x) for x in data['y'])} drone-steps ({time.time() - t0:.0f}s)")
         actor.train(); train(actor, data, args.epochs, device, args.lr)
-    env.close()
+    for env in envs.values():
+        env.close()
     actor.eval()
 
     os.makedirs(os.path.join(ROOT, args.out_dir), exist_ok=True)
     state = {k: v.cpu() for k, v in actor.state_dict().items()}
     policy = {'actor_state_dict': state, 'curriculum_stage': base.get('curriculum_stage', 1),
               'log_std_ceiling': base.get('log_std_ceiling'), 'log_std_floor': base.get('log_std_floor'),
-              'normalizer_mean': base['normalizer_mean'], 'normalizer_var': base['normalizer_var'],
-              'normalizer_count': base['normalizer_count'], 'episode': base.get('episode_count'),
+              'episode': base.get('episode_count'),
               'source': f"imitation of RepulsionController, from {args.init_actor or args.base}, "
-                        f"mix {cfg.get('scenario_mix')}"}
+                        f"mix {cfg.get('scenario_mix')}, {counts[0]}-{counts[-1]} drones"}
+    if schema == 'v1':
+        policy.update(normalizer_mean=base['normalizer_mean'], normalizer_var=base['normalizer_var'],
+                      normalizer_count=base['normalizer_count'])
+    else:
+        policy['observation_schema'] = schema
     torch.save(policy, os.path.join(ROOT, args.out_dir, "bc_policy.pth"))
     resume = copy.copy(base)
     resume['actor_state_dict'] = state
