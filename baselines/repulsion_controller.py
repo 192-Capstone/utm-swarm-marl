@@ -24,18 +24,102 @@ The total is capped at v_max per axis, like every other controller.
 
 It uses only what a drone could know from neighbour broadcasts: relative
 positions and velocities of nearby drones, plus its own goal.
+
+Static obstacles (Stage 2), when a layout is given:
+    5. obstacle avoidance : follow the drone's INTENDED path (straight towards
+                    its goal) for the next obs_horizon seconds and find where
+                    it comes closest to each obstacle's surface. If that is
+                    closer than obs_safe, push SIDEWAYS (perpendicular to the
+                    intended direction), towards the side the drone is already
+                    offset to, so it goes around the obstacle rather than
+                    backing away from it; dead-centre approaches veer right.
+                    The chosen side is remembered until the obstacle is
+                    cleared: without that memory a drone close to the centre
+                    line flips sides every step and hovers in front of the
+                    obstacle forever.
+                    The intended path is used instead of the current velocity
+                    so a drone that has slowed down in front of an obstacle
+                    still "sees" the obstacle it is trying to fly through.
+    6. obstacle separation: within obs_close of a surface, also push straight
+                    away from it.
+The obstacle geometry comes from the episode's layout (the teacher is
+privileged); the learned actor has to make do with its LiDAR.
 """
 
 import numpy as np
 
+from envs.scenario_manager import surface_distance
+
+
+def closest_point(ob, q):
+    """Closest point of an obstacle's footprint (2D) to the horizontal point q."""
+    c = np.asarray(ob['center'], dtype=float)
+    if ob['type'] == 'pillar':
+        d = q - c
+        n = np.linalg.norm(d)
+        return c + (d / n if n > 1e-9 else np.array([1.0, 0.0])) * ob['radius']
+    hx, hy = ob['half']
+    rel = q - c
+    if abs(rel[0]) <= hx and abs(rel[1]) <= hy:            # inside: nearest edge
+        if hx - abs(rel[0]) < hy - abs(rel[1]):
+            return c + np.array([np.sign(rel[0]) * hx, rel[1]])
+        return c + np.array([rel[0], np.sign(rel[1]) * hy])
+    return c + np.array([np.clip(rel[0], -hx, hx), np.clip(rel[1], -hy, hy)])
+
 
 class RepulsionController:
     def __init__(self, config, cruise=1.5, k_goal=2.0, safe_dist=1.0, horizon=2.0,
-                 k_avoid=2.0, close_dist=0.6, k_close=2.0):
+                 k_avoid=2.0, close_dist=0.6, k_close=2.0,
+                 obs_safe=0.7, obs_horizon=2.0, k_obs=2.5, obs_close=0.4, k_obs_close=3.0):
         self.v_max = config['environment'].get('v_max', 2.0)
         self.cruise, self.k_goal = cruise, k_goal
         self.safe_dist, self.horizon, self.k_avoid = safe_dist, horizon, k_avoid
         self.close_dist, self.k_close = close_dist, k_close
+        self.obs_safe, self.obs_horizon, self.k_obs = obs_safe, obs_horizon, k_obs
+        self.obs_close, self.k_obs_close = obs_close, k_obs_close
+        self._side = {}      # (drone index, obstacle centre) -> +1 right / -1 left, until cleared
+
+    def _obstacle_push(self, pos, v_goal, layout, i=0):
+        """Velocity correction for drone i from the static obstacles."""
+        push = np.zeros(3)
+        p = pos[:2]
+        u = v_goal[:2]
+        speed = np.linalg.norm(u)
+        if speed < 1e-6:
+            u_dir = None
+        else:
+            u_dir = u / speed
+        ts = np.linspace(0.0, self.obs_horizon, 11)
+        for ob in layout:
+            if pos[2] > ob['height']:
+                continue
+            # 5. where along the intended path does it come closest?
+            if u_dir is not None:
+                qs = p[None, :] + ts[:, None] * u[None, :]
+                ds = np.array([surface_distance(ob, q) for q in qs])
+                k = int(np.argmin(ds))
+                d_min, t_star, q_star = ds[k], ts[k], qs[k]
+                key = (i, tuple(ob['center']))
+                if d_min < self.obs_safe:
+                    right = np.array([u_dir[1], -u_dir[0]])
+                    if key not in self._side:                    # first sighting: pick a side
+                        away = q_star - closest_point(ob, q_star)
+                        lateral = away - (away @ u_dir) * u_dir
+                        off = float(lateral @ right)
+                        self._side[key] = 1.0 if (abs(off) < 0.05 or off > 0) else -1.0
+                    side = self._side[key] * right
+                    urgency = (self.obs_safe - d_min) / self.obs_safe * (1.0 - t_star / self.obs_horizon)
+                    push[:2] += self.k_obs * min(urgency, 2.0) * side
+                else:
+                    self._side.pop(key, None)                    # cleared: forget the side
+            # 6. already close: push straight away from the surface
+            d_now = surface_distance(ob, p)
+            if d_now < self.obs_close:
+                away = p - closest_point(ob, p)
+                n = np.linalg.norm(away)
+                if n > 1e-6:
+                    push[:2] += self.k_obs_close * (self.obs_close - d_now) / self.obs_close * away / n
+        return push
 
     @staticmethod
     def _right_of(v):
@@ -44,13 +128,18 @@ class RepulsionController:
         n = np.linalg.norm(h)
         return h / n if n > 1e-6 else np.array([1.0, 0.0, 0.0])
 
-    def velocities(self, positions, velocities, goals):
+    def velocities(self, positions, velocities, goals, layout=None):
         n = len(positions)
         out = np.zeros((n, 3))
+        if layout is not getattr(self, '_layout_ref', None):   # new episode: new layout object
+            self._side.clear()
+            self._layout_ref = layout
         for i in range(n):
             err = goals[i] - positions[i]
             dist = np.linalg.norm(err)
             v = err / dist * min(self.cruise, self.k_goal * dist) if dist > 1e-6 else np.zeros(3)
+            if layout:
+                v = v + self._obstacle_push(np.asarray(positions[i], dtype=float), v, layout, i)
             for j in range(n):
                 if j == i:
                     continue
@@ -76,5 +165,5 @@ class RepulsionController:
         raw = env.adapter.get_raw_state()
         pos = np.array([raw[f'drone_{i}']['position'] for i in range(n_agents)])
         vel = np.array([raw[f'drone_{i}']['velocity'] for i in range(n_agents)])
-        v = self.velocities(pos, vel, env.goals[:n_agents])
+        v = self.velocities(pos, vel, env.goals[:n_agents], getattr(env, 'layout', None))
         return {f'drone_{i}': v[i].tolist() + [0.0] for i in range(n_agents)}
