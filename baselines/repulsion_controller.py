@@ -89,6 +89,13 @@ class RepulsionController:
         self.obs_close, self.k_obs_close = obs_close, k_obs_close
         self._side = {}      # (drone index, obstacle centre) -> +1 right / -1 left, until cleared
         teacher_cfg = config.get('teacher') or {}
+        # Early dodging (teacher.obs_horizon / obs_safe): with the defaults (2 s,
+        # 0.7 m) the teacher does nothing until ~1 s before contact and then
+        # swerves at ~1.5 m/s; the student copied that as a weak, late swerve
+        # (30% of the teacher's sideways command on wide buildings). Looking
+        # further ahead spreads the same dodge over the last 2-3 s.
+        self.obs_horizon = float(teacher_cfg.get('obs_horizon', self.obs_horizon))
+        self.obs_safe = float(teacher_cfg.get('obs_safe', self.obs_safe))
         self.side_from_lidar = bool(teacher_cfg.get('side_from_lidar', False))
         self.side_margin = float(teacher_cfg.get('side_margin', 0.5))   # metres
         # Only obstacles centred within side_band of the intended path count as

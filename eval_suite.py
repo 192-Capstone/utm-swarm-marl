@@ -695,7 +695,7 @@ def print_summary(s, tag):
 def main():
     ap = argparse.ArgumentParser(description="Stage-1 evaluation suite v1 (evaluation only)")
     ap.add_argument("--config", required=True)
-    ap.add_argument("--policy", choices=["mappo", "pcontroller", "repulsion"], default="mappo",
+    ap.add_argument("--policy", choices=["mappo", "pcontroller", "repulsion", "lidar_teacher"], default="mappo",
                     help="repulsion = rule-based goal-seeking + push away from nearby drones "
                          "(baselines/repulsion_controller.py)")
     ap.add_argument("--checkpoint", help="required for --policy mappo")
@@ -800,7 +800,11 @@ def main():
         policy.restore_normalizer(env)
         ckpt_episode = policy.ckpt.get('episode', policy.ckpt.get('episode_count'))
     else:
-        policy = PController(config, args.kp) if args.policy == 'pcontroller' else RepulsionController(config)
+        if args.policy == 'lidar_teacher':           # the teacher's rules, obstacles seen only via the LiDAR ring
+            from baselines.lidar_teacher import LidarTeacher
+            policy = LidarTeacher(config)
+        else:
+            policy = PController(config, args.kp) if args.policy == 'pcontroller' else RepulsionController(config)
         ckpt_episode = None
     # clip_hits counts inputs pinned at the normalizer's limit; schema v2 has
     # no normalizer, so nothing can be clipped

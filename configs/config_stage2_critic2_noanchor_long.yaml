@@ -6,7 +6,7 @@
 # 500 RL episodes) except the length: 650 -> 3650, i.e. 3,000 learning episodes
 # after the same 150-episode critic-only warm-up from BCA (episode 500).
 # Question: with a critic that works, does RL keep improving or plateau?
-# Checkpoints every 100 episodes; evaluate every 500 (1150, 1650, ..., 3650) on the
+# Checkpoints every 100 episodes; evaluate 1100, 1600, ..., 3100 and the final one (3650) on the
 # 9-test suite (scripts/eval_500.sh) to get the learning curve.
 #
 # Run (from the repo root), one per seed:
