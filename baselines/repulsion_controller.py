@@ -96,6 +96,13 @@ class RepulsionController:
         # further ahead spreads the same dodge over the last 2-3 s.
         self.obs_horizon = float(teacher_cfg.get('obs_horizon', self.obs_horizon))
         self.obs_safe = float(teacher_cfg.get('obs_safe', self.obs_safe))
+        # Wider passing gap (teacher.obs_close / k_obs_close): with the defaults (0.4 m,
+        # 3.0) the teacher passes buildings and walls with 5-8 cm between the drone's
+        # body and the surface (10% of flights), a line no LiDAR student copies exactly;
+        # copies that learned it slightly less precisely crashed, which is where seeds of
+        # the same recipe differed most (wide building 24-59%, long wall 49-88%).
+        self.obs_close = float(teacher_cfg.get('obs_close', self.obs_close))
+        self.k_obs_close = float(teacher_cfg.get('k_obs_close', self.k_obs_close))
         self.side_from_lidar = bool(teacher_cfg.get('side_from_lidar', False))
         self.side_margin = float(teacher_cfg.get('side_margin', 0.5))   # metres
         # Only obstacles centred within side_band of the intended path count as
