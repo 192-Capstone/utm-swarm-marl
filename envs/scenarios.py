@@ -140,7 +140,10 @@ def course(rng, n_agents, lane_gap=5.0):
     u = np.array([np.cos(ang), np.sin(ang)])
     side = np.array([-u[1], u[0]])
     centre = np.array([rng.uniform(-3, 3), rng.uniform(-3, 3)])
-    kinds = ['pillar', 'building', 'wide_building'] + (['long_wall'] if axis_aligned else [])
+    # long walls need an axis-aligned lane, so they get half of those lanes: every kind
+    # then ends up at ~25% (with walls only one choice in four on axis-aligned lanes they
+    # were ~12% of course obstacles, and long_wall was the least stable test, 48-93%)
+    kinds = ['pillar', 'building', 'wide_building', 'long_wall', 'long_wall', 'long_wall'] if axis_aligned         else ['pillar', 'building', 'wide_building']
     spawns, goals, layout = {}, {}, []
     for i in range(n_agents):
         lane = centre + (i - (n_agents - 1) / 2) * lane_gap * side
