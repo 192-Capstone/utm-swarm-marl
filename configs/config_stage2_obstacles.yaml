@@ -136,6 +136,15 @@ obstacles:
 # STAGE2: real LiDAR (envs/lidar.py): 14 rays, fan rotated so ray 0 points at
 # the goal, range 6 m (keep it fixed across stages), sees obstacles and other
 # drones. Fed to the actor as proximity = 1 - distance / range, not normalized.
+
+teacher:                         # STAGE2: RepulsionController settings (baselines/repulsion_controller.py)
+  side_from_lidar: true          # pick the side to pass an obstacle from the drone's own LiDAR
+                                 # (right unless front-left is clearly more open), so imitation
+                                 # never sees the same picture labelled left and right
+  side_margin: 0.5               # metres the front-left rays must see further to choose left
+  side_band: 0.6                 # only obstacles centred within 0.6 m of the path use the
+                                 # LiDAR rule; off-centre ones are passed on the open side
+                                 # (LiDAR rule everywhere: head-on 99% -> 80% for the teacher)
 lidar:
   enabled: true
   range: 6.0

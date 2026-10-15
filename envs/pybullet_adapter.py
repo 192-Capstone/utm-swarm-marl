@@ -181,38 +181,48 @@ class PyBulletAdapter:
                 'orientation': list(euler),
             }
             state['goals'][key] = self.goals[key].tolist()
-        scans = self._scan_lidar(positions)
+        scans, rings = self._scan_lidar(positions)
         for i in range(self.n_agents):
             state[f'drone_{i}']['lidar'] = scans[i]
+            if self.lidar_cfg['ring_rays']:
+                state[f'drone_{i}']['lidar_ring'] = rings[i]
         return state
 
     def _scan_lidar(self, positions):
-        """14 distances per drone (metres, range = nothing hit), one batched
-        ray test for the whole swarm. Ground hits are ignored; hits on other
-        drones count only when lidar.sees_drones is set."""
+        """14 fan distances per drone, plus lidar.ring_rays horizontal ring
+        distances (metres, range = nothing hit), one batched ray test for the
+        whole swarm. A ray that hits the ground first reports nothing; hits on
+        other drones count only when lidar.sees_drones is set."""
         rng = self.lidar_cfg['range']
+        n_ring = self.lidar_cfg['ring_rays']
         if not self.lidar_cfg['enabled']:
-            return [[rng] * self.n_lidar for _ in range(self.n_agents)]
+            return ([[rng] * self.n_lidar for _ in range(self.n_agents)],
+                    [[rng] * n_ring for _ in range(self.n_agents)])
+        per_drone = self.n_lidar + n_ring
         starts, ends = [], []
         for i, pos in enumerate(positions):
             key = f'drone_{i}'
             yaw = lidar_mod.heading_to_goal(pos, self.goals[key], self._heading.get(key, 0.0))
             self._heading[key] = yaw
-            for d in lidar_mod.ray_directions(yaw):
+            dirs = lidar_mod.ray_directions(yaw)
+            if n_ring:
+                dirs = np.vstack([dirs, lidar_mod.ring_directions(yaw, n_ring)])
+            for d in dirs:
                 starts.append((pos + RAY_START * d).tolist())
                 ends.append((pos + rng * d).tolist())
         hits = p.rayTestBatch(starts, ends, physicsClientId=self.client)
         drones = set(self.drone_ids)
-        out = []
+        out, rings = [], []
         for i in range(self.n_agents):
             row = []
-            for k in range(self.n_lidar):
-                obj, _, frac = hits[i * self.n_lidar + k][:3]
+            for k in range(per_drone):
+                obj, _, frac = hits[i * per_drone + k][:3]
                 seen = obj >= 0 and obj != self.plane_id and \
                     (obj not in drones or self.lidar_cfg['sees_drones'])
                 row.append(RAY_START + frac * (rng - RAY_START) if seen else rng)
-            out.append(row)
-        return out
+            out.append(row[:self.n_lidar])
+            rings.append(row[self.n_lidar:])
+        return out, rings
 
     def get_positions(self) -> np.ndarray:
         return np.array(

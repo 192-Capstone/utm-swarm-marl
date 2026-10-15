@@ -44,6 +44,16 @@ Static obstacles (Stage 2), when a layout is given:
                     away from it.
 The obstacle geometry comes from the episode's layout (the teacher is
 privileged); the learned actor has to make do with its LiDAR.
+
+Side choice from the LiDAR (config teacher.side_from_lidar, Stage 2): with the
+geometric rule above, a near dead-centre obstacle is passed left or right
+depending on a few centimetres of offset the student's LiDAR cannot resolve,
+so imitation sees the same picture labelled both ways and learns the average:
+a weak dodge that clips the obstacle. With this switch the side is picked from
+the drone's own LiDAR instead: pass on the right unless the front-left rays
+are clearly more open than the front-right ones. Every label is then
+something the student can see. How hard and when to dodge still come from
+the exact geometry.
 """
 
 import numpy as np
@@ -78,8 +88,22 @@ class RepulsionController:
         self.obs_safe, self.obs_horizon, self.k_obs = obs_safe, obs_horizon, k_obs
         self.obs_close, self.k_obs_close = obs_close, k_obs_close
         self._side = {}      # (drone index, obstacle centre) -> +1 right / -1 left, until cleared
+        teacher_cfg = config.get('teacher') or {}
+        self.side_from_lidar = bool(teacher_cfg.get('side_from_lidar', False))
+        self.side_margin = float(teacher_cfg.get('side_margin', 0.5))   # metres
+        # Only obstacles centred within side_band of the intended path count as
+        # "ambiguous"; clearly off-centre ones are passed on the open side, as
+        # before (from the LiDAR alone, wide boxes got passed the long way).
+        self.side_band = float(teacher_cfg.get('side_band', 0.4))       # metres
 
-    def _obstacle_push(self, pos, v_goal, layout, i=0):
+    def _lidar_side(self, lidar):
+        """+1 (right) unless the front-left rays (8, 12) see clearly further
+        than the front-right rays (6, 10); ray order in envs/lidar.py."""
+        right_clear = min(lidar[6], lidar[10])
+        left_clear = min(lidar[8], lidar[12])
+        return -1.0 if left_clear > right_clear + self.side_margin else 1.0
+
+    def _obstacle_push(self, pos, v_goal, layout, i=0, lidar=None):
         """Velocity correction for drone i from the static obstacles."""
         push = np.zeros(3)
         p = pos[:2]
@@ -103,10 +127,17 @@ class RepulsionController:
                 if d_min < self.obs_safe:
                     right = np.array([u_dir[1], -u_dir[0]])
                     if key not in self._side:                    # first sighting: pick a side
-                        away = q_star - closest_point(ob, q_star)
-                        lateral = away - (away @ u_dir) * u_dir
-                        off = float(lateral @ right)
-                        self._side[key] = 1.0 if (abs(off) < 0.05 or off > 0) else -1.0
+                        # obstacle centre's offset to the right of the intended path
+                        c_off = float((np.asarray(ob['center'], dtype=float)[:2] - p) @ right)
+                        if self.side_from_lidar and lidar is not None and abs(c_off) < self.side_band:
+                            self._side[key] = self._lidar_side(lidar)
+                        elif self.side_from_lidar:
+                            self._side[key] = -1.0 if c_off > 0 else 1.0   # pass on the open side
+                        else:
+                            away = q_star - closest_point(ob, q_star)
+                            lateral = away - (away @ u_dir) * u_dir
+                            off = float(lateral @ right)
+                            self._side[key] = 1.0 if (abs(off) < 0.05 or off > 0) else -1.0
                     side = self._side[key] * right
                     urgency = (self.obs_safe - d_min) / self.obs_safe * (1.0 - t_star / self.obs_horizon)
                     push[:2] += self.k_obs * min(urgency, 2.0) * side
@@ -128,7 +159,8 @@ class RepulsionController:
         n = np.linalg.norm(h)
         return h / n if n > 1e-6 else np.array([1.0, 0.0, 0.0])
 
-    def velocities(self, positions, velocities, goals, layout=None):
+    def velocities(self, positions, velocities, goals, layout=None, lidar=None):
+        """lidar: (n, 14) raw ray distances, used only with teacher.side_from_lidar."""
         n = len(positions)
         out = np.zeros((n, 3))
         if layout is not getattr(self, '_layout_ref', None):   # new episode: new layout object
@@ -139,7 +171,8 @@ class RepulsionController:
             dist = np.linalg.norm(err)
             v = err / dist * min(self.cruise, self.k_goal * dist) if dist > 1e-6 else np.zeros(3)
             if layout:
-                v = v + self._obstacle_push(np.asarray(positions[i], dtype=float), v, layout, i)
+                v = v + self._obstacle_push(np.asarray(positions[i], dtype=float), v, layout, i,
+                                            None if lidar is None else lidar[i])
             for j in range(n):
                 if j == i:
                     continue
@@ -165,5 +198,6 @@ class RepulsionController:
         raw = env.adapter.get_raw_state()
         pos = np.array([raw[f'drone_{i}']['position'] for i in range(n_agents)])
         vel = np.array([raw[f'drone_{i}']['velocity'] for i in range(n_agents)])
-        v = self.velocities(pos, vel, env.goals[:n_agents], getattr(env, 'layout', None))
+        lidar = np.array([raw[f'drone_{i}']['lidar'] for i in range(n_agents)])
+        v = self.velocities(pos, vel, env.goals[:n_agents], getattr(env, 'layout', None), lidar)
         return {f'drone_{i}': v[i].tolist() + [0.0] for i in range(n_agents)}

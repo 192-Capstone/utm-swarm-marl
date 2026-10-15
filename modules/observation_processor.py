@@ -41,6 +41,7 @@ import os
 
 from modules.neighbour_source import TruthNeighbourSource
 from envs import lidar as lidar_mod
+from training.networks.critic_network import critic_version, CRITIC_STATE_DIM
 
 
 class RunningNormalizer:
@@ -129,7 +130,10 @@ class ObservationProcessor:
         self.n_lidar_quad    = config['observation']['n_lidar_quadrants'] # 5
         self.neighbor_obs_dim= config['observation']['neighbor_obs_dim']  # 6
         self.local_obs_dim   = config['observation']['local_obs_dim']     # 27
-        self.drone_state_dim = 17   # per-drone global state dimension
+        # per-drone global state dimension: 17 (critic.version 1) or 32 (version 2)
+        self.critic_version  = critic_version(config)
+        self.drone_state_dim = CRITIC_STATE_DIM[self.critic_version]
+        self.goal_threshold  = config['environment'].get('goal_threshold', 0.5)
 
         # Running normalizer for local fixed observations
         self.normalizer = RunningNormalizer(self.local_obs_dim)
@@ -161,8 +165,11 @@ class ObservationProcessor:
         #   v2 : 42 inputs, every input on a fixed, documented scale (no
         #        normalizer, so nothing can drift), plus the previous LiDAR
         #        reading (14) and a log goal distance (1)
+        #   v3 : v2 + the horizontal LiDAR ring (lidar.ring_rays proximities,
+        #        appended at [42:]); 42 + 32 = 74 for the Stage-2 ring
         self.schema = obs_cfg.get('schema', 'v1')
-        expected_dim = {'v1': 27, 'v2': 42}[self.schema]
+        self.ring_rays = lidar_mod.lidar_config(config)['ring_rays']
+        expected_dim = {'v1': 27, 'v2': 42, 'v3': 42 + self.ring_rays}[self.schema]
         if self.local_obs_dim != expected_dim:
             raise ValueError(f"observation.schema {self.schema} needs local_obs_dim "
                              f"{expected_dim}, config has {self.local_obs_dim}")
@@ -197,6 +204,7 @@ class ObservationProcessor:
         raw_state:        Dict,
         curriculum_stage: int,
         drone_ids:        Optional[List[str]] = None,
+        critic_extra:     Optional[Dict] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Main processing function. Converts raw_state to all required tensors.
@@ -206,6 +214,8 @@ class ObservationProcessor:
             curriculum_stage : 1 = zero LiDAR in global state, 2+ = full
             drone_ids        : ordered list of drone keys e.g. ['drone_0','drone_1',...]
                                If None, auto-detected from raw_state keys
+            critic_extra     : critic.version 2 only, from SwarmEnv:
+                               {'settle_progress': (N,) in [0, 1], 'reached': (N,) bool}
 
         Returns:
             local_fixed     : (N, 27)     tensor — own state per drone
@@ -223,11 +233,14 @@ class ObservationProcessor:
         velocities   = np.array([raw_state[d]['velocity']    for d in drone_ids], dtype=np.float32)
         orientations = np.array([raw_state[d]['orientation'] for d in drone_ids], dtype=np.float32)
         lidars       = np.array([raw_state[d]['lidar']       for d in drone_ids], dtype=np.float32)
+        rings        = (np.array([raw_state[d].get('lidar_ring', [self.lidar_range] * self.ring_rays)
+                                  for d in drone_ids], dtype=np.float32).reshape(len(drone_ids), -1)
+                        if self.schema == 'v3' else None)
         goals        = np.array([raw_state['goals'][d]       for d in drone_ids], dtype=np.float32)
 
         # ── 1. Build local fixed observations (N, 27) ──────────────────────
         local_fixed = self._build_local_fixed(
-            positions, velocities, orientations, lidars, goals
+            positions, velocities, orientations, lidars, goals, rings
         )
 
         # ── 2. KNN neighbor encoding ────────────────────────────────────────
@@ -239,6 +252,14 @@ class ObservationProcessor:
         global_state = self._build_global_state(
             positions, velocities, orientations, goals, lidars, curriculum_stage
         )
+        if self.critic_version >= 2:
+            global_state = np.concatenate(
+                [global_state, self._critic_extra_state(positions, goals, rings, critic_extra)],
+                axis=1)                                                    # (N, 32)
+            # metre-valued slots (position, goal, goal - position, goal distance)
+            # / 10, so they sit on the same ~[-1, 1] scale as the rest. Held-out
+            # fit of BCA's returns (scripts/critic_fit_check.py): 0.37 -> 0.42
+            global_state[:, self.CRITIC_METRE_SLOTS] /= 10.0
 
         # Convert to tensors
         lf = torch.tensor(local_fixed,     dtype=torch.float32, device=self.device)
@@ -255,6 +276,7 @@ class ObservationProcessor:
         orientations: np.ndarray,   # (N, 3)
         lidars:       np.ndarray,   # (N, 14)
         goals:        np.ndarray,   # (N, 3)
+        rings:        Optional[np.ndarray] = None,   # (N, ring_rays), schema v3 only
     ) -> np.ndarray:
         """
         Builds the 27-dimensional fixed local observation per drone.
@@ -290,6 +312,9 @@ class ObservationProcessor:
 
         if self.schema == 'v2':
             return self._fixed_scale(obs, prox)
+        if self.schema == 'v3':
+            ring = lidar_mod.proximity(rings, self.lidar_range)
+            return np.concatenate([self._fixed_scale(obs, prox), ring], axis=1)   # (N, 42 + ring)
 
         # Update running normalizer and normalize; LiDAR bypasses it
         self.normalizer.update(obs)
@@ -457,6 +482,43 @@ class ObservationProcessor:
         quads[:, 4] = lidars[:, self.lidar_quadrants['vertical']].max(axis=1)
 
         return quads   # (N, 5)
+
+    CRITIC_METRE_SLOTS = [0, 1, 2, 9, 10, 11, 17, 18, 19, 20]   # critic.version 2
+
+    def _critic_extra_state(
+        self,
+        positions:    np.ndarray,            # (N, 3)
+        goals:        np.ndarray,            # (N, 3)
+        rings:        Optional[np.ndarray],  # (N, ring_rays) or None
+        critic_extra: Optional[Dict],
+    ) -> np.ndarray:
+        """
+        The 15 values critic.version 2 adds to each drone's 17 (-> 32):
+
+            [17:20] goal - position     (3) m   "how far, which way" directly
+            [20]    goal distance       (1) m
+            [21]    inside goal radius  (1) 0/1
+            [22]    settle progress     (1) settle counter / settle_steps, in [0, 1]
+            [23]    reached (latched)   (1) 0/1
+            [24:32] ring, 8 sectors     (8) closest proximity per 45-degree sector
+                                            of the horizontal ring (0 without one)
+
+        Without the settle state, a drone one step from the +100 settle reward
+        and one thirty steps away look the same to the critic; without the
+        ring it sees obstacles only as 5 coarse quadrant values.
+        """
+        N = positions.shape[0]
+        rel = goals - positions
+        dist = np.linalg.norm(rel, axis=1, keepdims=True)
+        extra = critic_extra or {}
+        settle = np.asarray(extra.get('settle_progress', np.zeros(N)), dtype=np.float32).reshape(N, 1)
+        reached = np.asarray(extra.get('reached', np.zeros(N)), dtype=np.float32).reshape(N, 1)
+        sectors = np.zeros((N, 8), dtype=np.float32)
+        if rings is not None and rings.shape[1] >= 8 and rings.shape[1] % 8 == 0:
+            prox = lidar_mod.proximity(rings, self.lidar_range)
+            sectors = prox.reshape(N, 8, -1).max(axis=2)
+        return np.concatenate([rel, dist, (dist < self.goal_threshold).astype(np.float32),
+                               settle, reached, sectors], axis=1).astype(np.float32)   # (N, 15)
 
     def reset_normalizer(self):
         """Reset running normalizer — call at start of each curriculum stage."""

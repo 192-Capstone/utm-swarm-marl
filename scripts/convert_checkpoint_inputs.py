@@ -73,6 +73,44 @@ def fold_layer(weight, bias, mean, std, scales, z_orient, n_tail):
     return w_new, b_new
 
 
+def pad_v2_to_v3(ckpt, config, args):
+    """v2 -> v3: the horizontal LiDAR ring is appended after the 42 v2 inputs.
+    Its columns in local_proj and the first MLP layer start at zero, so the
+    actor's outputs are unchanged until training uses the ring."""
+    new_dim = config['observation']['local_obs_dim']
+    ctx = config['observation']['neighbor_context_dim']
+    cfg_v2 = yaml.safe_load(open(args.config))
+    cfg_v2['observation'].update(schema='v2', local_obs_dim=V2_DIM, total_obs_dim=V2_DIM + ctx)
+    old = ActorNetwork(cfg_v2)
+    old.load_state_dict(ckpt['actor_state_dict'])
+    new = ActorNetwork(config)
+    state = {k: v.clone() for k, v in old.state_dict().items()}
+    w = state['local_proj.weight']
+    state['local_proj.weight'] = torch.cat([w, torch.zeros(w.shape[0], new_dim - V2_DIM)], dim=1)
+    w = state['mlp.0.weight']
+    state['mlp.0.weight'] = torch.cat([w[:, :V2_DIM], torch.zeros(w.shape[0], new_dim - V2_DIM),
+                                       w[:, V2_DIM:]], dim=1)
+    new.load_state_dict(state)
+
+    rng = np.random.default_rng(0)
+    n = 4096
+    f2 = torch.tensor(rng.uniform(-1, 1, (n, V2_DIM)), dtype=torch.float32)
+    f3 = torch.cat([f2, torch.tensor(rng.uniform(0, 1, (n, new_dim - V2_DIM)), dtype=torch.float32)], 1)
+    ns = torch.tensor(rng.normal(size=(n, 5, 6)), dtype=torch.float32)
+    nm = torch.tensor(rng.uniform(size=(n, 5)) < 0.4)
+    with torch.no_grad():
+        err = (old(f2, ns, nm)[0] - new(f3, ns, nm)[0]).abs().max().item()
+    print(f"max action difference v2 vs v3 (random ring readings): {err:.2e}")
+    if err > 1e-5:
+        sys.exit("conversion check failed, nothing written")
+    out = {k: v for k, v in ckpt.items() if k != 'actor_optim'}
+    out.update(actor_state_dict=new.state_dict(), observation_schema='v3',
+               converted_from=args.checkpoint, config=config)
+    os.makedirs(os.path.dirname(args.out) or '.', exist_ok=True)
+    torch.save(out, args.out)
+    print(f"written {args.out}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument("--checkpoint", required=True, help="schema v1 checkpoint")
@@ -81,9 +119,11 @@ def main():
     args = ap.parse_args()
 
     config = yaml.safe_load(open(args.config))
-    if config['observation'].get('schema', 'v1') != 'v2':
-        sys.exit("--config must use observation.schema: v2")
     ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
+    if ckpt.get('observation_schema', 'v1') == 'v2' and config['observation'].get('schema') == 'v3':
+        return pad_v2_to_v3(ckpt, config, args)
+    if config['observation'].get('schema', 'v1') != 'v2':
+        sys.exit("--config must use observation.schema: v2 (or v3 for a v2 checkpoint)")
     if ckpt.get('observation_schema', 'v1') != 'v1':
         sys.exit(f"{args.checkpoint} is already schema {ckpt['observation_schema']}")
     if 'normalizer_mean' not in ckpt:

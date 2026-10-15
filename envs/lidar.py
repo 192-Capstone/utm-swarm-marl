@@ -25,6 +25,12 @@ Config (block 'lidar'):
     enabled      false -> every ray reports "nothing seen" (Stage-1 behaviour)
     range        metres (6.0); keep it the same across stages
     sees_drones  other drones block rays too (true)
+    ring_rays    extra horizontal rays evenly spaced around the drone
+                 (0 = none; Stage 2 ring: 32, every 11.25 deg). Read as a
+                 separate 'lidar_ring' reading, rotated with the same goal
+                 heading (ring ray 0 = towards the goal, counter-clockwise).
+                 The 14-ray fan above is unchanged, so the teacher's side
+                 rule and the critic's quadrants are unaffected.
 """
 
 import numpy as np
@@ -42,6 +48,7 @@ def lidar_config(config):
         'enabled':     bool(l.get('enabled', False)),
         'range':       float(l.get('range', 6.0)),
         'sees_drones': bool(l.get('sees_drones', True)),
+        'ring_rays':   int(l.get('ring_rays', 0)),
     }
 
 
@@ -61,6 +68,12 @@ def ray_directions(yaw):
         a, e = np.radians(az) + yaw, np.radians(el)
         out[k] = (np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e))
     return out
+
+
+def ring_directions(yaw, n):
+    """(n, 3) unit vectors of the horizontal ring, ray 0 along the heading."""
+    a = yaw + 2.0 * np.pi * np.arange(n) / n
+    return np.stack([np.cos(a), np.sin(a), np.zeros(n)], axis=1)
 
 
 def proximity(distances, max_range):

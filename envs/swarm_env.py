@@ -277,6 +277,7 @@ class SwarmEnv:
             'drone_reached_goal':    list(self.drone_reached_goal),
             'goal_entry_just':       goal_entry_just,
             'settle_counter_delta':  settle_counter_delta,
+            'obstacle_clearance':    [g - scenario_manager.DRONE_RADIUS for g in obstacle_gap],
         }
         rewards = self.reward_engine.compute_rewards(reward_data)
         rewards_dict = {f'drone_{i}': float(rewards['total'][i])
@@ -359,7 +360,13 @@ class SwarmEnv:
         return self._build_obs(raw), rewards_dict, bool(done), info
 
     def _build_obs(self, raw):
-        lf, ns, nm, gs = self.obs_processor.process(raw, self.curriculum_stage)
+        extra = None
+        if self.obs_processor.critic_version >= 2:
+            # critic.version 2: the critic also sees each drone's settle state
+            extra = {'settle_progress': np.minimum(self.settle_counter / self.settle_steps, 1.0),
+                     'reached': np.asarray(self.drone_reached_goal, dtype=np.float32)}
+        lf, ns, nm, gs = self.obs_processor.process(raw, self.curriculum_stage,
+                                                    critic_extra=extra)
         return {
             'local_fixed':     lf,
             'neighbor_states': ns,

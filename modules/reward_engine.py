@@ -38,6 +38,14 @@ class RewardEngine:
         self.lambda_prox = r["lambda_prox"]
         self.r_danger = r["r_danger"]
 
+        # Obstacle proximity penalty (Stage 2): the same shape as the drone
+        # proximity penalty, on the clearance between the drone's body and the
+        # nearest obstacle surface. Without it, obstacles only teach through
+        # the crash itself; drones already get a warning from 1.5 m away.
+        # 0 = off (default).
+        self.lambda_obs_prox = r.get("lambda_obs_prox", 0.0)
+        self.obs_danger = r.get("obs_danger", 0.5)
+
         # Braking penalty — teaches deceleration near the goal instead of
         # flying through at full speed. Defaults to 0 (no-op) so callers that
         # don't supply these keys (e.g. reward_validation.py's minimal config)
@@ -81,6 +89,7 @@ class RewardEngine:
             "step_penalty": np.zeros(batch_size),
             "smoothness_penalty": np.zeros(batch_size),
             "proximity_penalty": np.zeros(batch_size),
+            "obstacle_proximity_penalty": np.zeros(batch_size),
             "settle_counter_progress": np.zeros(batch_size),
             "total": np.zeros(batch_size)
         }
@@ -136,6 +145,12 @@ class RewardEngine:
             
             rewards["proximity_penalty"][i] = -self.lambda_prox * prox_penalty
 
+            # 7b. Obstacle proximity penalty (clearance = surface gap minus body)
+            clearance = data.get("obstacle_clearance")
+            if self.lambda_obs_prox > 0 and clearance is not None and clearance[i] < self.obs_danger:
+                c = max(clearance[i], 0.0)
+                rewards["obstacle_proximity_penalty"][i] =                     -self.lambda_obs_prox * ((self.obs_danger - c) / self.obs_danger) ** 2
+
             # 8. Settle Counter Progress — rewards highwater-mark improvement
             # in consecutive settle steps. settle_counter_delta is computed by
             # SwarmEnv as max(0, new_best - old_best), so it is non-negative
@@ -157,6 +172,7 @@ class RewardEngine:
                 rewards["step_penalty"][i],
                 rewards["smoothness_penalty"][i],
                 rewards["proximity_penalty"][i],
+                rewards["obstacle_proximity_penalty"][i],
                 rewards["settle_counter_progress"][i],
             ])
         

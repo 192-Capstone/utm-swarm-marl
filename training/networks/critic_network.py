@@ -100,9 +100,29 @@ class DroneStateEncoder(nn.Module):
         return embeddings
 
 
+def critic_version(config: dict) -> int:
+    """critic.version in the config: 1 = one team value from a 17-value state per
+    drone (every config before this option), 2 = one value per drone from a
+    32-value state per drone (see CRITIC_STATE_DIM and
+    ObservationProcessor._build_global_state)."""
+    return int((config.get('critic') or {}).get('version', 1))
+
+
+# Per-drone global state size for each critic version
+CRITIC_STATE_DIM = {1: 17, 2: 32}
+
+
 class CriticNetwork(nn.Module):
     """
     Centralized Critic — estimates V(s) from global swarm state.
+
+    critic.version 2 (per-drone values): the head sees each drone's own
+    embedding next to the team mean, and outputs one value per drone
+    (B, N). Our rewards are per drone, so a single team value has to give
+    a drone about to settle (+100) and one about to crash (-50) the same
+    prediction; with BCA flying the training mix, 40% of the return
+    variance is between drones at the same step, so a team value can
+    explain at most ~60% of it.
 
     Full pipeline:
         global_state (B, N, 17)
@@ -127,8 +147,10 @@ class CriticNetwork(nn.Module):
 
         # --- Load dimensions from config ---
         self.n_agents        = config['environment']['n_agents']      # 3
-        self.drone_state_dim = 17      # per-drone global state dim
-                                       # Stage 1: last 5 (LiDAR) are zero-padded
+        self.version         = critic_version(config)
+        self.per_agent       = self.version >= 2
+        self.drone_state_dim = CRITIC_STATE_DIM[self.version]  # 17 (v1) or 32 (v2)
+                                       # Stage 1: LiDAR slots are zero-padded
         self.embed_dim       = 128     # per-drone embedding dimension
         self.hidden_dim      = config['network']['hidden_dim']        # 256
         self.n_hidden_layers = config['network']['n_hidden_layers']   # 2
@@ -146,6 +168,8 @@ class CriticNetwork(nn.Module):
         # 128 → 256 → 256 → 1
         layers    = []
         input_dim = self.embed_dim                 # 128 after mean pooling
+        if self.per_agent:
+            input_dim = 2 * self.embed_dim         # own embedding + team mean
 
         for _ in range(self.n_hidden_layers):
             layers.append(nn.Linear(input_dim, self.hidden_dim))
@@ -187,10 +211,16 @@ class CriticNetwork(nn.Module):
 
         Returns:
             value        : (batch_size, 1) — scalar value estimate V(s)
+                           critic.version 2: (batch_size, N), one per drone
         """
 
         # --- Step 1: Encode each drone independently (shared weights) ---
         embeddings = self.drone_encoder(global_state)    # (B, N, 128)
+
+        if self.per_agent:
+            team = embeddings.mean(dim=1, keepdim=True).expand_as(embeddings)
+            features = self.mlp(torch.cat([embeddings, team], dim=-1))   # (B, N, 256)
+            return self.value_head(features).squeeze(-1)                 # (B, N)
 
         # --- Step 2: Mean pool over all drone embeddings ---
         # Permutation invariant — drone ordering has no effect

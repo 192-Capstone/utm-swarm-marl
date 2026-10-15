@@ -54,7 +54,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from training.networks.actor_network import ActorNetwork
 from envs.swarm_env import SwarmEnv
-from baselines.repulsion_controller import RepulsionController
+from baselines.repulsion_controller import RepulsionController, closest_point
+from envs.scenario_manager import DRONE_RADIUS
 from envs import scenarios
 from record_rollout import (setup_crossing_scenario, setup_swap_scenario,
                             setup_headon_scenario, disable_all_collision_physics,
@@ -195,6 +196,7 @@ class MappoPolicy:
             lf = lf.clone()
             lf[:, 13:27] = 0.0
             lf[:, 27:41] = 0.0            # schema v2: previous LiDAR reading (no-op for v1)
+            lf[:, 42:] = 0.0              # schema v3: horizontal ring (no-op for v1/v2)
         with torch.no_grad():
             actions, _ = self.actor.get_action(lf, ns, nm, deterministic=self.deterministic,
                                                active_dims=self.n_active)
@@ -301,14 +303,21 @@ def setup_interaction(env, rng, scenario, dt, max_steps, policy):
 # One drone, one obstacle placed squarely on its straight path (midway along a
 # 6-10 m flight, at most 0.2 m off-centre). Flying straight means a crash, so
 # the drone has to sense the obstacle and go around it.
-#   pillar   : cylinder, radius 0.4-0.8 m
-#   building : box, half-sizes 0.6-1.2 m
-OBSTACLE_TESTS = ("pillar", "building")
+#   pillar        : cylinder, radius 0.4-0.8 m
+#   building      : box, half-sizes 0.6-1.2 m
+#   wide_building : box, half-sizes 0.9-1.2 m (the wide cases, where the
+#                   learned policy turned back towards the goal too early)
+#   long_wall     : box 2.2-2.4 m long ALONG the path, 0.8-1.0 m thick; the
+#                   flight runs along a world axis so the box is aligned with
+#                   it. Tests holding the detour during a long passing phase.
+OBSTACLE_TESTS = ("pillar", "building", "wide_building", "long_wall")
 
 
 def setup_obstacle_test(env, rng, kind):
     start = np.array([rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(2.0, 3.0)])
     ang = rng.uniform(0, 2 * np.pi)
+    if kind == "long_wall":
+        ang = rng.randint(4) * np.pi / 2           # along a world axis (boxes are axis-aligned)
     u = np.array([np.cos(ang), np.sin(ang), 0.0])
     length = rng.uniform(6.0, 10.0)
     goal = start + length * u
@@ -318,8 +327,14 @@ def setup_obstacle_test(env, rng, kind):
         ob = {'type': 'pillar', 'center': (float(c[0]), float(c[1])),
               'radius': float(rng.uniform(0.4, 0.8)), 'height': 8.0, 'on_path': True}
     else:
-        ob = {'type': 'box', 'center': (float(c[0]), float(c[1])),
-              'half': (float(rng.uniform(0.6, 1.2)), float(rng.uniform(0.6, 1.2))),
+        if kind == "wide_building":
+            half = (float(rng.uniform(0.9, 1.2)), float(rng.uniform(0.9, 1.2)))
+        elif kind == "long_wall":
+            along, across = float(rng.uniform(1.1, 1.2)), float(rng.uniform(0.4, 0.5))
+            half = (along, across) if abs(u[0]) > 0.5 else (across, along)
+        else:
+            half = (float(rng.uniform(0.6, 1.2)), float(rng.uniform(0.6, 1.2)))
+        ob = {'type': 'box', 'center': (float(c[0]), float(c[1])), 'half': half,
               'height': 8.0, 'on_path': True}
     return _apply_scenario(env, {'drone_0': start.tolist()}, {'drone_0': goal.tolist()}, 1,
                            obstacles=[ob])
@@ -463,6 +478,16 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
     min_obs_gap = np.inf               # closest approach to any obstacle surface
     clip_hits, clip_total = 0, 0
     info, steps = {}, 0
+    # Passing measures (obstacles only). A drone is ALONGSIDE an obstacle
+    # when the closest point of its surface is within 1 m and mostly to the
+    # side (less than 60 deg from perpendicular to the goal direction).
+    #   alongside gap : closest surface distance while alongside, per drone
+    #   turn-back     : alongside and within 0.7 m, yet moving towards the
+    #                   surface faster than 0.1 m/s (cutting back too early).
+    #                   Only while still more than 1 m (3D) from the goal, so
+    #                   behaviour at the goal never counts as passing.
+    along_gap = np.full(n_agents, np.inf)
+    close_steps = turnback_steps = 0
 
     for step in range(max_steps):
         lf = obs['local_fixed']
@@ -473,6 +498,26 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
         steps += 1
 
         pos = env.adapter.get_positions()
+        vel_h = (pos - pos_prev)[:, :2] / dt
+        if env.layout:
+            for i in range(n_agents):
+                g = env.goals[i][:2] - pos[i][:2]
+                if np.linalg.norm(g) < 0.3:
+                    continue
+                u = g / np.linalg.norm(g)
+                obs_below = [ob for ob in env.layout if pos[i][2] <= ob['height']]
+                if not obs_below:
+                    continue
+                cps = [closest_point(ob, pos[i][:2]) - pos[i][:2] for ob in obs_below]
+                k = int(np.argmin([np.linalg.norm(r) for r in cps]))
+                rel = cps[k]; dist = float(np.linalg.norm(rel))
+                gap = dist - DRONE_RADIUS
+                if dist < 1e-6 or gap >= 1.0 or abs(rel @ u) / dist >= 0.5:
+                    continue
+                along_gap[i] = min(along_gap[i], gap)
+                if gap < 0.7 and np.linalg.norm(env.goals[i] - pos[i]) > 1.0:
+                    close_steps += 1
+                    turnback_steps += int(vel_h[i] @ (rel / dist) > 0.1)
         path_len += np.linalg.norm(pos - pos_prev, axis=1)
         pos_prev = pos.copy()
 
@@ -537,6 +582,10 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
         'physical_contact': int(contact) if physics_on and n_agents > 1 else '',
         'mean_initial_goal_dist': round(float(np.mean(env.initial_dist)), 4),
         'obs_clip_frac': round(clip_hits / clip_total, 5) if clip_total else 0.0,
+        'alongside_min_gap': (round(float(along_gap[np.isfinite(along_gap)].min()), 4)
+                              if np.isfinite(along_gap).any() else ''),
+        'alongside_close_steps': close_steps,
+        'turnback_steps': turnback_steps,
     }
     for t in SEP_THRESHOLDS:
         episode[f'sep_below_{t}'] = int(min_sep is not None and min_sep < t) if n_agents > 1 else ''
@@ -582,6 +631,10 @@ def summarize(episodes, agents, n_agents, physics_on):
         s['any_crash_ci95'] = wilson(k_any, n)
         s['mean_obstacles'] = mean([e['n_obstacles'] for e in episodes])
         s['min_obstacle_gap'] = {'min': pct(gaps, 0), 'p5': pct(gaps, 5), 'median': pct(gaps, 50)}
+        ag = [e['alongside_min_gap'] for e in episodes if e.get('alongside_min_gap', '') != '']
+        s['alongside_gap'] = {'p5': pct(ag, 5), 'median': pct(ag, 50), 'episodes': len(ag)}
+        cs = sum(e.get('alongside_close_steps', 0) for e in episodes)
+        s['turnback_rate'] = sum(e.get('turnback_steps', 0) for e in episodes) / cs if cs else None
     if n_agents > 1:
         seps = [e['min_sep'] for e in episodes if e['min_sep'] != '']
         s['min_sep'] = {'min': pct(seps, 0), 'p1': pct(seps, 1), 'p5': pct(seps, 5),
