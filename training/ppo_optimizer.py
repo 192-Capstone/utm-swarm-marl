@@ -19,7 +19,7 @@ Key PPO mechanisms:
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 import yaml
 import os
 
@@ -66,8 +66,38 @@ class PPOOptimizer:
         self.batch_size      = config['training']['batch_size']        # 256
         self.value_loss_coef = config['training']['value_loss_coef']   # 0.5
         self.entropy_coef    = config['training']['entropy_coef']      # 0.01
+        # Imitation anchor (training.bc_anchor_coef): adds coef x the squared
+        # distance between the actor's mean action and the teacher's action
+        # on the same states, so RL improves on the imitation policy without
+        # drifting away from it over many small updates. 0 = off.
+        self.bc_anchor_coef  = float(config['training'].get('bc_anchor_coef', 0.0))
+        # training.ppo_actor_coef: weight of the PPO (reward) term in the actor
+        # loss. 1 = normal; 0 = control experiment where only the imitation
+        # anchor trains the actor, to tell how much an anchored fine-tune
+        # gains from the reward and how much from the teacher's corrections.
+        self.ppo_actor_coef  = float(config['training'].get('ppo_actor_coef', 1.0))
         self.max_grad_norm   = config['training']['max_grad_norm']     # 0.5
         self.target_kl       = config['training'].get('target_kl', 0.02)
+        # training.kl_action_budget (m/s, optional): set the KL early-stop
+        # limit as an allowed change of the mean action per update instead of
+        # a fixed KL value. For a Gaussian with fixed std, a mean shift of b
+        # on each of n action dims gives KL = n * b^2 / (2 * std^2), so a fixed
+        # KL limit gets 4x stricter every time the noise halves: at std 0.05
+        # the default limit (1.5 x 0.03) fires on a ~0.9 cm/s shift per axis.
+        # The budget keeps the brake but makes it mean the same in m/s at any
+        # noise level. Unset = the old limit (1.5 x target_kl).
+        self.kl_action_budget = config['training'].get('kl_action_budget', None)
+        # training.bc_anchor_mode: 'joint' (default) adds the anchor term to the
+        # PPO loss, so the anchor's pull counts against the KL brake; 'separate'
+        # runs PPO on the RL loss only, then a separate copying step toward the
+        # teacher (bc_anchor_epochs passes over the buffer with its own Adam
+        # optimizer at bc_anchor_lr), outside the KL check.
+        self.bc_anchor_mode  = config['training'].get('bc_anchor_mode', 'joint')
+        self.bc_anchor_epochs = int(config['training'].get('bc_anchor_epochs', 1))
+        # Multiplier on the anchor (coef in joint mode, step size in separate
+        # mode); MAPPOTrainer lowers it over the run when an anchor decay is
+        # configured. 1 = full strength.
+        self.anchor_scale    = 1.0
 
         # Number of action dims PPO should evaluate log_prob/entropy over.
         # Yaw (dim 3) is masked to 0.0 and has no causal effect on reward in
@@ -91,6 +121,11 @@ class PPOOptimizer:
             critic.parameters(),
             lr=config['training']['critic_lr']   # 3e-4
         )
+        self.anchor_optimizer = None
+        if self.bc_anchor_coef > 0 and self.bc_anchor_mode == 'separate':
+            self.anchor_optimizer = optim.Adam(
+                [p for n, p in actor.named_parameters() if 'log_std' not in n],
+                lr=float(config['training'].get('bc_anchor_lr', 1e-5)))
         self.cost_critic_optimizer = None
         if cost_critic is not None:
             self.cost_critic_optimizer = optim.Adam(
@@ -101,6 +136,7 @@ class PPOOptimizer:
             'actor_loss':     [],
             'critic_loss':    [],
             'entropy':        [],
+            'bc_anchor_loss': [],
             'clip_fraction':  [],
             'approx_kl':      [],
             'actor_grad_norm':  [],
@@ -125,7 +161,7 @@ class PPOOptimizer:
         """
         epoch_stats = {k: [] for k in self.stats}
         epochs_completed = 0
-        kl_limit = 1.5 * self.target_kl
+        kl_limit = self._kl_limit()
 
         for epoch in range(self.n_epochs):
             stop_update = False
@@ -152,12 +188,17 @@ class PPOOptimizer:
                     break
 
                 total_loss = (
-                    - actor_loss
+                    - self.ppo_actor_coef * actor_loss
                     + self.value_loss_coef * critic_loss
                     - self.entropy_coef    * entropy
                 )
                 if cost_critic_loss is not None:
                     total_loss = total_loss + self.value_loss_coef * cost_critic_loss
+                if self.bc_anchor_mode != 'separate':
+                    bc_loss = self._bc_anchor_loss(batch)
+                    if bc_loss is not None:
+                        total_loss = total_loss + self.anchor_scale * self.bc_anchor_coef * bc_loss
+                        epoch_stats['bc_anchor_loss'].append(bc_loss.item())
 
                 self.actor_optimizer.zero_grad()
                 self.critic_optimizer.zero_grad()
@@ -192,9 +233,27 @@ class PPOOptimizer:
             if stop_update:
                 break
 
+        # Separate anchor step (bc_anchor_mode 'separate'): pull the actor
+        # toward the teacher after the PPO update, outside the KL check
+        if self.anchor_optimizer is not None and not self.freeze_actor and self.anchor_scale > 0:
+            for group in self.anchor_optimizer.param_groups:
+                group['lr'] = group.setdefault('base_lr', group['lr']) * self.anchor_scale
+            for _ in range(self.bc_anchor_epochs):
+                for batch in buffer.get_minibatches(self.batch_size):
+                    bc_loss = self._bc_anchor_loss(batch)
+                    if bc_loss is None:
+                        continue
+                    self.anchor_optimizer.zero_grad()
+                    bc_loss.backward()
+                    nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+                    self.anchor_optimizer.step()
+                    epoch_stats['bc_anchor_loss'].append(bc_loss.item())
+
         metrics = {k: float(torch.tensor(v).mean()) if v else 0.0
                    for k, v in epoch_stats.items()}
         metrics['epochs_used'] = epochs_completed
+        metrics['kl_limit'] = kl_limit
+        metrics['anchor_scale'] = self.anchor_scale
 
         # Explained variance: how well does the critic predict returns?
         # 1.0 = perfect, 0.0 = no better than mean, <0 = worse than mean
@@ -211,6 +270,38 @@ class PPOOptimizer:
                 ).item()
 
         return metrics
+
+    def _kl_limit(self) -> float:
+        """KL early-stop limit: 1.5 x target_kl, or, with kl_action_budget
+        (m/s per action axis), the KL of shifting the mean by that much on
+        every active axis at the current exploration std."""
+        if self.kl_action_budget is None:
+            return 1.5 * self.target_kl
+        log_std = torch.clamp(self.actor.action_log_std, self.actor.log_std_floor,
+                              self.actor.log_std_ceiling)
+        n = self.active_action_dims or log_std.numel()
+        var = torch.exp(2 * log_std[:n]).detach()
+        return float((self.kl_action_budget ** 2 / (2 * var)).sum())
+
+    @staticmethod
+    def _sample_values(critic, global_state: torch.Tensor, batch: Dict) -> torch.Tensor:
+        """(B,) value of each sample's own drone. A team critic (critic.version 1)
+        gives one value per sample; a per-drone critic (version 2) gives (B, N)
+        and each sample takes the column of its drone (batch['agent_idx'])."""
+        out = critic(global_state)
+        if getattr(critic, 'per_agent', False):
+            return out.gather(1, batch['agent_idx'].long().unsqueeze(1)).squeeze(1)
+        return out.squeeze(-1)
+
+    def _bc_anchor_loss(self, batch: Dict) -> Optional[torch.Tensor]:
+        """Mean squared distance between the actor's mean velocity and the
+        teacher's on the rows that carry a teacher label; None when the
+        anchor is off or the batch has no labelled rows."""
+        if self.bc_anchor_coef <= 0 or not batch['has_teacher'].any():
+            return None
+        m = batch['has_teacher']
+        mean, _ = self.actor(batch['local_obs'][m], batch['neighbor_states'][m], batch['neighbor_mask'][m])
+        return ((mean[:, :3] - batch['teacher_actions'][m]) ** 2).mean()
 
     def _compute_losses(self, batch: Dict) -> Tuple[torch.Tensor, ...]:
         """
@@ -289,13 +380,13 @@ class PPOOptimizer:
         # team's state block for each sample's timestep (see RolloutBuffer.
         # get_minibatches). This matches exactly what the critic saw live
         # during rollout, so update-time and rollout-time predictions agree.
-        values = self.critic(global_state).squeeze(-1)  # (B,)
+        values = self._sample_values(self.critic, global_state, batch)  # (B,)
 
         critic_loss = nn.functional.mse_loss(values, returns)        # scalar
 
         cost_critic_loss = None
         if self.cost_critic is not None:
-            cost_values = self.cost_critic(global_state).squeeze(-1)
+            cost_values = self._sample_values(self.cost_critic, global_state, batch)
             cost_critic_loss = nn.functional.mse_loss(cost_values, batch['cost_returns'])
 
         # ── Diagnostics ───────────────────────────────────────────────────────
