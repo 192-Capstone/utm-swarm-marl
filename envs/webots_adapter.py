@@ -268,7 +268,12 @@ class WebotsAdapter:
         os.environ['WEBOTS_HOME'] = WEBOTS_HOME
         port = int(wcfg.get('port') or _free_port())
         cmd = [os.path.join(WEBOTS_HOME, 'webots'), '--batch', '--stdout', '--stderr', f'--port={port}']
-        cmd += ['--mode=realtime'] if gui else ['--mode=fast', '--no-rendering', '--minimize']
+        if gui:
+            cmd += ['--mode=realtime']
+        elif wcfg.get('render'):              # draw the scene (needed to record videos)
+            cmd += ['--mode=fast']
+        else:
+            cmd += ['--mode=fast', '--no-rendering', '--minimize']
         cmd.append(self.world)
         log = wcfg.get('log') or os.devnull
         self._log = open(log, 'w')
