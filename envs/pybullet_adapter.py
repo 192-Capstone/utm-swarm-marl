@@ -65,6 +65,24 @@ class PyBulletAdapter:
         self.lidar_cfg    = lidar_mod.lidar_config(config)
         self._heading     = {}       # last LiDAR heading per drone (used when on the goal)
 
+        # Velocity lag (environment.dynamics.lag): a real quadrotor follows a velocity
+        # command with dead time and a first-order lag. Measured in Webots on a
+        # Crazyflie flown by Bitcraze's velocity PID: horizontal dead time 0.10-0.25 s,
+        # time constant 0.37-0.39 s; vertical (an altitude hold) ~0.1 s / ~0.14 s but
+        # underdamped. Per control step:
+        #     v[k+1] = v[k] + alpha * (v_cmd[k - d] - v[k]),  alpha = 1 - exp(-dt / tau)
+        # with tau and d drawn per drone and episode from the configured ranges (defaults:
+        # d 3-5 steps = 0.10-0.16 s, tau 0.33-0.43 s; with these the rule teachers score as in
+        # Webots: original teacher 60/34/14% on building / wide / long wall vs 60/35/6%,
+        # wide-gap teacher 96-100% vs 100%). Without
+        # it (the default) the command is the velocity, as before.
+        dyn = (config['environment'].get('dynamics') or {})
+        self.lag = bool(dyn.get('lag', False))
+        self.lag_tau_xy = tuple(dyn.get('tau_xy', (0.33, 0.43)))
+        self.lag_tau_z = tuple(dyn.get('tau_z', (0.10, 0.20)))
+        self.lag_delay = tuple(dyn.get('delay_steps', (3, 5)))
+        self.control_dt = float(config['environment'].get('control_timestep', 0.032))
+
         # Every PyBullet call below passes physicsClientId=self.client. Without
         # it, calls go to world 0 by default, so a second adapter in the same
         # process (the trainer's eval env) put its drones into the TRAINING
@@ -119,6 +137,14 @@ class PyBulletAdapter:
             p.resetBaseVelocity(body, [0, 0, 0], [0, 0, 0], physicsClientId=self.client)
             self.goals[key] = np.array(goal_positions[key], dtype=np.float32)
         self._heading = {}
+        if self.lag:
+            n = len(self.drone_ids)
+            tau = np.stack([np.random.uniform(*self.lag_tau_xy, n), np.random.uniform(*self.lag_tau_xy, n),
+                            np.random.uniform(*self.lag_tau_z, n)], axis=1)
+            self._alpha = 1.0 - np.exp(-self.control_dt / tau)                  # (n, 3)
+            self._delay = np.random.randint(self.lag_delay[0], self.lag_delay[1] + 1, n)
+            self._vel = np.zeros((n, 3), dtype=np.float32)
+            self._queue = [[np.zeros(3, dtype=np.float32)] * int(d) for d in self._delay]
         self._build_obstacles(obstacles or [])
 
     def _build_obstacles(self, layout):
@@ -157,6 +183,11 @@ class PyBulletAdapter:
         for i, body in enumerate(self.drone_ids):
             a = actions[f'drone_{i}']
             v = np.clip(np.asarray(a[:3], dtype=np.float32), -self.v_max, self.v_max)
+            if self.lag:
+                self._queue[i].append(v)
+                cmd = self._queue[i].pop(0)                          # issued d steps ago
+                self._vel[i] = self._vel[i] + self._alpha[i] * (cmd - self._vel[i])
+                v = self._vel[i]
             yaw_rate = float(np.clip(a[3], -self.omega_max, self.omega_max)) if len(a) > 3 else 0.0
             p.resetBaseVelocity(body, linearVelocity=v.tolist(),
                                 angularVelocity=[0.0, 0.0, yaw_rate],
