@@ -782,8 +782,8 @@ def main():
                     help="ablation: MAPPO actor sees no other drones (all neighbour slots masked)")
     ap.add_argument("--blind-lidar", action="store_true",
                     help="ablation: MAPPO actor's LiDAR inputs read 'nothing seen'")
-    ap.add_argument("--simulator", choices=["pybullet", "webots"], default="pybullet",
-                    help="simulator backend (webots: envs/webots_adapter.py, Level 1)")
+    ap.add_argument("--simulator", choices=["pybullet", "webots", "webots_l2"], default="pybullet",
+                    help="simulator backend (webots: Level 1, envs/webots_adapter.py; webots_l2: Level 2 quadrotor, envs/webots_l2.py)")
     ap.add_argument("--collision-physics", choices=["on", "off"], required=True,
                     help="off = policy-only safety (PyBullet contact response disabled); "
                          "on = system-level, also records PyBullet contact events")

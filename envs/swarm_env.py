@@ -60,11 +60,15 @@ class SwarmEnv:
         self.obstacle_cfg = scenario_manager.obstacle_config(config)
         self.layout = []
 
-        # environment.simulator: pybullet (default) | webots
+        # environment.simulator: pybullet (default) | webots | webots_l2
         if adapter is None:
-            if config['environment'].get('simulator', 'pybullet') == 'webots':
+            sim = config['environment'].get('simulator', 'pybullet')
+            if sim == 'webots':                  # Level 1: velocity-controlled bodies
                 from envs.webots_adapter import WebotsAdapter
                 adapter = WebotsAdapter(config, gui=gui)
+            elif sim == 'webots_l2':             # Level 2: quadrotor dynamics + velocity PID
+                from envs.webots_l2 import WebotsL2Adapter
+                adapter = WebotsL2Adapter(config, gui=gui)
             else:
                 adapter = PyBulletAdapter(config, gui=gui)
         self.adapter        = adapter
