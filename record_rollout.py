@@ -70,6 +70,8 @@ def disable_all_collision_physics(env, n_agents):
     meaningful fraction of trials. Any collision-avoidance comparison that
     doesn't disable this is partly measuring the physics engine, not either
     policy's actual behavior."""
+    if not hasattr(env.adapter, 'client'):
+        return      # not PyBullet (Webots drones have no collision bodies at all)
     for i in range(n_agents):
         for j in range(i + 1, n_agents):
             p.setCollisionFilterPair(

@@ -60,7 +60,14 @@ class SwarmEnv:
         self.obstacle_cfg = scenario_manager.obstacle_config(config)
         self.layout = []
 
-        self.adapter        = adapter or PyBulletAdapter(config, gui=gui)
+        # environment.simulator: pybullet (default) | webots
+        if adapter is None:
+            if config['environment'].get('simulator', 'pybullet') == 'webots':
+                from envs.webots_adapter import WebotsAdapter
+                adapter = WebotsAdapter(config, gui=gui)
+            else:
+                adapter = PyBulletAdapter(config, gui=gui)
+        self.adapter        = adapter
         self.obs_processor  = ObservationProcessor(config, self.device)
         self.reward_engine  = RewardEngine(config)
         self.episode_manager = EpisodeManager(config)
