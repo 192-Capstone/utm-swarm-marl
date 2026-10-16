@@ -101,6 +101,8 @@ def rollout(pick_env, teacher, actor, episodes, beta, device, data):
             data['along'].append(np.array([alongside(env, pos[i], env.goals[i]) for i in range(n)]))
             data['goal_d'].append(np.linalg.norm(env.goals[:n] - pos, axis=1).astype(np.float32))
             data['settled'].append(np.array(env.drone_reached_goal[:n], dtype=bool))
+            d = np.linalg.norm(pos[:, None, :] - pos[None, :, :], axis=2) + np.eye(n) * 1e9
+            data['near'].append(d.min(axis=1).astype(np.float32) if n > 1 else np.full(n, np.inf, np.float32))
             data['lf'].append(obs['local_fixed'].numpy().copy())
             data['ns'].append(obs['neighbor_states'].numpy().copy())
             data['nm'].append(obs['neighbor_mask'].numpy().copy())
@@ -131,7 +133,7 @@ def alongside(env, pos, goal):
 
 
 def train(actor, data, epochs, device, lr, batch=1024, near_weight=1.0, near_dist=0.0,
-          along_weight=1.0, loss_parts=None, arrival_dist=1.0):
+          along_weight=1.0, loss_parts=None, arrival_dist=1.0, crowd_dist=1.5):
     """Weighted MSE on the action mean. Two modes:
     per-sample weights (near_weight / along_weight), or, with loss_parts =
     (general, passing, arrival), a balanced loss: every batch's error is
@@ -143,6 +145,9 @@ def train(actor, data, epochs, device, lr, batch=1024, near_weight=1.0, near_dis
                   settled hover at the goal for the rest of the episode,
                   ~40% of all samples, and those easy steps go to general)
         passing : obstacle beside the drone (see alongside())
+        crowd   : (only with a 4th weight) another drone within crowd_dist m; in 8-drone
+                  crowds students dodged at ~30% of the teacher's strength and passed
+                  each other 21-25 cm apart
         general : everything else"""
     lf = torch.tensor(np.concatenate(data['lf']), device=device)
     ns = torch.tensor(np.concatenate(data['ns']), device=device)
@@ -153,10 +158,13 @@ def train(actor, data, epochs, device, lr, batch=1024, near_weight=1.0, near_dis
     if loss_parts:
         arriving = (np.concatenate(data['goal_d']) < arrival_dist) & ~np.concatenate(data['settled'])
         part = np.where(arriving, 2, np.where(along, 1, 0))
+        if len(loss_parts) > 3:
+            crowd = np.concatenate(data['near']) < crowd_dist
+            part = np.where((part == 0) & crowd, 3, part)
         part = torch.tensor(part, device=device)
         part_w = torch.tensor(loss_parts, dtype=torch.float32, device=device)
         shares = [f"{name} {np.mean(part.cpu().numpy() == k) * 100:.1f}%"
-                  for k, name in enumerate(('general', 'passing', 'arrival'))]
+                  for k, name in enumerate(('general', 'passing', 'arrival', 'crowd')[:len(loss_parts)])]
         print(f"      balanced loss {tuple(loss_parts)}; samples: {', '.join(shares)}")
     else:
         w = np.where(gap < near_dist, near_weight, 1.0)
@@ -173,8 +181,9 @@ def train(actor, data, epochs, device, lr, batch=1024, near_weight=1.0, near_dis
             err = ((mean[:, :3] - y[idx]) ** 2).mean(dim=1)
             if loss_parts:
                 pb = part[idx]
-                means = [err[pb == k].mean() for k in range(3) if (pb == k).any()]
-                ws = [part_w[k] for k in range(3) if (pb == k).any()]
+                K = len(loss_parts)
+                means = [err[pb == k].mean() for k in range(K) if (pb == k).any()]
+                ws = [part_w[k] for k in range(K) if (pb == k).any()]
                 loss = sum(wk * m for wk, m in zip(ws, means)) / sum(ws)
             else:
                 loss = (w[idx] * err).sum() / w[idx].sum()
@@ -205,8 +214,10 @@ def main():
     ap.add_argument("--near-weight", type=float, default=1.0,
                     help="loss weight of samples near an obstacle (1 = unweighted)")
     ap.add_argument("--loss-parts", default=None,
-                    help="balanced loss weights general,passing,arrival (e.g. 1,1,1); "
-                         "replaces --near-weight/--along-weight")
+                    help="balanced loss weights general,passing,arrival[,crowd] (e.g. 1,1,1 or "
+                         "1,1,1,1); replaces --near-weight/--along-weight")
+    ap.add_argument("--crowd-dist", type=float, default=1.5,
+                    help="'crowd' = another drone within this many metres (4th loss part)")
     ap.add_argument("--arrival-dist", type=float, default=1.0,
                     help="'arrival' = within this many metres (3D) of the goal")
     ap.add_argument("--along-weight", type=float, default=1.0,
@@ -262,7 +273,8 @@ def main():
     else:
         actor.load_state_dict(base['actor_state_dict'])
     teacher = RepulsionController(cfg)
-    data = {'lf': [], 'ns': [], 'nm': [], 'y': [], 'gap': [], 'along': [], 'goal_d': [], 'settled': []}
+    data = {'lf': [], 'ns': [], 'nm': [], 'y': [], 'gap': [], 'along': [], 'goal_d': [], 'settled': [],
+            'near': []}
 
     t0 = time.time()
     print(f"[1] teacher flies {args.episodes} episodes of the scenario mix {cfg.get('scenario_mix')}, "
@@ -273,7 +285,8 @@ def main():
     actor.train(); train(actor, data, args.epochs, device, args.lr,
                          near_weight=args.near_weight, near_dist=args.near_dist,
                          along_weight=args.along_weight,
-                         loss_parts=parts, arrival_dist=args.arrival_dist)
+                         loss_parts=parts, arrival_dist=args.arrival_dist,
+                             crowd_dist=args.crowd_dist)
 
     for r, beta in enumerate(betas):
         print(f"[3.{r + 1}] DAgger: cloned actor flies {args.dagger_episodes} episodes (teacher steps in {beta:.0%} of the time)")
@@ -283,7 +296,8 @@ def main():
         actor.train(); train(actor, data, args.epochs, device, args.lr,
                              near_weight=args.near_weight, near_dist=args.near_dist,
                              along_weight=args.along_weight,
-                             loss_parts=parts, arrival_dist=args.arrival_dist)
+                             loss_parts=parts, arrival_dist=args.arrival_dist,
+                             crowd_dist=args.crowd_dist)
     for env in envs.values():
         env.close()
     actor.eval()

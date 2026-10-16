@@ -340,6 +340,63 @@ def setup_obstacle_test(env, rng, kind):
                            obstacles=[ob])
 
 
+# --------------------------------------------------- held-out obstacle tests ---
+# Layouts that no training scenario produces (the course scenario has one
+# obstacle per lane), to measure generalisation instead of practice. One drone,
+# a 7-10 m flight along a world axis (boxes are axis-aligned):
+#   l_shape   : two boxes forming an L, its corner on the path; the arm along
+#               the path is on a random side, so one way round is much longer
+#   gap       : two buildings side by side across the path, 1.4-2.0 m apart,
+#               the gap's centre within 0.3 m of the path (through or around)
+#   cluster   : three pillars (r 0.3-0.5 m) in a triangle around the midpoint,
+#               1.2-1.6 m apart, so the way round passes between or past them
+#   slalom    : two boxes one after the other along the path, 2.5-3.5 m apart,
+#               shifted to opposite sides of it, so the detour must switch side
+HELDOUT_TESTS = ("l_shape", "gap", "cluster", "slalom")
+
+
+def setup_heldout_test(env, rng, kind):
+    start = np.array([rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(2.0, 3.0)])
+    ang = rng.randint(4) * np.pi / 2
+    u = np.array([np.cos(ang), np.sin(ang)])
+    s = np.array([-u[1], u[0]])                                   # sideways
+    length = rng.uniform(7.0, 10.0)
+    goal = start[:2] + length * u
+    mid = start[:2] + 0.5 * length * u
+
+    def box(c, half_u, half_s):
+        hx, hy = (half_u, half_s) if abs(u[0]) > 0.5 else (half_s, half_u)
+        return {'type': 'box', 'center': (float(c[0]), float(c[1])), 'half': (float(hx), float(hy)),
+                'height': 8.0, 'on_path': True}
+
+    if kind == "l_shape":
+        side = 1.0 if rng.uniform() < 0.5 else -1.0
+        across, thick, arm = rng.uniform(1.0, 1.3), rng.uniform(0.3, 0.4), rng.uniform(1.0, 1.4)
+        obs = [box(mid + side * rng.uniform(0.0, 0.3) * s, thick, across),           # bar across the path
+               box(mid + (arm - thick) * u + side * (across - thick) * s, arm, thick)]  # arm along it
+    elif kind == "gap":
+        gap, off = rng.uniform(1.4, 2.0), rng.uniform(-0.3, 0.3)
+        half_s = rng.uniform(0.8, 1.2)
+        half_u = rng.uniform(0.5, 0.9)
+        obs = [box(mid + (off + sgn * (gap / 2 + half_s)) * s, half_u, half_s) for sgn in (1.0, -1.0)]
+    elif kind == "cluster":
+        d = rng.uniform(1.2, 1.6)
+        rot = rng.uniform(0, 2 * np.pi)
+        obs = []
+        for k in range(3):
+            a = rot + 2 * np.pi * k / 3
+            c = mid + d / np.sqrt(3) * np.array([np.cos(a), np.sin(a)])
+            obs.append({'type': 'pillar', 'center': (float(c[0]), float(c[1])),
+                        'radius': float(rng.uniform(0.3, 0.5)), 'height': 8.0, 'on_path': True})
+    else:  # slalom
+        gap = rng.uniform(2.5, 3.5)
+        side = 1.0 if rng.uniform() < 0.5 else -1.0
+        obs = [box(mid - gap / 2 * u + side * rng.uniform(0.2, 0.4) * s, rng.uniform(0.4, 0.6), rng.uniform(0.8, 1.1)),
+               box(mid + gap / 2 * u - side * rng.uniform(0.2, 0.4) * s, rng.uniform(0.4, 0.6), rng.uniform(0.8, 1.1))]
+    g = [float(goal[0]), float(goal[1]), float(start[2])]
+    return _apply_scenario(env, {'drone_0': start.tolist()}, {'drone_0': g}, 1, obstacles=obs)
+
+
 def scripted_velocity(script, pos):
     """Velocity for the scripted drone_1. 'fly' heads for its end point at a
     constant speed (slowing only in the last few cm); 'hold' stays put."""
@@ -705,7 +762,7 @@ def main():
     ap.add_argument("--episodes", type=int, default=100, help="episodes PER seed")
     ap.add_argument("--scenario", default="random",
                     choices=["random", "crossing", "swap", "headon", "flythrough",
-                             *INTERACTION_SCENARIOS, *OBSTACLE_TESTS],
+                             *INTERACTION_SCENARIOS, *OBSTACLE_TESTS, *HELDOUT_TESTS],
                     help="intruder / blocker / neighbour are 2-drone tests where drone_1 is "
                          "scripted and only drone_0 (the policy under test) can avoid a collision; "
                          "pillar / building put one obstacle on a single drone's path")
@@ -715,6 +772,10 @@ def main():
     ap.add_argument("--goal-dist-min", type=float, default=None,
                     help="min start-goal distance for --goal-dist (default: half of it)")
     ap.add_argument("--n-agents", type=int, default=None, help="zero-shot agent-count override")
+    ap.add_argument("--no-obstacles", action="store_true",
+                    help="no static obstacles: crowd / pure deconfliction tests, e.g. --scenario headon "
+                         "--n-agents 8 --no-obstacles (the multi-drone tests otherwise place obstacles "
+                         "on the paths, which spreads the drones out)")
     ap.add_argument("--max-steps", type=int, default=None,
                     help="episode time limit override (e.g. 1000 to tell slow traffic from gridlock)")
     ap.add_argument("--blind-neighbors", action="store_true",
@@ -745,7 +806,7 @@ def main():
     policy_label = (args.policy + ("-blind" if args.blind_neighbors else "")
                     + ("-nolidar" if args.blind_lidar else ""))
     interaction = args.scenario in INTERACTION_SCENARIOS
-    obstacle_test = args.scenario in OBSTACLE_TESTS
+    obstacle_test = args.scenario in OBSTACLE_TESTS or args.scenario in HELDOUT_TESTS
     if interaction and args.n_agents not in (None, 2):
         ap.error(f"--scenario {args.scenario} always uses 2 drones")
     if obstacle_test and args.n_agents not in (None, 1):
@@ -770,6 +831,10 @@ def main():
         config['environment']['n_agents'] = args.n_agents
     if args.max_steps is not None:
         config['environment']['max_steps'] = args.max_steps
+    if args.no_obstacles:
+        if obstacle_test or interaction:
+            ap.error("--no-obstacles applies to the multi-drone scenarios")
+        config.setdefault('obstacles', {})['enabled'] = False
     n_agents = config['environment']['n_agents']
     max_steps = config['environment']['max_steps']
     dt = config['environment'].get('control_timestep', 0.032)
@@ -784,7 +849,8 @@ def main():
     dist_tag = f"d{d_max:g}" if d_max is not None else "dtrain"
     tag = (f"{policy_label}_{args.scenario}_{dist_tag}_n{n_agents}_"
            f"phys{args.collision_physics}_s{'-'.join(map(str, args.seeds))}_e{args.episodes}"
-           + (f"_T{max_steps}" if args.max_steps is not None else ""))
+           + (f"_T{max_steps}" if args.max_steps is not None else "")
+           + ("_noobs" if args.no_obstacles else ""))
     out_dir = args.out_dir or os.path.join(args.results_root, tag)
     if os.path.exists(os.path.join(out_dir, "summary.json")) and not args.overwrite:
         ap.error(f"{out_dir} already has results. Pass --overwrite or choose --out-dir.")
@@ -862,7 +928,9 @@ def main():
                 episodes.append({'seed': seed, 'episode': ep, 'scenario_id': sid,
                                  'param': param, **row})
                 continue
-            if obstacle_test:
+            if args.scenario in HELDOUT_TESTS:
+                obs = setup_heldout_test(env, rng, args.scenario)
+            elif obstacle_test:
                 obs = setup_obstacle_test(env, rng, args.scenario)
             elif args.scenario == "crossing":
                 obs = setup_crossing_scenario(env, rng, n_agents)

@@ -84,7 +84,8 @@ class SwarmEnv:
         # every episode is the plain random task and no extra RNG is drawn,
         # so existing configs and seeds behave exactly as before.
         mix = config.get('scenario_mix') or {'random': 1.0}
-        unknown = set(mix) - {'random', *scenarios.GENERATORS, *scenarios.COURSES}
+        unknown = set(mix) - {'random', *scenarios.GENERATORS, *scenarios.COURSES,
+                                 *(f'{k}_open' for k in scenarios.GENERATORS)}
         if unknown:
             raise ValueError(f"scenario_mix has unknown scenarios: {sorted(unknown)}")
         self.scenario_names = list(mix)
@@ -159,6 +160,9 @@ class SwarmEnv:
         elif scenario in scenarios.COURSES:          # comes with its own obstacle layout
             spawns, goals, layout = scenarios.COURSES[scenario](np.random, self.n_agents)
             return self.start_episode(spawns, goals, obstacles=layout)
+        elif scenario.endswith('_open'):             # e.g. headon_open: no obstacles, pure crowd
+            spawns, goals = scenarios.GENERATORS[scenario[:-5]](np.random, self.n_agents)
+            return self.start_episode(spawns, goals, obstacles=[])
         else:
             spawns, goals = scenarios.GENERATORS[scenario](np.random, self.n_agents)
         return self.start_episode(spawns, goals)

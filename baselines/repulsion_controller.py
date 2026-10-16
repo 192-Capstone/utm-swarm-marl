@@ -101,6 +101,14 @@ class RepulsionController:
         # body and the surface (10% of flights), a line no LiDAR student copies exactly;
         # copies that learned it slightly less precisely crashed, which is where seeds of
         # the same recipe differed most (wide building 24-59%, long wall 49-88%).
+        # Wider drone-drone margins (teacher.safe_dist / close_dist / k_avoid / k_close):
+        # in 8-drone crowds the students passed each other with a median gap of 21-25 cm
+        # (crash at 20 cm) while dodging at ~30% of the teacher's strength; the same
+        # remedy as for obstacles, more room for the student's imprecision.
+        self.safe_dist = float(teacher_cfg.get('safe_dist', self.safe_dist))
+        self.close_dist = float(teacher_cfg.get('close_dist', self.close_dist))
+        self.k_avoid = float(teacher_cfg.get('k_avoid', self.k_avoid))
+        self.k_close = float(teacher_cfg.get('k_close', self.k_close))
         self.obs_close = float(teacher_cfg.get('obs_close', self.obs_close))
         self.k_obs_close = float(teacher_cfg.get('k_obs_close', self.k_obs_close))
         self.side_from_lidar = bool(teacher_cfg.get('side_from_lidar', False))
