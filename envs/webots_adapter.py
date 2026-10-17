@@ -51,6 +51,7 @@ Limitations
 """
 
 import atexit
+import math
 import os
 import socket
 import subprocess
@@ -107,6 +108,38 @@ BOX_NODE = """Solid {{
     }}
   ]
 }}"""
+
+
+# webots.real: true -> the same scene drawn realistically (official Crazyflie models,
+# obstacles as buildings / round towers of exactly the layout's size, sky, grass). Visual
+# only: the obstacles have no bounding objects, LiDAR and crash checks stay analytic.
+REAL_L1_WORLD = os.path.join(ROOT, 'webots', 'worlds', 'swarm_l1_real.wbt')
+REAL_DRONE_NODE = """DEF DRONE_{i} Crazyflie {{
+  translation {x} {y} {z}
+  name "drone_{i}"
+  controller "<none>"
+}}"""
+BOX_WALLS = ["office building", "windowed building", "concrete building", "residential building",
+             "old office building", "brick building"]
+TOWER_WALLS = ["gray glass building", "glass highrise", "blue glass building"]
+
+
+def building_node(k, ob):
+    """A SimpleBuilding with exactly the obstacle's footprint and height (8 m: 3 floors)."""
+    x, y = ob['center']
+    h = ob['height']
+    if ob['type'] == 'pillar':
+        r = ob['radius']
+        ang = [-2 * math.pi * j / 16 for j in range(16)]          # clockwise, as SimpleBuilding expects
+        corners = ', '.join(f'{r * math.cos(a):.4f} {r * math.sin(a):.4f}' for a in ang)
+        wall = TOWER_WALLS[k % len(TOWER_WALLS)]
+    else:
+        hx, hy = ob['half']
+        corners = f'{hx} {hy}, {hx} {-hy}, {-hx} {-hy}, {-hx} {hy}'
+        wall = BOX_WALLS[k % len(BOX_WALLS)]
+    return (f'SimpleBuilding {{ translation {x} {y} 0 name "obstacle_{k}" corners [ {corners} ] '
+            f'floorHeight {h / 3:.4f} floorNumber 3 roofShape "flat roof" roofHeight 0.01 roofType "gravel" '
+            f'wallType "{wall}" enableBoundingObject FALSE }}')
 
 
 def _free_port():
@@ -230,7 +263,8 @@ class WebotsAdapter:
         self.n_lidar = config['observation'].get('n_lidar_rays', 14)
         self.control_dt = config['environment'].get('control_timestep', 0.032)
         wcfg = config.get('webots') or {}
-        self.world = os.path.expanduser(wcfg.get('world', DEFAULT_WORLD))
+        self.real = bool(wcfg.get('real', False))
+        self.world = os.path.expanduser(wcfg.get('world', REAL_L1_WORLD if self.real else DEFAULT_WORLD))
         # PyBullet parity: the same physics sub-steps PyBulletAdapter uses
         self.match_pybullet = bool(wcfg.get('match_pybullet', True))
         train_cfg = config['environment'].get('training', {})
@@ -252,7 +286,8 @@ class WebotsAdapter:
         self._obstacle_root = self.sup.getFromDef('OBSTACLES').getField('children')
         drones_root = self.sup.getFromDef('DRONES').getField('children')
         for i in range(self.n_agents):
-            drones_root.importMFNodeFromString(-1, DRONE_NODE.format(i=i, x=i * 2.0, y=0.0, z=1.0))
+            drones_root.importMFNodeFromString(-1, (REAL_DRONE_NODE if self.real else DRONE_NODE).format(
+                i=i, x=i * 2.0, y=0.0, z=1.0))
         self.nodes = [self.sup.getFromDef(f'DRONE_{i}') for i in range(self.n_agents)]
         self._tr = [nd.getField('translation') for nd in self.nodes]
         self._rot = [nd.getField('rotation') for nd in self.nodes]
@@ -315,6 +350,9 @@ class WebotsAdapter:
             self._obstacle_root.removeMF(-1)
         self.layout = list(layout)
         for k, ob in enumerate(layout):
+            if getattr(self, 'real', False):
+                self._obstacle_root.importMFNodeFromString(-1, building_node(k, ob))
+                continue
             h = ob['height']
             x, y = ob['center']
             if ob['type'] == 'pillar':

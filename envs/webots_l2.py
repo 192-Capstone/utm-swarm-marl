@@ -31,6 +31,7 @@ from envs.webots_adapter import (WebotsAdapter, scan_lidar, PILLAR_NODE, BOX_NOD
 import os
 
 L2_WORLD = os.path.join(ROOT, 'webots', 'worlds', 'swarm_l2.wbt')
+L2_REAL_WORLD = os.path.join(ROOT, 'webots', 'worlds', 'swarm_l2_real.wbt')   # official Crazyflie model
 HOVER_RAD_S = math.sqrt(0.05 * 9.81 / (4 * 4e-05))      # ~55.4 rad/s per motor at hover
 
 
@@ -82,7 +83,12 @@ class WebotsL2Adapter(WebotsAdapter):
         if config['environment']['n_agents'] != 1:
             raise ValueError("Webots Level 2 flies one drone for now (obstacle tests)")
         config = dict(config)
-        config['webots'] = dict(config.get('webots') or {}, world=(config.get('webots') or {}).get('l2_world', L2_WORLD))
+        w = dict(config.get('webots') or {})
+        self.real = bool(w.get('real', False))
+        w['world'] = w.get('l2_world', L2_REAL_WORLD if self.real else L2_WORLD)
+        # the official model's motors spin up at 30 rad/s^2 (1.8 s to hover speed); ours at 1000
+        self.spinup_hold_s = float(w.get('spinup_hold_s', 2.0 if self.real else 0.12))
+        config['webots'] = w
         self.config = config
         self.n_agents = 1
         self.v_max = config['environment'].get('v_max', 2.0)
@@ -140,8 +146,9 @@ class WebotsL2Adapter(WebotsAdapter):
         self.z_des = start[2]
         self._set_motors([HOVER_RAD_S] * 4)
         # hold the drone at the spawn while the rotors spin up to hover speed
-        # (55 ms at the motors' 1000 rad/s^2), so the episode starts in hover
-        for _ in range(max(1, int(round(0.12 / self.dt)))):
+        # (55 ms at our motors' 1000 rad/s^2, ~1.85 s for the official model), so the
+        # episode starts in hover
+        for _ in range(max(1, int(round(self.spinup_hold_s / self.dt)))):
             self.sup.step(self.basic_ms)
             self._tr[0].setSFVec3f(start)
             self._rot[0].setSFRotation([0.0, 0.0, 1.0, 0.0])

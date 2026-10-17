@@ -78,10 +78,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--config', default='configs/config_stage2_ring.yaml')
     ap.add_argument('--out', default='logs/webots')
+    ap.add_argument('--real', action='store_true', help="Bitcraze's official Crazyflie model (swarm_l2_real.wbt)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     cfg = yaml.safe_load(open(a.config))
     cfg['environment']['n_agents'] = 1
+    if a.real:
+        cfg['webots'] = {'real': True}
     ad = WebotsL2Adapter(cfg)
     res = {'steps': [], 'hover': {}, 'config': {'basic_step_s': ad.dt, 'control_step_s': ad.control_dt}}
     curves = []
@@ -144,7 +147,7 @@ def main():
                     continue
                 line, = ax.plot(np.r_[ta, tb], np.r_[va, vb], lw=1.4, label=f'{amp} m/s')
                 ax.plot([0, 4, 4, 7], [amp, amp, 0, 0], '--', lw=0.8, color=line.get_color())
-            ax.set_title(f'v{axis} step response (Webots L2)'); ax.set_xlabel('time since command (s)')
+            ax.set_title(f'v{axis} step response (Webots L2{", official Crazyflie" if a.real else ""})'); ax.set_xlabel('time since command (s)')
             ax.set_ylabel('velocity (m/s)'); ax.grid(alpha=0.3); ax.legend()
         fig.tight_layout(); fig.savefig(os.path.join(a.out, 'l2_sysid_steps.png'), dpi=120)
         fig, ax = plt.subplots(figsize=(8, 3.2))

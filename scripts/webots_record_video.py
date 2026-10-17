@@ -83,6 +83,24 @@ def set_view(sup, pts):
     vp.getField('orientation').setSFRotation(axis_angle(Rz @ Ry))
 
 
+class ChaseCam:
+    """Camera behind and above one drone, looking along its start->goal heading
+    (fixed, so it doesn't swing when the drone swerves), smoothed."""
+    def __init__(self, sup, heading, back=1.6, up=0.55, smooth=0.3):
+        self.vp = sup.getFromDef('VIEW')
+        self.h, self.back, self.up, self.k = heading, back, up, smooth
+        self.pos = None
+        pitch = math.atan2(up, back)
+        Rz = np.array([[math.cos(heading), -math.sin(heading), 0], [math.sin(heading), math.cos(heading), 0], [0, 0, 1]])
+        Ry = np.array([[math.cos(pitch), 0, math.sin(pitch)], [0, 1, 0], [-math.sin(pitch), 0, math.cos(pitch)]])
+        self.vp.getField('orientation').setSFRotation(axis_angle(Rz @ Ry))
+
+    def update(self, p):
+        target = np.asarray(p, dtype=float) + np.array([-self.back * math.cos(self.h), -self.back * math.sin(self.h), self.up])
+        self.pos = target if self.pos is None else self.pos + self.k * (target - self.pos)
+        self.vp.getField('position').setSFVec3f(self.pos.tolist())
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--config', default='configs/config_stage2_ring.yaml')
@@ -100,6 +118,9 @@ def main():
     ap.add_argument('--width', type=int, default=1280)
     ap.add_argument('--height', type=int, default=720)
     ap.add_argument('--tail-s', type=float, default=1.5, help="seconds recorded after the episode ends")
+    ap.add_argument('--real', action='store_true', help="realistic look: official Crazyflie, buildings, sky")
+    ap.add_argument('--camera', choices=['auto', 'overview', 'chase'], default='auto',
+                    help="auto = chase camera for one drone, overview for several")
     a = ap.parse_args()
 
     cfg = yaml.safe_load(open(a.config))
@@ -109,7 +130,7 @@ def main():
     n = 1 if obstacle else a.n_agents
     cfg['environment']['n_agents'] = n
     cfg['environment']['simulator'] = a.simulator
-    cfg['webots'] = dict(cfg.get('webots') or {}, render=True)
+    cfg['webots'] = dict(cfg.get('webots') or {}, render=True, real=a.real)
     env = SwarmEnv(cfg, device=torch.device('cpu'))
     sup = env.adapter.sup
     if a.policy == 'mappo':
@@ -138,35 +159,44 @@ def main():
         marks.importMFNodeFromString(-1, f'Solid {{ translation {g[0]} {g[1]} {g[2]} name "goal_{i}" children [ Shape {{ '
                                          f'appearance PBRAppearance {{ baseColor 0.1 0.9 0.2 transparency 0.6 metalness 0 }} '
                                          f'geometry Sphere {{ radius 0.5 subdivision 2 }} }} ] }}')
-    if a.simulator == 'webots':
+    if a.simulator == 'webots' and not a.real:
         for i, nd in enumerate(env.adapter.nodes):     # colour the drones apart
             nd.getField('children').getMFNode(0).getField('appearance').getSFNode().getField('baseColor').setSFColor(
                 [float(x) for x in COLORS[i % len(COLORS)].split()])
     pts = [env.adapter.get_positions()[i] for i in range(n)] + goals
     for ob in env.layout:
         pts.append([ob['center'][0], ob['center'][1], 0.0])
-    set_view(sup, pts)
+    chase = None
+    if a.camera == 'chase' or (a.camera == 'auto' and n == 1):
+        p0 = env.adapter.get_positions()[0]
+        chase = ChaseCam(sup, math.atan2(goals[0][1] - p0[1], goals[0][0] - p0[0]))
+        chase.update(p0)
+    else:
+        set_view(sup, pts)
     sup.step(env.adapter.basic_ms)
 
     title = a.title or f"{a.simulator} | {a.scenario} | {a.policy}"
-    sup.setLabel(0, title, 0.01, 0.01, 0.07, 0x000000, 0.0, 'Arial')
+    txt = 0xffffff if a.real else 0x000000      # white text on the realistic scene
+    sup.setLabel(0, title, 0.01, 0.01, 0.07, txt, 0.0, 'Arial')
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     sup.movieStartRecording(os.path.abspath(a.out), a.width, a.height, 0, 90, a.accel, False)
     max_steps = cfg['environment']['max_steps']
     done, info, step = False, {}, 0
     for step in range(1, max_steps + 1):
         obs, _, done, info = env.step(pol.act(obs, env, n))
+        if chase:
+            chase.update(env.adapter.get_positions()[0])
         if step % 6 == 0:                       # trail dots every ~0.2 s
             for i, p in enumerate(env.adapter.get_positions()):
                 marks.importMFNodeFromString(-1, f'Solid {{ translation {p[0]} {p[1]} {p[2]} name "t{step}_{i}" children [ Shape {{ '
                                                  f'appearance PBRAppearance {{ baseColor {COLORS[i % len(COLORS)]} metalness 0 }} '
-                                                 f'geometry Sphere {{ radius 0.04 }} }} ] }}')
-        sup.setLabel(1, f"t = {step * env.adapter.control_dt:5.1f} s   step {step}", 0.01, 0.07, 0.06, 0x333333, 0.0, 'Arial')
+                                                 f'geometry Sphere {{ radius {0.012 if a.real else 0.04} }} }} ] }}')
+        sup.setLabel(1, f"t = {step * env.adapter.control_dt:5.1f} s   step {step}", 0.01, 0.07, 0.06, txt if a.real else 0x333333, 0.0, 'Arial')
         if done:
             break
     outcome = info.get('reason') or ('timeout' if step >= max_steps else 'running')
     sup.setLabel(2, f"outcome: {outcome} after {step} steps", 0.01, 0.12, 0.07,
-                 0x118811 if outcome == 'success' else 0xbb2211, 0.0, 'Arial')
+                 (0x55ff55 if a.real else 0x118811) if outcome == 'success' else (0xff6644 if a.real else 0xbb2211), 0.0, 'Arial')
     for _ in range(int(a.tail_s / env.adapter.control_dt)):
         sup.step(env.adapter.step_ms)
     sup.movieStopRecording()
