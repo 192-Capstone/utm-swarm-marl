@@ -111,6 +111,14 @@ class RepulsionController:
         self.k_close = float(teacher_cfg.get('k_close', self.k_close))
         self.obs_close = float(teacher_cfg.get('obs_close', self.obs_close))
         self.k_obs_close = float(teacher_cfg.get('k_obs_close', self.k_obs_close))
+        # Lag compensation (teacher.predict_s, seconds; default 0 = off): with a velocity
+        # lag (environment.dynamics) a command takes effect only after the dead time, so
+        # every rule below is evaluated from where the drones WILL be by then, assuming
+        # they keep their current velocity: p + v * predict_s. Needs only the current
+        # state (no command history), so it also labels a student's own flights correctly.
+        self.predict_s = float(teacher_cfg.get('predict_s', 0.0))
+        self.k_goal = float(teacher_cfg.get('k_goal', self.k_goal))   # lower = gentler arrival (helps settling under lag)
+        self.horizon = float(teacher_cfg.get('horizon', self.horizon))
         self.side_from_lidar = bool(teacher_cfg.get('side_from_lidar', False))
         self.side_margin = float(teacher_cfg.get('side_margin', 0.5))   # metres
         # Only obstacles centred within side_band of the intended path count as
@@ -185,6 +193,8 @@ class RepulsionController:
         """lidar: (n, 14) raw ray distances, used only with teacher.side_from_lidar."""
         n = len(positions)
         out = np.zeros((n, 3))
+        if self.predict_s > 0:
+            positions = np.asarray(positions, dtype=float) + np.asarray(velocities, dtype=float) * self.predict_s
         if layout is not getattr(self, '_layout_ref', None):   # new episode: new layout object
             self._side.clear()
             self._layout_ref = layout
