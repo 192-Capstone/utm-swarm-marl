@@ -1,0 +1,216 @@
+# =============================================================================
+# config_stage2_ring.yaml
+# Stage 2 with a 32-ray horizontal LiDAR ring added (experiment "B+C").
+# =============================================================================
+# Identical to config_stage2_obstacles.yaml except the sensing. Crash analysis
+# of the Stage-2 imitation model: once level with an obstacle it stopped
+# pushing outward and cut back towards the goal (sideways command 0.01 vs the
+# teacher's 0.75 m/s while passing), and wide boxes failed 2-3x more often.
+# The 14-ray fan has only 4 truly horizontal rays (the 8 diagonals are tilted
+# 45 deg, reach 4.2 m horizontally and the downward ones hit the ground after
+# 2-3 m), so a corner it is about to cut is often between rays. Changes marked
+# "RING":
+#   - lidar.ring_rays: 32           horizontal ring, every 11.25 deg
+#   - observation.schema v3         the ring's proximities appended at [42:74]
+#   - local_obs_dim 42 -> 74, total_obs_dim 74 -> 106
+# The 14-ray fan, its history, the teacher and the critic are unchanged.
+# A v2 checkpoint is converted with zero weights for the ring:
+#   python scripts/convert_checkpoint_inputs.py --checkpoint <v2.pth> --config configs/config_stage2_ring.yaml --out <v3.pth>
+# =============================================================================
+
+environment:
+  n_agents: 3
+  max_steps: 1000               # STAGE2: was 500. Going around obstacles takes longer, and
+                                  # crowded swaps already needed ~450 steps without them
+  v_max: 2.0
+  omega_max: 1.0
+  world_size: 50
+  goal_threshold: 0.5
+  collision_radius: 0.2
+  collision_physics: false       # DECONFLICTION: PyBullet no longer pushes touching
+                                 # drones apart, so the 0.2 m crash check can fire
+  settle_speed: 0.15
+  settle_steps: 31
+  control_timestep: 0.032
+  training:
+    physics_timestep: 0.016
+    action_repeat: 2
+  evaluation:
+    physics_timestep: 0.008
+    action_repeat: 4
+
+observation:
+  schema: v3                     # RING: v2 inputs + 32 ring proximities at [42:74]
+  local_obs_dim: 74              # RING: was 42
+  neighbor_obs_dim: 6
+  neighbor_context_dim: 32
+  total_obs_dim: 106             # RING: was 74
+  k_neighbors_max: 5
+  n_lidar_rays: 14
+  n_lidar_quadrants: 5
+  neighbor_encoding: attention
+  neighbor_selection: knn
+  sensing_radius: 30.0           # DECONFLICTION: drones further than 30 m are invisible
+  neighbor_pos_scale: 3.0        # V3: was 30. relative position / 3 -> 1 m away = 0.33
+  neighbor_vel_scale: 2.0        # V3: was 4. relative velocity / 2 m/s
+
+network:
+  hidden_dim: 256
+  n_hidden_layers: 2
+  activation: tanh
+  action_dim: 4
+  attention_heads: 1
+  attention_dim: 32
+
+training:
+  gamma: 0.99
+  lambda_gae: 0.95
+  clip_epsilon: 0.2
+  actor_lr: 0.00003               # RLFI: was 1e-4, small steps
+  actor_warmup_until_episode: 600  # critic-only updates until episode 600
+  freeze_normalizer: true          # no effect with observation schema v2 (no normalizer)
+  critic_lr: 0.0003
+  n_epochs: 10
+  batch_size: 1024
+  buffer_size: 2048
+  max_grad_norm: 0.25
+  target_kl: 0.03
+  entropy_coef: 0.003
+  value_loss_coef: 0.5
+  save_interval: 100
+  eval_interval: 50             # finer granularity than default's 100 —
+                                  # review timeline needs early visibility
+  eval_episodes: 20             # matches 1-agent setup for a real sample size
+  total_episodes: 1300          # RLFI: from episode 500, so 800 new episodes
+  device: cuda
+  num_workers: 1
+
+  early_stop_success_rate: null # DECONFLICTION: off. The model already scores ~95%
+                                  # on the scenario mix, so an 80% rule would stop
+                                  # training before it learns anything new
+
+reward:
+  goal_progress_scale: 5.0
+  goal_reached_bonus: 100.0
+  obstacle_collision_penalty: -50.0
+  drone_collision_penalty: -50.0
+  step_penalty: -0.01
+  lambda_smooth: 0.0
+  lambda_prox: 2.0               # V2: was 0.5 (see header)
+  r_danger: 1.5
+  lambda_brake: 0.0
+  goal_entry_bonus: 10.0
+  settle_counter_scale: 2.0
+
+exploration:                     # small fixed noise for the whole run, NO squeeze:
+  log_std_init: -2.3             # std ~0.10. The imitation actor already settles
+  log_std_final: -2.3            # (evaluation uses the deterministic mean), and the
+  anneal_start_episode: 500      # squeeze in rl-from-imitation only caused KL stops
+  anneal_end_episode: 500        # and cost 15% of normal-task settling
+  log_std_floor_final: -2.3
+  floor_anneal_start_episode: 500
+  floor_anneal_end_episode: 500
+
+# DECONFLICTION: which kind of episode each reset produces. Random is the
+# original 1-2 m task; head-on, crossing and swap force drones to meet
+# (generators in envs/scenarios.py).
+scenario_mix:                    # STAGE2: more swaps (long flights that cross the area,
+  random: 0.15                   # where most on-path obstacles end up)
+  headon: 0.2
+  crossing: 0.2
+  swap: 0.3
+  flythrough: 0.15
+
+# STAGE2: static obstacles (envs/scenario_manager.py). Pillars and buildings
+# 8 m tall, so drones flying at 1-5 m must go around them. About 5-6 per
+# episode, 1-3 of them on a drone's straight path in head-on/crossing/swap.
+obstacles:
+  enabled: true
+  count: [3, 8]
+  on_path_share: 0.6
+  pillar_share: 0.6
+  pillar_radius: [0.3, 0.8]
+  box_half: [0.4, 1.2]
+  height: 8.0
+  spawn_clearance: 1.5
+  goal_clearance: 1.5
+  gap: 1.0
+
+# STAGE2: real LiDAR (envs/lidar.py): 14 rays, fan rotated so ray 0 points at
+# the goal, range 6 m (keep it fixed across stages), sees obstacles and other
+# drones. Fed to the actor as proximity = 1 - distance / range, not normalized.
+
+teacher:                         # STAGE2: RepulsionController settings (baselines/repulsion_controller.py)
+  side_from_lidar: true          # pick the side to pass an obstacle from the drone's own LiDAR
+                                 # (right unless front-left is clearly more open), so imitation
+                                 # never sees the same picture labelled left and right
+  side_margin: 0.5               # metres the front-left rays must see further to choose left
+  side_band: 0.6                 # only obstacles centred within 0.6 m of the path use the
+                                 # LiDAR rule; off-centre ones are passed on the open side
+                                 # (LiDAR rule everywhere: head-on 99% -> 80% for the teacher)
+lidar:
+  enabled: true
+  range: 6.0
+  sees_drones: true
+  ring_rays: 32                  # RING: horizontal ring, every 11.25 deg
+
+goal_curriculum:
+  start_dist: 2.0
+  end_dist: 2.0                 # frozen — same fixed-difficulty approach
+  step_dist: 0.0                # validated for 1-agent; avoid conflating
+  advance_sr: 0.3                # "did coordination improve" with "did the
+  window: 50                     # task get harder mid-run"
+
+curriculum:
+  progression_window: 100
+  progression_threshold: 0.8
+  stages:
+    1:
+      name: empty_sandbox
+      description: "No obstacles — learn basic navigation first"
+      action_dim_active: 3
+      global_state_dim: 12
+      world_size: 50
+      obstacles: false
+      obstacle_count: 0
+      domain_randomization: none
+      success_threshold: 0.8
+
+domain_randomization:
+  mild_noise:
+    position_noise_std: 0.05
+    imu_noise_std: 0.01
+    lidar_noise_std: 0.02
+
+# Safety cost (only the Lagrangian run uses it).
+# Measured on 200 training-mix episodes: teacher 0.28, imitation v2 2.66
+# steps per drone per episode closer than 0.7 m; both 0% crashes.
+safety:
+  cost_distance: 0.7             # 1 cost per step closer than this to any drone
+  collision_cost: 20.0           # extra cost on the step a drone crashes (drone or obstacle)
+  obstacle_cost_distance: 0.5    # STAGE2: 1 cost per step closer than this to an obstacle surface
+
+scenario_manager:
+  obstacle_pool_size: 50
+  spawn_margin: 3.0
+  goal_margin: 2.0
+  min_spawn_separation: 5.0      # keeps the 3 drones spawned well apart —
+                                   # matters more here than for 1-agent runs
+
+logging:
+  wandb_project: utm-swarm-marl
+  wandb_entity: null
+  log_interval: 10
+  log_reward_components: true
+  checkpoint_dir: checkpoints/stage2_ring/
+  best_checkpoint: checkpoints/stage2_ring/best_policy.pth
+
+# -----------------------------------------------------------------------------
+# Failure-mode guide (using the metrics eval_checkpoint.py / _run_eval() now report)
+# -----------------------------------------------------------------------------
+# eval/all_entered_goal low                        -> navigation/coordination problem
+# eval/all_entered_goal high, settle_fraction low   -> braking/dwell problem (per-agent)
+# eval/drone_collision_rate high                    -> separation/proximity problem
+# train_norm.count != eval_norm.count, or frozen=False -> evaluator regression, not a policy bug
+# agent_i_success_rate uneven across agents         -> credit-assignment asymmetry,
+#                                                       not necessarily a reward bug

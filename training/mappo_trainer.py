@@ -182,6 +182,39 @@ class MAPPOTrainer:
         self.eval_env = None
         self._consecutive_eval_passes = 0
 
+        # training.bootstrap_timeouts: an episode cut off by the time limit
+        # did not END there (the drones could have flown on), so its last
+        # reward gets gamma * V(next state) added instead of treating the
+        # timeout like a crash with nothing after it. Crashes and successes
+        # stay terminal. Off by default (old behaviour).
+        self.gamma = config['training']['gamma']
+        self.bootstrap_timeouts = bool(config['training'].get('bootstrap_timeouts', False))
+
+        # training.bc_anchor_coef > 0: the teacher (baselines/repulsion_controller)
+        # labels every state the policy visits during RL, and PPO adds the
+        # distance to those labels to the actor loss (PPOOptimizer.
+        # _bc_anchor_loss). Keeps RL close to the imitation behaviour; an
+        # earlier unanchored fine-tune drifted away from it over ~1000
+        # episodes and lost both avoidance and settling.
+        self.teacher = None
+        if float(config['training'].get('bc_anchor_coef', 0.0)) > 0 and self.env is not None:
+            from baselines.repulsion_controller import RepulsionController
+            self.teacher = RepulsionController(config)
+
+        # obstacle_curriculum: start with few obstacles per episode and add
+        # more once the deterministic eval succeeds often enough, so detours
+        # are discoverable before the world gets crowded (Stage 2, pure RL).
+        oc = config.get('obstacle_curriculum') or {}
+        self.obstacle_curriculum = bool(oc.get('enabled', False)) and \
+            bool(getattr(self.env, 'obstacle_cfg', None))
+        self._obstacle_passes = 0
+        if self.obstacle_curriculum:
+            self.obstacle_count_max = tuple(self.env.obstacle_cfg['count'])
+            self.obstacle_count_step = int(oc.get('step', 1))
+            self.obstacle_advance_sr = float(oc.get('advance_sr', 0.5))
+            self.obstacle_advance_passes = int(oc.get('passes', 2))
+            self._set_obstacle_count(tuple(oc.get('start', (0, 1))))
+
     def _init_wandb(self) -> bool:
         """Initialize WandB logging. Returns False if unavailable."""
         try:
@@ -289,6 +322,12 @@ class MAPPOTrainer:
             # Checkpointing
             if self.episode_count % self.save_interval == 0:
                 self._save_checkpoint(tag=f"ep{self.episode_count}")
+            # A checkpoint exactly where the critic-only warm-up ends, so later
+            # runs with the same start, gamma and noise can resume from a
+            # trained critic and skip the warm-up (training.save_at_warmup_end)
+            if (self.config['training'].get('save_at_warmup_end', False)
+                    and self.episode_count == self.config['training'].get('actor_warmup_until_episode', 0)):
+                self._save_checkpoint(tag="warmup_end")
 
             # Progress print
             if self.episode_count % 10 == 0:
@@ -433,6 +472,17 @@ class MAPPOTrainer:
                         active_dims=self._active_action_dims()
                     )
 
+            teacher_actions = None
+            if self.teacher is not None:
+                raw = self.env.adapter.get_raw_state()
+                n = self.n_agents
+                pos = np.array([raw[f'drone_{i}']['position'] for i in range(n)])
+                vel = np.array([raw[f'drone_{i}']['velocity'] for i in range(n)])
+                lid = np.array([raw[f'drone_{i}']['lidar'] for i in range(n)])
+                teacher_actions = torch.tensor(
+                    self.teacher.velocities(pos, vel, self.env.goals, self.env.layout, lid),
+                    dtype=torch.float32, device=self.device)
+
             # Step environment
             next_obs_dict, rewards, done, info = self.env.step(
                 self._actions_to_dict(masked_actions)
@@ -451,6 +501,18 @@ class MAPPOTrainer:
                 cost_tensor = torch.tensor(info['cost'], dtype=torch.float32, device=self.device)
                 episode_cost += cost_tensor.mean().item()
 
+            # Timeout: bootstrap from the state the drones were cut off in
+            # (see training.bootstrap_timeouts in __init__)
+            stored_rewards, stored_costs = rewards_tensor, cost_tensor
+            if done and self.bootstrap_timeouts and info.get('reason') == 'timeout':
+                _, _, _, next_global = self._unpack_obs(next_obs_dict)
+                with torch.no_grad():
+                    stored_rewards = rewards_tensor + self.gamma * self._as_agent_values(
+                        self.critic.get_value(next_global.unsqueeze(0)))
+                    if self.use_lagrangian:
+                        stored_costs = cost_tensor + self.gamma * self._as_agent_values(
+                            self.cost_critic.get_value(next_global.unsqueeze(0)))
+
             # Store transition
             self.buffer.store(
                 local_obs       = local_fixed,
@@ -459,10 +521,11 @@ class MAPPOTrainer:
                 global_state    = global_state,
                 actions         = masked_actions,
                 log_probs       = log_probs,
-                rewards         = rewards_tensor,
+                rewards         = stored_rewards,
                 dones           = done_tensor,
                 values          = values,
-                costs           = cost_tensor,
+                costs           = stored_costs,
+                teacher_actions = teacher_actions,
                 cost_values     = cost_values,
             )
 
@@ -521,8 +584,24 @@ class MAPPOTrainer:
         self.optimizer.freeze_actor = self.episode_count < warmup_until
         if self.optimizer.freeze_actor:
             print(f"  [Warmup] critic-only update (actor frozen until episode {warmup_until})")
+        self.optimizer.anchor_scale = self._anchor_scale()
         metrics = self.optimizer.update(self.buffer)
         return metrics
+
+    def _anchor_scale(self) -> float:
+        """training.bc_anchor_decay: {start, end, final}. The anchor keeps full
+        strength until episode `start`, then falls linearly to `final` (a
+        fraction of full strength) at episode `end`: strong while the critic
+        and policy settle, weaker once RL is working. Absent = always 1."""
+        d = self.config['training'].get('bc_anchor_decay')
+        if not d:
+            return 1.0
+        start, end, final = d['start'], d['end'], float(d['final'])
+        if self.episode_count <= start:
+            return 1.0
+        if self.episode_count >= end:
+            return final
+        return 1.0 + (final - 1.0) * (self.episode_count - start) / (end - start)
 
     def _update_lagrange_multiplier(self) -> Dict:
         """One step of the lambda 'thermostat' after each buffer:
@@ -595,6 +674,8 @@ class MAPPOTrainer:
             self.eval_env.goal_dist_current = self.env.goal_dist_current
 
         self.eval_env.goal_dist_current = self.env.goal_dist_current
+        if self.obstacle_curriculum:
+            self.eval_env.obstacle_cfg['count'] = tuple(self.env.obstacle_cfg['count'])
 
         # CRITICAL: eval_env has its OWN ObservationProcessor with its own
         # RunningNormalizer, created once and independently accumulating
@@ -785,7 +866,30 @@ class MAPPOTrainer:
             self._consecutive_eval_passes = 0
             print(f"  [GoalCurriculum] Distance {old:.1f}m -> {self.env.goal_dist_current:.1f}m (eval-driven)")
 
+        if self.obstacle_curriculum:
+            self._advance_obstacle_curriculum(eval_sr)
+            metrics['curriculum/obstacle_count_min'] = self.env.obstacle_cfg['count'][0]
+            metrics['curriculum/obstacle_count_max'] = self.env.obstacle_cfg['count'][1]
+
         return metrics
+
+    def _set_obstacle_count(self, count):
+        lo, hi = (min(int(c), m) for c, m in zip(count, self.obstacle_count_max))
+        self.env.obstacle_cfg['count'] = (lo, hi)
+        if self.eval_env is not None:
+            self.eval_env.obstacle_cfg['count'] = (lo, hi)
+
+    def _advance_obstacle_curriculum(self, eval_sr: float):
+        """Add obstacle_curriculum.step obstacles (both ends of the range,
+        capped at the config's obstacles.count) after `passes` consecutive
+        evals at or above advance_sr."""
+        self._obstacle_passes = self._obstacle_passes + 1 if eval_sr >= self.obstacle_advance_sr else 0
+        old = tuple(self.env.obstacle_cfg['count'])
+        if self._obstacle_passes >= self.obstacle_advance_passes and old != self.obstacle_count_max:
+            self._set_obstacle_count((old[0] + self.obstacle_count_step, old[1] + self.obstacle_count_step))
+            self._obstacle_passes = 0
+            print(f"  [ObstacleCurriculum] obstacles per episode {old} -> "
+                  f"{tuple(self.env.obstacle_cfg['count'])} (eval success {eval_sr:.2f})")
 
     def _check_curriculum_advancement(self):
         """Advance curriculum stage if success rate threshold met.
@@ -906,8 +1010,11 @@ class MAPPOTrainer:
         """Snapshot the training env's observation-normalizer stats, if any,
         so eval_checkpoint.py can restore the exact normalization the actor
         was trained under instead of accumulating fresh (and possibly
-        different) stats from scratch."""
+        different) stats from scratch. Schema v2 has no normalizer, only
+        the schema tag, so loaders know which inputs the actor expects."""
         if self.env is not None and hasattr(self.env, 'obs_processor'):
+            if self.env.obs_processor.schema != 'v1':
+                return {'observation_schema': self.env.obs_processor.schema}
             norm = self.env.obs_processor.normalizer
             return {
                 'normalizer_mean':  norm.mean.copy(),
@@ -933,6 +1040,7 @@ class MAPPOTrainer:
         torch.save({
             'actor_state_dict':    self.actor.state_dict(),
             'critic_state_dict':   self.critic.state_dict(),
+            'critic_version':      self.critic.version,
             'actor_optim':         self.optimizer.actor_optimizer.state_dict(),
             'critic_optim':        self.optimizer.critic_optimizer.state_dict(),
             'episode_count':       self.episode_count,
@@ -947,6 +1055,8 @@ class MAPPOTrainer:
             'config':              self.config,
             **self._normalizer_state(),
             **self._lagrangian_state(),
+            **({'obstacle_count': tuple(self.env.obstacle_cfg['count'])}
+               if self.obstacle_curriculum else {}),
         }, path)
         print(f"Checkpoint saved: {path}")
 
@@ -1005,10 +1115,29 @@ class MAPPOTrainer:
     def load_checkpoint(self, path: str, restore_normalizer: bool = True):
         """Load a saved checkpoint to resume training."""
         ckpt = torch.load(path, map_location=self.device)
+        schema = self.config['observation'].get('schema', 'v1')
+        if ckpt.get('observation_schema', 'v1') != schema:
+            raise RuntimeError(f"checkpoint uses observation schema "
+                               f"{ckpt.get('observation_schema', 'v1')}, config uses {schema} "
+                               f"(scripts/convert_checkpoint_inputs.py converts v1 to v2)")
         self.actor.load_state_dict(ckpt['actor_state_dict'])
-        self.critic.load_state_dict(ckpt['critic_state_dict'])
-        self.optimizer.actor_optimizer.load_state_dict(ckpt['actor_optim'])
-        self.optimizer.critic_optimizer.load_state_dict(ckpt['critic_optim'])
+        # A checkpoint from another critic version (e.g. a team critic, version 1,
+        # resumed with critic.version 2) keeps its actor; the critic starts
+        # fresh and needs a critic-only warm-up (actor_warmup_until_episode).
+        same_critic = ckpt.get('critic_version', 1) == self.critic.version
+        if same_critic:
+            self.critic.load_state_dict(ckpt['critic_state_dict'])
+        else:
+            print(f"  checkpoint critic is version {ckpt.get('critic_version', 1)}, "
+                  f"config uses {self.critic.version}: critic and its optimizer start fresh")
+        # A converted checkpoint (v1 -> v2) has no actor optimizer state: its
+        # first-layer weights changed shape, so Adam starts fresh for the actor.
+        if 'actor_optim' in ckpt:
+            self.optimizer.actor_optimizer.load_state_dict(ckpt['actor_optim'])
+        else:
+            print("  no actor optimizer state in checkpoint: actor optimizer starts fresh")
+        if same_critic:
+            self.optimizer.critic_optimizer.load_state_dict(ckpt['critic_optim'])
         # load_state_dict also restores the learning rate saved in the
         # checkpoint, which silently overrode whatever the resumed run's config
         # asked for. Re-apply the config's rates.
@@ -1020,6 +1149,9 @@ class MAPPOTrainer:
         self.curriculum_stage = ckpt['curriculum_stage']
         self.best_success_rate= ckpt['best_success_rate']
         print(f"Checkpoint loaded: {path} (episode {self.episode_count})")
+        if self.obstacle_curriculum and 'obstacle_count' in ckpt:
+            self._set_obstacle_count(ckpt['obstacle_count'])
+            print(f"  obstacle curriculum restored: {tuple(self.env.obstacle_cfg['count'])} obstacles")
 
         # Restore the observation normalizer the actor was trained with.
         # Without this a resumed run starts from a blank normalizer: for the
@@ -1040,7 +1172,8 @@ class MAPPOTrainer:
         # the goal-input statistics ~6x during rl-from-imitation, and the
         # untouched imitation actor run with those drifted statistics crashed
         # in 13-19% of head-on/crossing/fly-through episodes instead of 0-1%.
-        if self.config['training'].get('freeze_normalizer', False) and self.env is not None:
+        if (self.config['training'].get('freeze_normalizer', False) and self.env is not None
+                and schema == 'v1'):
             self.env.obs_processor.normalizer.freeze()
             print("  normalizer frozen (training.freeze_normalizer)")
 
@@ -1094,7 +1227,7 @@ class MAPPOTrainer:
                 local_fixed     = torch.randn(N, 27,  device=self.device)
                 neighbor_states = torch.randn(N, K, 6, device=self.device)
                 neighbor_mask   = torch.zeros(N, K,    device=self.device, dtype=torch.bool)
-                global_state    = torch.randn(N, 17,   device=self.device)
+                global_state    = torch.randn(N, self.critic.drone_state_dim, device=self.device)
 
                 # Actor forward pass
                 with torch.no_grad():

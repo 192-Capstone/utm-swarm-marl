@@ -54,7 +54,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from training.networks.actor_network import ActorNetwork
 from envs.swarm_env import SwarmEnv
-from baselines.repulsion_controller import RepulsionController
+from baselines.repulsion_controller import RepulsionController, closest_point
+from envs.scenario_manager import DRONE_RADIUS
 from envs import scenarios
 from record_rollout import (setup_crossing_scenario, setup_swap_scenario,
                             setup_headon_scenario, disable_all_collision_physics,
@@ -128,7 +129,7 @@ def sample_random_band(env, rng, n_agents, d_min, d_max):
 
     spawns = {f'drone_{i}': placed[i].tolist() for i in range(n_agents)}
     goal_d = {f'drone_{i}': goals[i].tolist() for i in range(n_agents)}
-    return _apply_scenario(env, spawns, goal_d, n_agents)
+    return _apply_scenario(env, spawns, goal_d, n_agents, rng=rng)
 
 
 def drone_contact(env, n_agents):
@@ -143,13 +144,17 @@ def drone_contact(env, n_agents):
 
 # ------------------------------------------------------------- policies ----
 class MappoPolicy:
-    def __init__(self, config, ckpt_path, device, deterministic, blind_neighbors=False):
+    def __init__(self, config, ckpt_path, device, deterministic, blind_neighbors=False,
+                 blind_lidar=False):
         self.device = device
         self.deterministic = deterministic
         # Ablation: hide every neighbour from the actor (all slots masked, as
         # if flying alone). Collision differences vs the normal run show how
         # much of the avoidance actually comes from seeing other drones.
         self.blind_neighbors = blind_neighbors
+        # Ablation: the actor's 14 LiDAR inputs read "nothing seen" (0), so
+        # obstacle-test differences show how much it relies on LiDAR.
+        self.blind_lidar = blind_lidar
         self.actor = ActorNetwork(config).to(device)
         self.ckpt = torch.load(ckpt_path, map_location=device)
         state = self.ckpt.get('actor_state_dict', self.ckpt)
@@ -162,8 +167,15 @@ class MappoPolicy:
         if 'log_std_floor' in self.ckpt:
             self.actor.set_log_std_floor(self.ckpt['log_std_floor'])
         self.n_active = 3 if self.ckpt.get('curriculum_stage', 1) < 3 else 4
+        schema = config['observation'].get('schema', 'v1')
+        if self.ckpt.get('observation_schema', 'v1') != schema:
+            raise RuntimeError(f"checkpoint uses observation schema "
+                               f"{self.ckpt.get('observation_schema', 'v1')}, config uses {schema} "
+                               f"(scripts/convert_checkpoint_inputs.py converts v1 to v2)")
 
     def restore_normalizer(self, env):
+        if env.obs_processor.schema != 'v1':
+            return                        # fixed input scaling, no normalizer
         if 'normalizer_mean' not in self.ckpt:
             raise RuntimeError("Checkpoint has no normalizer state. Suite v1 requires "
                                "a checkpoint saved with normalizer_mean/var/count.")
@@ -180,6 +192,11 @@ class MappoPolicy:
         if self.blind_neighbors:
             ns = torch.zeros_like(ns)
             nm = torch.ones_like(nm)
+        if self.blind_lidar:
+            lf = lf.clone()
+            lf[:, 13:27] = 0.0
+            lf[:, 27:41] = 0.0            # schema v2: previous LiDAR reading (no-op for v1)
+            lf[:, 42:] = 0.0              # schema v3: horizontal ring (no-op for v1/v2)
         with torch.no_grad():
             actions, _ = self.actor.get_action(lf, ns, nm, deterministic=self.deterministic,
                                                active_dims=self.n_active)
@@ -222,7 +239,7 @@ def record_unaware_path(env, policy, start, goal, max_steps):
     (drone_1 parked far away) and return the positions it passes through."""
     park = (start + np.array([40.0, 40.0, 0.0])).tolist()
     obs = _apply_scenario(env, {'drone_0': start.tolist(), 'drone_1': park},
-                          {'drone_0': goal.tolist(), 'drone_1': park}, 2)
+                          {'drone_0': goal.tolist(), 'drone_1': park}, 2, obstacles=[])
     was_blind = getattr(policy, 'blind_neighbors', False)
     policy.blind_neighbors = True
     path = [start.copy()]
@@ -278,8 +295,106 @@ def setup_interaction(env, rng, scenario, dt, max_steps, policy):
 
     spawns = {k: v.tolist() for k, v in spawns.items()}
     goals = {k: v.tolist() for k, v in goals.items()}
-    obs = _apply_scenario(env, spawns, goals, 2)
+    obs = _apply_scenario(env, spawns, goals, 2, obstacles=[])     # drone-only test
     return obs, script, min(horizon, max_steps), param
+
+
+# ------------------------------------------------------- obstacle tests ---
+# One drone, one obstacle placed squarely on its straight path (midway along a
+# 6-10 m flight, at most 0.2 m off-centre). Flying straight means a crash, so
+# the drone has to sense the obstacle and go around it.
+#   pillar        : cylinder, radius 0.4-0.8 m
+#   building      : box, half-sizes 0.6-1.2 m
+#   wide_building : box, half-sizes 0.9-1.2 m (the wide cases, where the
+#                   learned policy turned back towards the goal too early)
+#   long_wall     : box 2.2-2.4 m long ALONG the path, 0.8-1.0 m thick; the
+#                   flight runs along a world axis so the box is aligned with
+#                   it. Tests holding the detour during a long passing phase.
+OBSTACLE_TESTS = ("pillar", "building", "wide_building", "long_wall")
+
+
+def setup_obstacle_test(env, rng, kind):
+    start = np.array([rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(2.0, 3.0)])
+    ang = rng.uniform(0, 2 * np.pi)
+    if kind == "long_wall":
+        ang = rng.randint(4) * np.pi / 2           # along a world axis (boxes are axis-aligned)
+    u = np.array([np.cos(ang), np.sin(ang), 0.0])
+    length = rng.uniform(6.0, 10.0)
+    goal = start + length * u
+    side = np.array([-u[1], u[0], 0.0]) * rng.uniform(-0.2, 0.2)
+    c = start + 0.5 * length * u + side
+    if kind == "pillar":
+        ob = {'type': 'pillar', 'center': (float(c[0]), float(c[1])),
+              'radius': float(rng.uniform(0.4, 0.8)), 'height': 8.0, 'on_path': True}
+    else:
+        if kind == "wide_building":
+            half = (float(rng.uniform(0.9, 1.2)), float(rng.uniform(0.9, 1.2)))
+        elif kind == "long_wall":
+            along, across = float(rng.uniform(1.1, 1.2)), float(rng.uniform(0.4, 0.5))
+            half = (along, across) if abs(u[0]) > 0.5 else (across, along)
+        else:
+            half = (float(rng.uniform(0.6, 1.2)), float(rng.uniform(0.6, 1.2)))
+        ob = {'type': 'box', 'center': (float(c[0]), float(c[1])), 'half': half,
+              'height': 8.0, 'on_path': True}
+    return _apply_scenario(env, {'drone_0': start.tolist()}, {'drone_0': goal.tolist()}, 1,
+                           obstacles=[ob])
+
+
+# --------------------------------------------------- held-out obstacle tests ---
+# Layouts that no training scenario produces (the course scenario has one
+# obstacle per lane), to measure generalisation instead of practice. One drone,
+# a 7-10 m flight along a world axis (boxes are axis-aligned):
+#   l_shape   : two boxes forming an L, its corner on the path; the arm along
+#               the path is on a random side, so one way round is much longer
+#   gap       : two buildings side by side across the path, 1.4-2.0 m apart,
+#               the gap's centre within 0.3 m of the path (through or around)
+#   cluster   : three pillars (r 0.3-0.5 m) in a triangle around the midpoint,
+#               1.2-1.6 m apart, so the way round passes between or past them
+#   slalom    : two boxes one after the other along the path, 2.5-3.5 m apart,
+#               shifted to opposite sides of it, so the detour must switch side
+HELDOUT_TESTS = ("l_shape", "gap", "cluster", "slalom")
+
+
+def setup_heldout_test(env, rng, kind):
+    start = np.array([rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(2.0, 3.0)])
+    ang = rng.randint(4) * np.pi / 2
+    u = np.array([np.cos(ang), np.sin(ang)])
+    s = np.array([-u[1], u[0]])                                   # sideways
+    length = rng.uniform(7.0, 10.0)
+    goal = start[:2] + length * u
+    mid = start[:2] + 0.5 * length * u
+
+    def box(c, half_u, half_s):
+        hx, hy = (half_u, half_s) if abs(u[0]) > 0.5 else (half_s, half_u)
+        return {'type': 'box', 'center': (float(c[0]), float(c[1])), 'half': (float(hx), float(hy)),
+                'height': 8.0, 'on_path': True}
+
+    if kind == "l_shape":
+        side = 1.0 if rng.uniform() < 0.5 else -1.0
+        across, thick, arm = rng.uniform(1.0, 1.3), rng.uniform(0.3, 0.4), rng.uniform(1.0, 1.4)
+        obs = [box(mid + side * rng.uniform(0.0, 0.3) * s, thick, across),           # bar across the path
+               box(mid + (arm - thick) * u + side * (across - thick) * s, arm, thick)]  # arm along it
+    elif kind == "gap":
+        gap, off = rng.uniform(1.4, 2.0), rng.uniform(-0.3, 0.3)
+        half_s = rng.uniform(0.8, 1.2)
+        half_u = rng.uniform(0.5, 0.9)
+        obs = [box(mid + (off + sgn * (gap / 2 + half_s)) * s, half_u, half_s) for sgn in (1.0, -1.0)]
+    elif kind == "cluster":
+        d = rng.uniform(1.2, 1.6)
+        rot = rng.uniform(0, 2 * np.pi)
+        obs = []
+        for k in range(3):
+            a = rot + 2 * np.pi * k / 3
+            c = mid + d / np.sqrt(3) * np.array([np.cos(a), np.sin(a)])
+            obs.append({'type': 'pillar', 'center': (float(c[0]), float(c[1])),
+                        'radius': float(rng.uniform(0.3, 0.5)), 'height': 8.0, 'on_path': True})
+    else:  # slalom
+        gap = rng.uniform(2.5, 3.5)
+        side = 1.0 if rng.uniform() < 0.5 else -1.0
+        obs = [box(mid - gap / 2 * u + side * rng.uniform(0.2, 0.4) * s, rng.uniform(0.4, 0.6), rng.uniform(0.8, 1.1)),
+               box(mid + gap / 2 * u - side * rng.uniform(0.2, 0.4) * s, rng.uniform(0.4, 0.6), rng.uniform(0.8, 1.1))]
+    g = [float(goal[0]), float(goal[1]), float(start[2])]
+    return _apply_scenario(env, {'drone_0': start.tolist()}, {'drone_0': g}, 1, obstacles=obs)
 
 
 def scripted_velocity(script, pos):
@@ -416,8 +531,20 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
     min_sep = None
     contact = False
     any_drone_collision = False
+    any_obstacle_collision = False
+    min_obs_gap = np.inf               # closest approach to any obstacle surface
     clip_hits, clip_total = 0, 0
     info, steps = {}, 0
+    # Passing measures (obstacles only). A drone is ALONGSIDE an obstacle
+    # when the closest point of its surface is within 1 m and mostly to the
+    # side (less than 60 deg from perpendicular to the goal direction).
+    #   alongside gap : closest surface distance while alongside, per drone
+    #   turn-back     : alongside and within 0.7 m, yet moving towards the
+    #                   surface faster than 0.1 m/s (cutting back too early).
+    #                   Only while still more than 1 m (3D) from the goal, so
+    #                   behaviour at the goal never counts as passing.
+    along_gap = np.full(n_agents, np.inf)
+    close_steps = turnback_steps = 0
 
     for step in range(max_steps):
         lf = obs['local_fixed']
@@ -428,6 +555,26 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
         steps += 1
 
         pos = env.adapter.get_positions()
+        vel_h = (pos - pos_prev)[:, :2] / dt
+        if env.layout:
+            for i in range(n_agents):
+                g = env.goals[i][:2] - pos[i][:2]
+                if np.linalg.norm(g) < 0.3:
+                    continue
+                u = g / np.linalg.norm(g)
+                obs_below = [ob for ob in env.layout if pos[i][2] <= ob['height']]
+                if not obs_below:
+                    continue
+                cps = [closest_point(ob, pos[i][:2]) - pos[i][:2] for ob in obs_below]
+                k = int(np.argmin([np.linalg.norm(r) for r in cps]))
+                rel = cps[k]; dist = float(np.linalg.norm(rel))
+                gap = dist - DRONE_RADIUS
+                if dist < 1e-6 or gap >= 1.0 or abs(rel @ u) / dist >= 0.5:
+                    continue
+                along_gap[i] = min(along_gap[i], gap)
+                if gap < 0.7 and np.linalg.norm(env.goals[i] - pos[i]) > 1.0:
+                    close_steps += 1
+                    turnback_steps += int(vel_h[i] @ (rel / dist) > 0.1)
         path_len += np.linalg.norm(pos - pos_prev, axis=1)
         pos_prev = pos.copy()
 
@@ -444,6 +591,11 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
             min_sep = sep if min_sep is None else min(min_sep, sep)
         if any(info.get('drone_collision', [])):
             any_drone_collision = True
+        if any(info.get('obstacle_collision', [])):
+            any_obstacle_collision = True
+        gaps = info.get('obstacle_distance', [])
+        if gaps and min(gaps) < min_obs_gap:
+            min_obs_gap = min(gaps)
         if physics_on and n_agents > 1 and not contact:
             contact = drone_contact(env, n_agents)
         if done:
@@ -480,10 +632,17 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
         'length_steps': steps,
         'agents_settled': int(sum(info['drone_reached_goal'])),
         'any_drone_collision': int(any_drone_collision),
+        'any_obstacle_collision': int(any_obstacle_collision),
+        'n_obstacles': len(env.layout),
+        'min_obstacle_gap': round(float(min_obs_gap), 4) if env.layout else '',
         'min_sep': round(min_sep, 4) if min_sep is not None else '',
         'physical_contact': int(contact) if physics_on and n_agents > 1 else '',
         'mean_initial_goal_dist': round(float(np.mean(env.initial_dist)), 4),
         'obs_clip_frac': round(clip_hits / clip_total, 5) if clip_total else 0.0,
+        'alongside_min_gap': (round(float(along_gap[np.isfinite(along_gap)].min()), 4)
+                              if np.isfinite(along_gap).any() else ''),
+        'alongside_close_steps': close_steps,
+        'turnback_steps': turnback_steps,
     }
     for t in SEP_THRESHOLDS:
         episode[f'sep_below_{t}'] = int(min_sep is not None and min_sep < t) if n_agents > 1 else ''
@@ -519,6 +678,20 @@ def summarize(episodes, agents, n_agents, physics_on):
         'path_efficiency_p5': pct([a['path_efficiency'] or None for a in agents], 5),
         'obs_clip_frac_mean': mean([e['obs_clip_frac'] for e in episodes]),
     }
+    if any(e['n_obstacles'] for e in episodes):
+        k_obs = sum(e['any_obstacle_collision'] for e in episodes)
+        k_any = sum(e['any_obstacle_collision'] or e['any_drone_collision'] for e in episodes)
+        gaps = [e['min_obstacle_gap'] for e in episodes if e['min_obstacle_gap'] != '']
+        s['obstacle_collision_rate'] = k_obs / n
+        s['obstacle_collision_ci95'] = wilson(k_obs, n)
+        s['any_crash_rate'] = k_any / n
+        s['any_crash_ci95'] = wilson(k_any, n)
+        s['mean_obstacles'] = mean([e['n_obstacles'] for e in episodes])
+        s['min_obstacle_gap'] = {'min': pct(gaps, 0), 'p5': pct(gaps, 5), 'median': pct(gaps, 50)}
+        ag = [e['alongside_min_gap'] for e in episodes if e.get('alongside_min_gap', '') != '']
+        s['alongside_gap'] = {'p5': pct(ag, 5), 'median': pct(ag, 50), 'episodes': len(ag)}
+        cs = sum(e.get('alongside_close_steps', 0) for e in episodes)
+        s['turnback_rate'] = sum(e.get('turnback_steps', 0) for e in episodes) / cs if cs else None
     if n_agents > 1:
         seps = [e['min_sep'] for e in episodes if e['min_sep'] != '']
         s['min_sep'] = {'min': pct(seps, 0), 'p1': pct(seps, 1), 'p5': pct(seps, 5),
@@ -544,6 +717,14 @@ def print_summary(s, tag):
           f"(by index: {', '.join(f'{x:.2f}' for x in s['per_agent_success_by_index'])})")
     lo, hi = s['collision_ci95']
     print(f"drone collision (<r)     {s['collision_rate']:.3f}  [95% CI {lo:.3f}-{hi:.3f}]")
+    if 'obstacle_collision_rate' in s:
+        lo, hi = s['obstacle_collision_ci95']
+        print(f"obstacle collision       {s['obstacle_collision_rate']:.3f}  [95% CI {lo:.3f}-{hi:.3f}]"
+              f"  ({s['mean_obstacles']:.1f} obstacles per episode)")
+        lo, hi = s['any_crash_ci95']
+        print(f"any crash                {s['any_crash_rate']:.3f}  [95% CI {lo:.3f}-{hi:.3f}]")
+        g = s['min_obstacle_gap']
+        print(f"closest to obstacle  min/p5/median {g['min']:.3f} / {g['p5']:.3f} / {g['median']:.3f} m")
     print(f"timeout rate             {s['timeout_rate']:.3f}")
     print(f"final goal err  mean/med/p95/max  {s['final_goal_err_mean']:.3f} / "
           f"{s['final_goal_err']['median']:.3f} / {s['final_goal_err']['p95']:.3f} / "
@@ -571,7 +752,7 @@ def print_summary(s, tag):
 def main():
     ap = argparse.ArgumentParser(description="Stage-1 evaluation suite v1 (evaluation only)")
     ap.add_argument("--config", required=True)
-    ap.add_argument("--policy", choices=["mappo", "pcontroller", "repulsion"], default="mappo",
+    ap.add_argument("--policy", choices=["mappo", "pcontroller", "repulsion", "lidar_teacher"], default="mappo",
                     help="repulsion = rule-based goal-seeking + push away from nearby drones "
                          "(baselines/repulsion_controller.py)")
     ap.add_argument("--checkpoint", help="required for --policy mappo")
@@ -580,19 +761,27 @@ def main():
     ap.add_argument("--seeds", type=int, nargs="+", default=[0])
     ap.add_argument("--episodes", type=int, default=100, help="episodes PER seed")
     ap.add_argument("--scenario", default="random",
-                    choices=["random", "crossing", "swap", "headon", "flythrough", *INTERACTION_SCENARIOS],
+                    choices=["random", "crossing", "swap", "headon", "flythrough",
+                             *INTERACTION_SCENARIOS, *OBSTACLE_TESTS, *HELDOUT_TESTS],
                     help="intruder / blocker / neighbour are 2-drone tests where drone_1 is "
-                         "scripted and only drone_0 (the policy under test) can avoid a collision")
+                         "scripted and only drone_0 (the policy under test) can avoid a collision; "
+                         "pillar / building put one obstacle on a single drone's path")
     ap.add_argument("--goal-dist", type=float, default=None,
                     help="random scenario only: max start-goal distance in metres. "
                          "Omit for the training distribution (env.reset, 1-2 m).")
     ap.add_argument("--goal-dist-min", type=float, default=None,
                     help="min start-goal distance for --goal-dist (default: half of it)")
     ap.add_argument("--n-agents", type=int, default=None, help="zero-shot agent-count override")
+    ap.add_argument("--no-obstacles", action="store_true",
+                    help="no static obstacles: crowd / pure deconfliction tests, e.g. --scenario headon "
+                         "--n-agents 8 --no-obstacles (the multi-drone tests otherwise place obstacles "
+                         "on the paths, which spreads the drones out)")
     ap.add_argument("--max-steps", type=int, default=None,
                     help="episode time limit override (e.g. 1000 to tell slow traffic from gridlock)")
     ap.add_argument("--blind-neighbors", action="store_true",
                     help="ablation: MAPPO actor sees no other drones (all neighbour slots masked)")
+    ap.add_argument("--blind-lidar", action="store_true",
+                    help="ablation: MAPPO actor's LiDAR inputs read 'nothing seen'")
     ap.add_argument("--collision-physics", choices=["on", "off"], required=True,
                     help="off = policy-only safety (PyBullet contact response disabled); "
                          "on = system-level, also records PyBullet contact events")
@@ -612,12 +801,16 @@ def main():
         ap.error("--checkpoint is required for --policy mappo")
     if args.goal_dist is not None and args.scenario != "random":
         ap.error("--goal-dist only applies to --scenario random")
-    if args.blind_neighbors and args.policy != "mappo":
-        ap.error("--blind-neighbors only applies to --policy mappo")
-    policy_label = "mappo-blind" if args.blind_neighbors else args.policy
+    if (args.blind_neighbors or args.blind_lidar) and args.policy != "mappo":
+        ap.error("--blind-neighbors / --blind-lidar only apply to --policy mappo")
+    policy_label = (args.policy + ("-blind" if args.blind_neighbors else "")
+                    + ("-nolidar" if args.blind_lidar else ""))
     interaction = args.scenario in INTERACTION_SCENARIOS
+    obstacle_test = args.scenario in OBSTACLE_TESTS or args.scenario in HELDOUT_TESTS
     if interaction and args.n_agents not in (None, 2):
         ap.error(f"--scenario {args.scenario} always uses 2 drones")
+    if obstacle_test and args.n_agents not in (None, 1):
+        ap.error(f"--scenario {args.scenario} always uses 1 drone")
 
     with open(args.config) as f:
         config = yaml.safe_load(f)
@@ -626,13 +819,22 @@ def main():
     # would turn the "random" test into a mix, and collision_physics: false
     # would make --collision-physics on silently stay off.
     config.pop('scenario_mix', None)
-    config['environment']['collision_physics'] = True     # disabled below if "off"
+    # Set from the flag in both directions: "off" must also switch off contact
+    # between drones and obstacles (the adapter does that when building them),
+    # otherwise PyBullet pushes a drone off a pillar before the crash check fires.
+    config['environment']['collision_physics'] = args.collision_physics == "on"
     if interaction:
         config['environment']['n_agents'] = 2
+    elif obstacle_test:
+        config['environment']['n_agents'] = 1
     elif args.n_agents is not None:
         config['environment']['n_agents'] = args.n_agents
     if args.max_steps is not None:
         config['environment']['max_steps'] = args.max_steps
+    if args.no_obstacles:
+        if obstacle_test or interaction:
+            ap.error("--no-obstacles applies to the multi-drone scenarios")
+        config.setdefault('obstacles', {})['enabled'] = False
     n_agents = config['environment']['n_agents']
     max_steps = config['environment']['max_steps']
     dt = config['environment'].get('control_timestep', 0.032)
@@ -647,7 +849,8 @@ def main():
     dist_tag = f"d{d_max:g}" if d_max is not None else "dtrain"
     tag = (f"{policy_label}_{args.scenario}_{dist_tag}_n{n_agents}_"
            f"phys{args.collision_physics}_s{'-'.join(map(str, args.seeds))}_e{args.episodes}"
-           + (f"_T{max_steps}" if args.max_steps is not None else ""))
+           + (f"_T{max_steps}" if args.max_steps is not None else "")
+           + ("_noobs" if args.no_obstacles else ""))
     out_dir = args.out_dir or os.path.join(args.results_root, tag)
     if os.path.exists(os.path.join(out_dir, "summary.json")) and not args.overwrite:
         ap.error(f"{out_dir} already has results. Pass --overwrite or choose --out-dir.")
@@ -659,24 +862,31 @@ def main():
 
     if args.policy == "mappo":
         policy = MappoPolicy(config, args.checkpoint, device, args.mode == "deterministic",
-                             blind_neighbors=args.blind_neighbors)
+                             blind_neighbors=args.blind_neighbors, blind_lidar=args.blind_lidar)
         policy.restore_normalizer(env)
         ckpt_episode = policy.ckpt.get('episode', policy.ckpt.get('episode_count'))
     else:
-        policy = PController(config, args.kp) if args.policy == 'pcontroller' else RepulsionController(config)
+        if args.policy == 'lidar_teacher':           # the teacher's rules, obstacles seen only via the LiDAR ring
+            from baselines.lidar_teacher import LidarTeacher
+            policy = LidarTeacher(config)
+        else:
+            policy = PController(config, args.kp) if args.policy == 'pcontroller' else RepulsionController(config)
         ckpt_episode = None
-    clip_val = env.obs_processor.normalizer.clip
+    # clip_hits counts inputs pinned at the normalizer's limit; schema v2 has
+    # no normalizer, so nothing can be clipped
+    schema = env.obs_processor.schema
+    clip_val = env.obs_processor.normalizer.clip if schema == 'v1' else float('inf')
 
     run_cfg = {
         'evaluation_suite_version': SUITE_VERSION,
-        'observation_schema_version': 'v1',
+        'observation_schema_version': schema,
         'policy': policy_label,
         'neighbor_view': 'blind' if args.blind_neighbors else 'normal',
         'policy_mode': args.mode if args.policy == 'mappo' else 'n/a',
         'checkpoint': args.checkpoint,
         'checkpoint_episode': ckpt_episode,
         'source_run': args.source_run if args.policy == 'mappo' else None,
-        'normalizer_frozen': args.policy == 'mappo',
+        'normalizer_frozen': args.policy == 'mappo' and schema == 'v1',
         'config_file': args.config,
         'scenario': args.scenario,
         'goal_dist_min': d_min, 'goal_dist_max': d_max,
@@ -718,7 +928,11 @@ def main():
                 episodes.append({'seed': seed, 'episode': ep, 'scenario_id': sid,
                                  'param': param, **row})
                 continue
-            if args.scenario == "crossing":
+            if args.scenario in HELDOUT_TESTS:
+                obs = setup_heldout_test(env, rng, args.scenario)
+            elif obstacle_test:
+                obs = setup_obstacle_test(env, rng, args.scenario)
+            elif args.scenario == "crossing":
                 obs = setup_crossing_scenario(env, rng, n_agents)
             elif args.scenario == "swap":
                 obs = setup_swap_scenario(env, rng, n_agents)
@@ -728,7 +942,7 @@ def main():
                 # every drone runs the policy: drone_0 hovers on its goal while
                 # the others fly straight through it (envs/scenarios.py)
                 spawns, goals = scenarios.flythrough(rng, n_agents)
-                obs = _apply_scenario(env, spawns, goals, n_agents)
+                obs = _apply_scenario(env, spawns, goals, n_agents, rng=rng)
             elif d_max is not None:
                 obs = sample_random_band(env, rng, n_agents, d_min, d_max)
             else:

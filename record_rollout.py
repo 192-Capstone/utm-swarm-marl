@@ -78,45 +78,31 @@ def disable_all_collision_physics(env, n_agents):
             )
 
 
-def _apply_scenario(env, spawns, goals, n_agents):
-    """Shared plumbing for any hand-constructed spawn/goal scenario: push
-    the positions into the adapter, then reset all the per-episode tracking
-    state SwarmEnv.reset() would normally initialize (settle counters,
-    latched-success flags, distance bookkeeping) so step() behaves exactly
-    as it would after a real reset."""
-    env.adapter.reset_world(spawns, goals)
-    env.goals = np.array([goals[f'drone_{i}'] for i in range(n_agents)], dtype=np.float32)
-    positions = env.adapter.get_positions()
-    env.prev_dist = np.linalg.norm(positions - env.goals, axis=1)
-    env.prev_actions = np.zeros((n_agents, 4), dtype=np.float32)
-    env.drone_reached_goal = [False] * n_agents
-    env.settle_counter = np.zeros(n_agents, dtype=np.int64)
-    env.best_settle_counter = np.zeros(n_agents, dtype=np.int64)
-    env.ever_entered_goal = [False] * n_agents
-    env.initial_dist = env.prev_dist.copy()
-    env.min_dist_ever = env.prev_dist.copy()
-    env.episode_manager.reset()
-
-    raw = env.adapter.get_raw_state()
-    return env._build_obs(raw)
+def _apply_scenario(env, spawns, goals, n_agents, rng=None, obstacles='auto'):
+    """Shared plumbing for any hand-constructed spawn/goal scenario: start the
+    episode through SwarmEnv.start_episode(), which places the drones, builds
+    the obstacle layout (if obstacles are enabled) and resets all per-episode
+    tracking, so step() behaves exactly as after a real reset. Returns the
+    first observation. rng / obstacles are passed through (see start_episode)."""
+    return env.start_episode(spawns, goals, rng=rng, obstacles=obstacles)
 
 
 def setup_crossing_scenario(env, rng, n_agents, r_min=2.5, r_max=6.0, shared_altitude=True):
     """Crossing scenario (see envs/scenarios.py), applied to the env."""
     spawns, goals = scenarios.crossing(rng, n_agents, r_min, r_max, shared_altitude)
-    return _apply_scenario(env, spawns, goals, n_agents)
+    return _apply_scenario(env, spawns, goals, n_agents, rng=rng)
 
 
 def setup_swap_scenario(env, rng, n_agents, reach=10.0, min_spawn_sep=5.0):
     """Swap scenario (see envs/scenarios.py), applied to the env."""
     spawns, goals = scenarios.swap(rng, n_agents, reach, min_spawn_sep)
-    return _apply_scenario(env, spawns, goals, n_agents)
+    return _apply_scenario(env, spawns, goals, n_agents, rng=rng)
 
 
 def setup_headon_scenario(env, rng, n_agents, r_min=3.0, r_max=5.0):
     """Head-on scenario (see envs/scenarios.py), applied to the env."""
     spawns, goals = scenarios.headon(rng, n_agents, r_min, r_max)
-    return _apply_scenario(env, spawns, goals, n_agents)
+    return _apply_scenario(env, spawns, goals, n_agents, rng=rng)
 
 
 def main():
@@ -236,7 +222,9 @@ def main():
     # and goals actually are.
     p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
 
-    if 'normalizer_mean' in ckpt:
+    if env.obs_processor.schema != 'v1':
+        print("Observation schema v2: fixed input scaling, no normalizer to restore.")
+    elif 'normalizer_mean' in ckpt:
         norm = env.obs_processor.normalizer
         norm.mean  = ckpt['normalizer_mean']
         norm.var   = ckpt['normalizer_var']

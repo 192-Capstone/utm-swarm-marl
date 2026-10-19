@@ -1,0 +1,227 @@
+# =============================================================================
+# config_stage2_critic2_noanchor_long.yaml
+# Pure RL (no anchor, fix K) + new per-drone critic: LONG run (3,000 RL episodes)
+# =============================================================================
+# Identical to config_stage2_critic2_noanchor.yaml (75.6% on the 9-test suite after
+# 500 RL episodes) except the length: 650 -> 3650, i.e. 3,000 learning episodes
+# after the same 150-episode critic-only warm-up from BCA (episode 500).
+# Question: with a critic that works, does RL keep improving or plateau?
+# Checkpoints every 100 episodes; evaluate 1100, 1600, ..., 3100 and the final one (3650) on the
+# 9-test suite (scripts/eval_500.sh) to get the learning curve.
+#
+# Run (from the repo root), one per seed:
+#   python train.py --config configs/config_stage2_critic2_noanchor_long.yaml --resume checkpoints/stage2_imitation_BCA/bc_resume.pth --seed 1 --checkpoint-dir checkpoints/stage2_critic2_long/seed1
+# =============================================================================
+
+environment:
+  n_agents: 3
+  max_steps: 1000               # STAGE2: was 500. Going around obstacles takes longer, and
+                                  # crowded swaps already needed ~450 steps without them
+  v_max: 2.0
+  omega_max: 1.0
+  world_size: 50
+  goal_threshold: 0.5
+  collision_radius: 0.2
+  collision_physics: false       # DECONFLICTION: PyBullet no longer pushes touching
+                                 # drones apart, so the 0.2 m crash check can fire
+  settle_speed: 0.15
+  settle_steps: 31
+  control_timestep: 0.032
+  training:
+    physics_timestep: 0.016
+    action_repeat: 2
+  evaluation:
+    physics_timestep: 0.008
+    action_repeat: 4
+
+observation:
+  schema: v3                     # RING: v2 inputs + 32 ring proximities at [42:74]
+  local_obs_dim: 74              # RING: was 42
+  neighbor_obs_dim: 6
+  neighbor_context_dim: 32
+  total_obs_dim: 106             # RING: was 74
+  k_neighbors_max: 5
+  n_lidar_rays: 14
+  n_lidar_quadrants: 5
+  neighbor_encoding: attention
+  neighbor_selection: knn
+  sensing_radius: 30.0           # DECONFLICTION: drones further than 30 m are invisible
+  neighbor_pos_scale: 3.0        # V3: was 30. relative position / 3 -> 1 m away = 0.33
+  neighbor_vel_scale: 2.0        # V3: was 4. relative velocity / 2 m/s
+
+network:
+  hidden_dim: 256
+  n_hidden_layers: 2
+  activation: tanh
+  action_dim: 4
+  attention_heads: 1
+  attention_dim: 32
+
+training:
+  gamma: 0.995                  # ANCHOR: was 0.99
+  lambda_gae: 0.95
+  clip_epsilon: 0.2
+  actor_lr: 0.000015              # ANCHOR: was 3e-5
+  actor_warmup_until_episode: 650  # CRITIC2: new critic, so 500 -> 650 is critic-only warm-up
+  freeze_normalizer: true          # no effect with observation schema v2 (no normalizer)
+  critic_lr: 0.0003
+  n_epochs: 4                    # ANCHOR: was 10
+  batch_size: 1024
+  buffer_size: 2048
+  max_grad_norm: 0.25
+  target_kl: 0.03
+  entropy_coef: 0.003
+  value_loss_coef: 0.5
+  save_interval: 100
+  eval_interval: 50             # finer granularity than default's 100 —
+                                  # review timeline needs early visibility
+  eval_episodes: 20             # matches 1-agent setup for a real sample size
+  total_episodes: 3650          # LONG: 3,000 learning episodes after the warm-up (650)
+  bootstrap_timeouts: true      # ANCHOR: a timeout is 'cut short', not 'the end'
+  kl_action_budget: 0.02          # FIX A: KL limit = allowed mean change of 2 cm/s per axis
+  bc_anchor_mode: separate        # FIX B: anchor step after PPO, outside the KL check
+  bc_anchor_lr: 0.000015
+  bc_anchor_epochs: 2
+  bc_anchor_coef: 0.0           # ANCHOR: weight of the teacher term in the actor loss. With std
+                                # 0.05 the PPO gradient is ~190x the anchor gradient at coef 1
+                                # (measured on BCA's own rollouts), so 190 makes them equal.
+                                # Pilots (300 episodes): 750 beat BCA on all 7 tests (mean
+                                # success 66% -> 70%); 50 and 190 stayed level with BCA
+  device: cuda
+  num_workers: 1
+
+  early_stop_success_rate: null # DECONFLICTION: off. The model already scores ~95%
+                                  # on the scenario mix, so an 80% rule would stop
+                                  # training before it learns anything new
+
+reward:
+  goal_progress_scale: 5.0
+  goal_reached_bonus: 100.0
+  obstacle_collision_penalty: -50.0
+  drone_collision_penalty: -50.0
+  step_penalty: -0.01
+  lambda_smooth: 0.0
+  lambda_prox: 2.0               # V2: was 0.5 (see header)
+  r_danger: 1.5
+  lambda_brake: 0.0
+  goal_entry_bonus: 10.0
+  settle_counter_scale: 2.0
+
+exploration:                     # ANCHOR: constant std 0.05 (0.1 made settling impossible)
+  log_std_init: -3.0
+  log_std_final: -3.0
+  anneal_start_episode: 500
+  anneal_end_episode: 500
+  log_std_floor_final: -3.0
+  floor_anneal_start_episode: 500
+  floor_anneal_end_episode: 500
+
+# DECONFLICTION: which kind of episode each reset produces. Random is the
+# original 1-2 m task; head-on, crossing and swap force drones to meet
+# (generators in envs/scenarios.py).
+scenario_mix:                    # STAGE2: more swaps (long flights that cross the area,
+  random: 0.15                   # where most on-path obstacles end up)
+  headon: 0.2
+  crossing: 0.2
+  swap: 0.3
+  flythrough: 0.15
+
+# STAGE2: static obstacles (envs/scenario_manager.py). Pillars and buildings
+# 8 m tall, so drones flying at 1-5 m must go around them. About 5-6 per
+# episode, 1-3 of them on a drone's straight path in head-on/crossing/swap.
+obstacles:
+  enabled: true
+  count: [3, 8]
+  on_path_share: 0.6
+  pillar_share: 0.6
+  pillar_radius: [0.3, 0.8]
+  box_half: [0.4, 1.2]
+  height: 8.0
+  spawn_clearance: 1.5
+  goal_clearance: 1.5
+  gap: 1.0
+
+# STAGE2: real LiDAR (envs/lidar.py): 14 rays, fan rotated so ray 0 points at
+# the goal, range 6 m (keep it fixed across stages), sees obstacles and other
+# drones. Fed to the actor as proximity = 1 - distance / range, not normalized.
+
+teacher:                         # STAGE2: RepulsionController settings (baselines/repulsion_controller.py)
+  side_from_lidar: true          # pick the side to pass an obstacle from the drone's own LiDAR
+                                 # (right unless front-left is clearly more open), so imitation
+                                 # never sees the same picture labelled left and right
+  side_margin: 0.5               # metres the front-left rays must see further to choose left
+  side_band: 0.6                 # only obstacles centred within 0.6 m of the path use the
+                                 # LiDAR rule; off-centre ones are passed on the open side
+                                 # (LiDAR rule everywhere: head-on 99% -> 80% for the teacher)
+lidar:
+  enabled: true
+  range: 6.0
+  sees_drones: true
+  ring_rays: 32                  # RING: horizontal ring, every 11.25 deg
+
+goal_curriculum:
+  start_dist: 2.0
+  end_dist: 2.0                 # frozen — same fixed-difficulty approach
+  step_dist: 0.0                # validated for 1-agent; avoid conflating
+  advance_sr: 0.3                # "did coordination improve" with "did the
+  window: 50                     # task get harder mid-run"
+
+curriculum:
+  progression_window: 100
+  progression_threshold: 0.8
+  stages:
+    1:
+      name: empty_sandbox
+      description: "No obstacles — learn basic navigation first"
+      action_dim_active: 3
+      global_state_dim: 12
+      world_size: 50
+      obstacles: false
+      obstacle_count: 0
+      domain_randomization: none
+      success_threshold: 0.8
+
+domain_randomization:
+  mild_noise:
+    position_noise_std: 0.05
+    imu_noise_std: 0.01
+    lidar_noise_std: 0.02
+
+# Safety cost (only the Lagrangian run uses it).
+# Measured on 200 training-mix episodes: teacher 0.28, imitation v2 2.66
+# steps per drone per episode closer than 0.7 m; both 0% crashes.
+safety:
+  cost_distance: 0.7             # 1 cost per step closer than this to any drone
+  collision_cost: 20.0           # extra cost on the step a drone crashes (drone or obstacle)
+  obstacle_cost_distance: 0.5    # STAGE2: 1 cost per step closer than this to an obstacle surface
+
+scenario_manager:
+  obstacle_pool_size: 50
+  spawn_margin: 3.0
+  goal_margin: 2.0
+  min_spawn_separation: 5.0      # keeps the 3 drones spawned well apart —
+                                   # matters more here than for 1-agent runs
+
+logging:
+  wandb_project: utm-swarm-marl
+  wandb_entity: null
+  log_interval: 10
+  log_reward_components: true
+  checkpoint_dir: checkpoints/stage2_critic2_long/seed1/
+  best_checkpoint: checkpoints/stage2_critic2_long/seed1/best_policy.pth
+
+# -----------------------------------------------------------------------------
+# Failure-mode guide (using the metrics eval_checkpoint.py / _run_eval() now report)
+# -----------------------------------------------------------------------------
+# eval/all_entered_goal low                        -> navigation/coordination problem
+# eval/all_entered_goal high, settle_fraction low   -> braking/dwell problem (per-agent)
+# eval/drone_collision_rate high                    -> separation/proximity problem
+# train_norm.count != eval_norm.count, or frozen=False -> evaluator regression, not a policy bug
+# agent_i_success_rate uneven across agents         -> credit-assignment asymmetry,
+#                                                       not necessarily a reward bug
+
+# CRITIC2: one value per drone from 32 inputs per drone (17 + goal - position,
+# goal distance, inside-goal, settle progress, reached, 8 ring sectors);
+# training/networks/critic_network.py, scripts/critic_fit_check.py
+critic:
+  version: 2

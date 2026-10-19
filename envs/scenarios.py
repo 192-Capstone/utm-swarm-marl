@@ -25,6 +25,10 @@ evaluation results, so don't reorder them.
     flythrough : drone_0 hovers on its goal at the centre; every other drone
                flies straight through that point (training version of the
                intruder / blocker evaluation tests).
+    course   : obstacle course (COURSES, not GENERATORS: it also returns the
+               obstacle layout). Every drone flies its own straight lane with
+               one obstacle dead ahead, the situation of eval_suite's obstacle
+               tests, which the other scenarios almost never produce.
 
 With collision physics off, head-on and crossing are real collision courses
 for a straight-flying controller. Swap with few drones rarely produces real
@@ -116,3 +120,54 @@ def flythrough(rng, n_agents, r_min=3.0, r_max=5.0):
 
 
 GENERATORS = {'headon': headon, 'crossing': crossing, 'swap': swap, 'flythrough': flythrough}
+
+
+def course(rng, n_agents, lane_gap=5.0):
+    """Obstacle course: n parallel lanes lane_gap m apart, one drone per lane,
+    one obstacle squarely on each lane, so every drone meets an obstacle head-on
+    (as in eval_suite's pillar / building / wide_building / long_wall tests,
+    with the same size ranges, but its own random draws).
+
+    In the training mix, a drone alone with an obstacle dead ahead was 7% of
+    all samples and a wide box (both half-sizes >= 0.9 m) dead ahead 0.28%,
+    while those situations are 4 of the 9 evaluation tests.
+
+    Lanes run along a world axis half the time (then a lane can hold a long
+    wall, which is axis-aligned like every box) and at a random angle
+    otherwise. Returns spawns, goals and the obstacle layout."""
+    axis_aligned = rng.uniform() < 0.5
+    ang = rng.randint(4) * np.pi / 2 if axis_aligned else rng.uniform(0, 2 * np.pi)
+    u = np.array([np.cos(ang), np.sin(ang)])
+    side = np.array([-u[1], u[0]])
+    centre = np.array([rng.uniform(-3, 3), rng.uniform(-3, 3)])
+    # long walls need an axis-aligned lane, so they get half of those lanes: every kind
+    # then ends up at ~25% (with walls only one choice in four on axis-aligned lanes they
+    # were ~12% of course obstacles, and long_wall was the least stable test, 48-93%)
+    kinds = ['pillar', 'building', 'wide_building', 'long_wall', 'long_wall', 'long_wall'] if axis_aligned         else ['pillar', 'building', 'wide_building']
+    spawns, goals, layout = {}, {}, []
+    for i in range(n_agents):
+        lane = centre + (i - (n_agents - 1) / 2) * lane_gap * side
+        length = rng.uniform(6.0, 10.0)
+        z = rng.uniform(2.0, 3.0)
+        start = lane - 0.5 * length * u
+        c = lane + side * rng.uniform(-0.2, 0.2)
+        kind = kinds[rng.randint(len(kinds))]
+        if kind == 'pillar':
+            ob = {'type': 'pillar', 'center': (float(c[0]), float(c[1])), 'radius': float(rng.uniform(0.4, 0.8))}
+        elif kind == 'long_wall':
+            along, across = float(rng.uniform(1.1, 1.2)), float(rng.uniform(0.4, 0.5))
+            ob = {'type': 'box', 'center': (float(c[0]), float(c[1])),
+                  'half': (along, across) if abs(u[0]) > 0.5 else (across, along)}
+        else:
+            lo = 0.9 if kind == 'wide_building' else 0.6
+            ob = {'type': 'box', 'center': (float(c[0]), float(c[1])),
+                  'half': (float(rng.uniform(lo, 1.2)), float(rng.uniform(lo, 1.2)))}
+        ob.update(height=8.0, on_path=True)
+        spawns[f'drone_{i}'] = [float(start[0]), float(start[1]), float(z)]
+        g = start + length * u
+        goals[f'drone_{i}'] = [float(g[0]), float(g[1]), float(z)]
+        layout.append(ob)
+    return spawns, goals, layout
+
+
+COURSES = {'course': course}

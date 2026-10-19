@@ -47,9 +47,10 @@ def load(cfg, path, env):
     ck = torch.load(path, map_location="cpu", weights_only=False)
     actor.load_state_dict(ck.get("actor_state_dict", ck))
     actor.eval()
-    norm = env.obs_processor.normalizer
-    norm.mean, norm.var, norm.count = ck["normalizer_mean"], ck["normalizer_var"], ck["normalizer_count"]
-    norm.freeze()
+    if env.obs_processor.schema == "v1":       # v2 has fixed input scaling, no normalizer
+        norm = env.obs_processor.normalizer
+        norm.mean, norm.var, norm.count = ck["normalizer_mean"], ck["normalizer_var"], ck["normalizer_count"]
+        norm.freeze()
     return actor
 
 

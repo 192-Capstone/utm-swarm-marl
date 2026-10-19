@@ -19,6 +19,8 @@ import torch
 import numpy as np
 from typing import Dict, List, Optional
 
+from training.networks.critic_network import critic_version, CRITIC_STATE_DIM
+
 
 class RolloutBuffer:
     """
@@ -56,7 +58,8 @@ class RolloutBuffer:
 
         # Global state dim depends on curriculum stage
         # Stage 1: N*12, Stage 2+: N*17 — stored per drone (17 always, zeros in Stage 1)
-        self.drone_state_dim = 17
+        # critic.version 2 adds 15 values per drone (32)
+        self.drone_state_dim = CRITIC_STATE_DIM[critic_version(config)]
 
         self._init_storage()
 
@@ -82,6 +85,11 @@ class RolloutBuffer:
         self.costs           = torch.zeros(B, N,                        device=self.device)
         self.cost_values     = torch.zeros(B, N,                        device=self.device)
 
+        # Imitation anchor: the teacher's velocity for the same state, stored
+        # only when training.bc_anchor_coef > 0 (has_teacher marks those rows)
+        self.teacher_actions = torch.zeros(B, N, 3,                     device=self.device)
+        self.has_teacher     = torch.zeros(B, N, dtype=torch.bool,      device=self.device)
+
         # Computed post-episode
         self.advantages      = torch.zeros(B, N,                        device=self.device)
         self.returns         = torch.zeros(B, N,                        device=self.device)
@@ -104,6 +112,7 @@ class RolloutBuffer:
         values:          torch.Tensor,   # (N,)
         costs:           Optional[torch.Tensor] = None,   # (N,) safety cost
         cost_values:     Optional[torch.Tensor] = None,   # (N,) cost critic estimate
+        teacher_actions: Optional[torch.Tensor] = None,   # (N, 3) teacher velocity (anchor)
     ):
         """
         Store one timestep of experience for all N agents.
@@ -147,6 +156,9 @@ class RolloutBuffer:
         if costs is not None:
             self.costs[idx]       = costs.detach()
             self.cost_values[idx] = cost_values.detach()
+        if teacher_actions is not None:
+            self.teacher_actions[idx] = teacher_actions.detach()
+            self.has_teacher[idx]     = True
 
         self.ptr  += 1
         self.size  = min(self.size + 1, self.buffer_size)
@@ -284,6 +296,11 @@ class RolloutBuffer:
         ret = self.returns[:T].reshape(T * N)
         cadv = self.cost_advantages[:T].reshape(T * N)
         cret = self.cost_returns[:T].reshape(T * N)
+        tact = self.teacher_actions[:T].reshape(T * N, 3)
+        tmask = self.has_teacher[:T].reshape(T * N)
+        # which drone each sample belongs to (a = i % N), so a per-drone
+        # critic (critic.version 2) can pick that drone's value
+        aidx = torch.arange(N, device=self.device).repeat(T)
 
         total = T * N
         indices = torch.randperm(total, device=self.device)
@@ -303,6 +320,9 @@ class RolloutBuffer:
                 'returns':         ret[idx],
                 'cost_advantages': cadv[idx],
                 'cost_returns':    cret[idx],
+                'teacher_actions': tact[idx],
+                'has_teacher':     tmask[idx],
+                'agent_idx':       aidx[idx],
             }
 
     def reset(self):
