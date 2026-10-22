@@ -10,10 +10,12 @@ Purpose:
 
 Run with:
     python tests/test_actor_network.py
+    python -m pytest tests/test_actor_network.py -q
 """
 
 import sys
 import os
+import pytest
 import torch
 import yaml
 
@@ -35,6 +37,45 @@ _shared_test_data = {
     'batch_size': None,
     'K': None
 }
+
+
+# ============================================================================
+# Pytest fixtures
+# ============================================================================
+# The tests below take `actor`, `config` and `action_stoch` as arguments.
+# `python tests/test_actor_network.py` passes them by hand (run_all_tests),
+# but pytest only supplies arguments that are registered fixtures, so they
+# are defined here. The tests share data through _shared_test_data, so they
+# must run in file order (the pytest default).
+
+@pytest.fixture(scope="module")
+def config():
+    """Load the real configuration file (shared by all tests in this file)."""
+    config_path = os.path.join(
+        os.path.dirname(__file__), '..', 'configs', 'default_config.yaml'
+    )
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
+
+
+@pytest.fixture(scope="module")
+def actor(config):
+    """Create one Actor Network (shared by all tests in this file)."""
+    return ActorNetwork(config)
+
+
+@pytest.fixture(scope="module")
+def action_stoch(actor, config):
+    """
+    Sample one stochastic action for test_evaluate_actions.
+
+    Uses the same shapes as the forward-pass test (batch_size=4, K=3), so the
+    action matches the stored local_obs / neighbor_states.
+    """
+    local_obs = torch.randn(4, config['observation']['local_obs_dim'])
+    neighbor_states = torch.randn(4, 3, config['observation']['neighbor_obs_dim'])
+    action, _ = actor.get_action(local_obs, neighbor_states, deterministic=False)
+    return action.detach()
 
 
 # ============================================================================

@@ -10,11 +10,13 @@ Purpose:
 
 Run with:
     python tests/test_episode_manager.py
+    python -m pytest tests/test_episode_manager.py -q
 """
 
 import sys
 import os
 import numpy as np
+import pytest
 import yaml
 
 # Add parent directory to path
@@ -35,6 +37,26 @@ def load_config():
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     return config
+
+
+# ============================================================================
+# Pytest fixtures
+# ============================================================================
+# test_episode_continues, test_collision_termination,
+# test_goal_reached_termination and test_timeout_termination take
+# `ep_manager` and `config` as arguments. run_all_tests() passes them by hand;
+# pytest needs them registered as fixtures (a fresh one for every test).
+
+@pytest.fixture
+def config():
+    """Load the real configuration file."""
+    return load_config()
+
+
+@pytest.fixture
+def ep_manager(config):
+    """Create an Episode Manager from the real configuration."""
+    return EpisodeManager(config)
 
 
 def print_test_header(test_num, test_name, purpose):
