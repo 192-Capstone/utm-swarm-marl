@@ -27,6 +27,7 @@ from envs.episode_manager import EpisodeManager
 from envs.pybullet_adapter import PyBulletAdapter
 from envs import scenarios
 from envs import scenario_manager
+from envs.lidar import lidar_config
 
 
 class SwarmEnv:
@@ -59,6 +60,18 @@ class SwarmEnv:
         # Stage-2 static obstacles (config block 'obstacles'; None = empty world)
         self.obstacle_cfg = scenario_manager.obstacle_config(config)
         self.layout = []
+
+        # Sensor noise (environment.sensor_noise, standard deviations): only what
+        # the policy SEES is perturbed. The simulator, collisions, the settle
+        # check, rewards and the teacher all keep the true state. Off when the
+        # block is missing or all zero, and then no random numbers are drawn,
+        # so older configs and seeds behave exactly as before.
+        sn = config['environment'].get('sensor_noise') or {}
+        self.noise_std = {k: float(sn.get(k, 0.0))
+                          for k in ('position', 'velocity', 'orientation', 'lidar')}
+        self.noise_on = any(v > 0 for v in self.noise_std.values())
+        self._noise_rng = np.random.default_rng(int(sn.get('seed', 0)))
+        self.lidar_range = lidar_config(config)['range']
 
         self.adapter        = adapter or PyBulletAdapter(config, gui=gui)
         self.obs_processor  = ObservationProcessor(config, self.device)
@@ -366,7 +379,36 @@ class SwarmEnv:
                 }}
         return self._build_obs(raw), rewards_dict, bool(done), info
 
+    def _noisy(self, raw):
+        """Copy of raw with sensor noise added. Positions double as the
+        neighbour broadcasts, so those get the same noise. LiDAR noise only
+        touches rays that hit something: a ray that sees nothing stays at
+        full range (a real LiDAR doesn't invent returns)."""
+        rng, s = self._noise_rng, self.noise_std
+        out = {'goals': raw['goals']}
+        for key, d in raw.items():
+            if key == 'goals':
+                continue
+            d = dict(d)
+            for name, std in (('position', s['position']), ('velocity', s['velocity']),
+                              ('orientation', s['orientation'])):
+                if std > 0:
+                    d[name] = (np.asarray(d[name], dtype=np.float64)
+                               + rng.normal(0.0, std, 3)).tolist()
+            if s['lidar'] > 0:
+                for name in ('lidar', 'lidar_ring'):
+                    if name in d:
+                        r = np.asarray(d[name], dtype=np.float64)
+                        hit = r < self.lidar_range - 1e-6
+                        r = np.where(hit, np.clip(r + rng.normal(0.0, s['lidar'], r.shape),
+                                                  0.0, self.lidar_range), r)
+                        d[name] = r.tolist()
+            out[key] = d
+        return out
+
     def _build_obs(self, raw):
+        if self.noise_on:
+            raw = self._noisy(raw)
         extra = None
         if self.obs_processor.critic_version >= 2:
             # critic.version 2: the critic also sees each drone's settle state
