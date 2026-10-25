@@ -34,6 +34,14 @@ Usage:
         --checkpoint checkpoints/rl_frozen_norm/seed1/checkpoint_final.pth \
         --config configs/config_stage2_obstacles.yaml \
         --out checkpoints/rl_frozen_norm/seed1/checkpoint_final_v2.pth
+
+Later schemas only append inputs, so those steps pad instead of fold: the new
+columns of local_proj and the first MLP layer start at zero and the outputs are
+unchanged until training uses them.
+    v2 -> v3 : the horizontal LiDAR ring          (pass a v3 config)
+    v3 -> v4 : the drone's last K velocity commands (pass a v4 config)
+For v3 -> v4, convert both files an imitation run writes: bc_resume.pth (for
+imitation_warmstart.py --base) and bc_policy.pth (for --init-actor).
 """
 
 import argparse
@@ -111,10 +119,56 @@ def pad_v2_to_v3(ckpt, config, args):
     print(f"written {args.out}")
 
 
+def pad_v3_to_v4(ckpt, config, args):
+    """v3 -> v4: the action history (the drone's last K velocity commands,
+    observation.action_history) is appended after the v3 inputs. Its columns
+    in local_proj and the first MLP layer start at zero, so the actor's
+    outputs are unchanged until training uses the history. Works on both
+    bc_policy.pth (actor only) and bc_resume.pth (full training checkpoint;
+    the critic doesn't read these inputs and is copied unchanged)."""
+    new_dim = config['observation']['local_obs_dim']
+    ctx = config['observation']['neighbor_context_dim']
+    v3_dim = ckpt['actor_state_dict']['local_proj.weight'].shape[1]   # 42 + ring rays
+    cfg_v3 = yaml.safe_load(open(args.config))
+    cfg_v3['observation'].update(schema='v3', local_obs_dim=v3_dim, total_obs_dim=v3_dim + ctx)
+    cfg_v3['observation'].pop('action_history', None)
+    old = ActorNetwork(cfg_v3)
+    old.load_state_dict(ckpt['actor_state_dict'])
+    new = ActorNetwork(config)
+    extra = new_dim - v3_dim
+    state = {k: v.clone() for k, v in old.state_dict().items()}
+    w = state['local_proj.weight']
+    state['local_proj.weight'] = torch.cat([w, torch.zeros(w.shape[0], extra)], dim=1)
+    w = state['mlp.0.weight']
+    state['mlp.0.weight'] = torch.cat([w[:, :v3_dim], torch.zeros(w.shape[0], extra),
+                                       w[:, v3_dim:]], dim=1)
+    new.load_state_dict(state)
+
+    rng = np.random.default_rng(0)
+    n = 4096
+    f3 = torch.tensor(rng.uniform(-1, 1, (n, v3_dim)), dtype=torch.float32)
+    f4 = torch.cat([f3, torch.tensor(rng.uniform(-1, 1, (n, extra)), dtype=torch.float32)], 1)
+    ns = torch.tensor(rng.normal(size=(n, 5, 6)), dtype=torch.float32)
+    nm = torch.tensor(rng.uniform(size=(n, 5)) < 0.4)
+    with torch.no_grad():
+        err = (old(f3, ns, nm)[0] - new(f4, ns, nm)[0]).abs().max().item()
+    print(f"max action difference v3 vs v4 (random command histories): {err:.2e}")
+    if err > 1e-5:
+        sys.exit("conversion check failed, nothing written")
+    out = {k: v for k, v in ckpt.items() if k != 'actor_optim'}
+    out.update(actor_state_dict=new.state_dict(), observation_schema='v4',
+               converted_from=args.checkpoint, config=config)
+    os.makedirs(os.path.dirname(args.out) or '.', exist_ok=True)
+    torch.save(out, args.out)
+    print(f"written {args.out}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument("--checkpoint", required=True, help="schema v1 checkpoint")
-    ap.add_argument("--config", required=True, help="a schema v2 config (scales and network size)")
+    ap.add_argument("--checkpoint", required=True,
+                    help="schema v1 checkpoint (or v2 / v3 to pad to v3 / v4)")
+    ap.add_argument("--config", required=True,
+                    help="a schema v2 config (scales and network size), or the v3 / v4 target config")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -122,8 +176,11 @@ def main():
     ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     if ckpt.get('observation_schema', 'v1') == 'v2' and config['observation'].get('schema') == 'v3':
         return pad_v2_to_v3(ckpt, config, args)
+    if ckpt.get('observation_schema', 'v1') == 'v3' and config['observation'].get('schema') == 'v4':
+        return pad_v3_to_v4(ckpt, config, args)
     if config['observation'].get('schema', 'v1') != 'v2':
-        sys.exit("--config must use observation.schema: v2 (or v3 for a v2 checkpoint)")
+        sys.exit("--config must use observation.schema: v2 (or v3 for a v2 checkpoint, "
+                 "v4 for a v3 checkpoint)")
     if ckpt.get('observation_schema', 'v1') != 'v1':
         sys.exit(f"{args.checkpoint} is already schema {ckpt['observation_schema']}")
     if 'normalizer_mean' not in ckpt:

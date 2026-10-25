@@ -167,9 +167,21 @@ class ObservationProcessor:
         #        reading (14) and a log goal distance (1)
         #   v3 : v2 + the horizontal LiDAR ring (lidar.ring_rays proximities,
         #        appended at [42:]); 42 + 32 = 74 for the Stage-2 ring
+        #   v4 : v3 + the drone's own last observation.action_history velocity
+        #        commands (vx, vy, vz) / v_max, most recent first, appended at
+        #        [42 + ring_rays:]; 74 + 3 x 8 = 98 with 8 commands. A real
+        #        quadrotor reacts 0.1-0.3 s late, so the commands it was just
+        #        sent are still taking effect and its own state doesn't show
+        #        them yet; seeing them lets the policy stop over-correcting.
         self.schema = obs_cfg.get('schema', 'v1')
         self.ring_rays = lidar_mod.lidar_config(config)['ring_rays']
-        expected_dim = {'v1': 27, 'v2': 42, 'v3': 42 + self.ring_rays}[self.schema]
+        # number of past commands in the observation (0 unless schema v4)
+        self.action_history = int(obs_cfg.get('action_history', 0)) if self.schema == 'v4' else 0
+        if self.schema == 'v4' and self.action_history < 1:
+            raise ValueError("observation.schema v4 needs observation.action_history >= 1 "
+                             "(how many past commands the policy sees)")
+        expected_dim = {'v1': 27, 'v2': 42, 'v3': 42 + self.ring_rays,
+                        'v4': 42 + self.ring_rays + 3 * self.action_history}[self.schema]
         if self.local_obs_dim != expected_dim:
             raise ValueError(f"observation.schema {self.schema} needs local_obs_dim "
                              f"{expected_dim}, config has {self.local_obs_dim}")
@@ -205,6 +217,7 @@ class ObservationProcessor:
         curriculum_stage: int,
         drone_ids:        Optional[List[str]] = None,
         critic_extra:     Optional[Dict] = None,
+        action_history:   Optional[np.ndarray] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Main processing function. Converts raw_state to all required tensors.
@@ -216,6 +229,8 @@ class ObservationProcessor:
                                If None, auto-detected from raw_state keys
             critic_extra     : critic.version 2 only, from SwarmEnv:
                                {'settle_progress': (N,) in [0, 1], 'reached': (N,) bool}
+            action_history   : schema v4 only, from SwarmEnv: (N, K, 3) velocity
+                               commands in m/s, most recent first (None = zeros)
 
         Returns:
             local_fixed     : (N, 27)     tensor — own state per drone
@@ -235,12 +250,12 @@ class ObservationProcessor:
         lidars       = np.array([raw_state[d]['lidar']       for d in drone_ids], dtype=np.float32)
         rings        = (np.array([raw_state[d].get('lidar_ring', [self.lidar_range] * self.ring_rays)
                                   for d in drone_ids], dtype=np.float32).reshape(len(drone_ids), -1)
-                        if self.schema == 'v3' else None)
+                        if self.schema in ('v3', 'v4') else None)
         goals        = np.array([raw_state['goals'][d]       for d in drone_ids], dtype=np.float32)
 
         # ── 1. Build local fixed observations (N, 27) ──────────────────────
         local_fixed = self._build_local_fixed(
-            positions, velocities, orientations, lidars, goals, rings
+            positions, velocities, orientations, lidars, goals, rings, action_history
         )
 
         # ── 2. KNN neighbor encoding ────────────────────────────────────────
@@ -276,7 +291,8 @@ class ObservationProcessor:
         orientations: np.ndarray,   # (N, 3)
         lidars:       np.ndarray,   # (N, 14)
         goals:        np.ndarray,   # (N, 3)
-        rings:        Optional[np.ndarray] = None,   # (N, ring_rays), schema v3 only
+        rings:        Optional[np.ndarray] = None,   # (N, ring_rays), schemas v3 and v4
+        action_history: Optional[np.ndarray] = None, # (N, K, 3) m/s, schema v4 only
     ) -> np.ndarray:
         """
         Builds the 27-dimensional fixed local observation per drone.
@@ -315,6 +331,10 @@ class ObservationProcessor:
         if self.schema == 'v3':
             ring = lidar_mod.proximity(rings, self.lidar_range)
             return np.concatenate([self._fixed_scale(obs, prox), ring], axis=1)   # (N, 42 + ring)
+        if self.schema == 'v4':
+            ring = lidar_mod.proximity(rings, self.lidar_range)
+            hist = self._history_inputs(action_history, N)
+            return np.concatenate([self._fixed_scale(obs, prox), ring, hist], axis=1)  # (N, 42 + ring + 3K)
 
         # Update running normalizer and normalize; LiDAR bypasses it
         self.normalizer.update(obs)
@@ -354,6 +374,23 @@ class ObservationProcessor:
         obs[:, 41:42] = np.log1p(dist) / 4.0
         self._prev_prox = prox.copy()
         return obs    # (N, 42)
+
+    def _history_inputs(self, action_history: Optional[np.ndarray], n: int) -> np.ndarray:
+        """
+        Schema v4: the last K velocity commands as (N, 3K) inputs, most recent first:
+            [0:3]  the command sent on the previous step (vx, vy, vz) / v_max
+            [3:6]  the one before that, and so on back K steps
+        Each value is in [-1, 1] (commands are clipped to v_max before they are
+        recorded). None (no history given, e.g. a script building observations
+        outside SwarmEnv) gives all zeros, the same as the start of an episode.
+        """
+        k = self.action_history
+        if action_history is None:
+            return np.zeros((n, 3 * k), dtype=np.float32)
+        hist = np.asarray(action_history, dtype=np.float32)
+        if hist.shape != (n, k, 3):
+            raise ValueError(f"action_history must have shape ({n}, {k}, 3), got {hist.shape}")
+        return (hist / self.velocity_scale).reshape(n, 3 * k)
 
     def reset_history(self):
         """Forget the previous LiDAR reading — call at the start of every episode."""

@@ -76,6 +76,19 @@ class SwarmEnv:
         self.adapter        = adapter or PyBulletAdapter(config, gui=gui)
         self.obs_processor  = ObservationProcessor(config, self.device)
         self.reward_engine  = RewardEngine(config)
+
+        # Action history (observation.schema v4): the last K velocity commands
+        # each drone was actually sent, most recent first, clipped to v_max the
+        # same way the adapter clips them. Recorded in step() from whatever was
+        # passed in, so in DAgger it is the command that was flown (teacher or
+        # student), not what the policy proposed. A real quadrotor reacts
+        # 0.1-0.3 s late, so these commands are still taking effect and the
+        # drone's own state doesn't show them yet. It is the drone's own
+        # memory, so sensor noise never touches it. K = 0 (schemas v1-v3):
+        # nothing is passed to the observation processor.
+        self.v_max = float(config['environment'].get('v_max', 2.0))
+        self.history_len = self.obs_processor.action_history
+        self.cmd_history = np.zeros((self.n_agents, self.history_len, 3), dtype=np.float32)
         self.episode_manager = EpisodeManager(config)
 
         self.goals        = None
@@ -207,6 +220,7 @@ class SwarmEnv:
         self.settle_counter = np.zeros(self.n_agents, dtype=np.int64)
         self.best_settle_counter = np.zeros(self.n_agents, dtype=np.int64)
         self.ever_entered_goal = [False] * self.n_agents
+        self.cmd_history = np.zeros((self.n_agents, self.history_len, 3), dtype=np.float32)
 
         # Track closest approach to goal — diagnoses "almost succeeded" vs
         # "never made progress" for episodes that don't reach the goal
@@ -327,6 +341,10 @@ class SwarmEnv:
         # 6. book-keeping for next step
         self.prev_dist    = curr_dist
         self.prev_actions = actions_arr
+        if self.history_len:
+            # newest command in slot 0, the oldest one drops off the end
+            sent = np.clip(actions_arr[:, :3], -self.v_max, self.v_max)
+            self.cmd_history = np.concatenate([sent[:, None, :], self.cmd_history[:, :-1]], axis=1)
 
         drones_at_goal = sum(self.drone_reached_goal)
         drones_inside = int(np.sum(curr_dist < self.goal_threshold))
@@ -414,8 +432,9 @@ class SwarmEnv:
             # critic.version 2: the critic also sees each drone's settle state
             extra = {'settle_progress': np.minimum(self.settle_counter / self.settle_steps, 1.0),
                      'reached': np.asarray(self.drone_reached_goal, dtype=np.float32)}
-        lf, ns, nm, gs = self.obs_processor.process(raw, self.curriculum_stage,
-                                                    critic_extra=extra)
+        lf, ns, nm, gs = self.obs_processor.process(
+            raw, self.curriculum_stage, critic_extra=extra,
+            action_history=self.cmd_history if self.history_len else None)
         return {
             'local_fixed':     lf,
             'neighbor_states': ns,
