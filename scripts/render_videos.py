@@ -95,6 +95,7 @@ class RenderWorld:
                 vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[hx, hy, h / 2],
                                           rgbaColor=[0.68, 0.68, 0.72, 1], physicsClientId=self.c)
             p.createMultiBody(0, baseVisualShapeIndex=vis, basePosition=[cx, cy, h / 2],
+                              baseOrientation=p.getQuaternionFromEuler([0, 0, ob.get('yaw', 0.0)]),
                               physicsClientId=self.c)
         self.drone_ids = []
         for i in range(n):
