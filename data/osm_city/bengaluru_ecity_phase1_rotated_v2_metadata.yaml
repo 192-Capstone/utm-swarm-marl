@@ -1,0 +1,850 @@
+source: OpenStreetMap building footprints via OSMnx
+attribution: © OpenStreetMap contributors; data available under the Open Database
+  License (ODbL).
+retrieved_at_utc: '2026-10-25T16:43:58.253568+00:00'
+query_center_latitude: 12.84968
+query_center_longitude: 77.66498
+query_distance_m: 300.0
+projected_crs: EPSG:32643
+local_coordinate_frame: X east, Y north, metres; query centre is (0, 0)
+footprint_approximation: minimum rotated rectangles for near-rectangular footprints;
+  concave shapes are decomposed and greedily merged into oriented boxes. Boxes may
+  conservatively cover small areas outside footprints.
+box_orientation: optional yaw in radians, counter-clockwise about +Z from the local
+  east/X axis; omitted means zero yaw
+target_box_union_area_ratio: 1.15
+default_height_m: 12.0
+floor_height_m: 3.0
+minimum_box_side_m: 2.0
+height_assignment:
+  priority:
+  - OSM height tag (metres; ft/feet converted)
+  - building:levels multiplied by floor-height assumption
+  - default assumed height
+  floor_height_assumption_m: 3.0
+  default_assumed_height_m: 12.0
+  source_counts: &id001
+    osm_height: 0
+    building_levels_estimate: 2
+    default_assumption: 113
+  per_building_sources:
+  - feature_id: way/188315139
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/188315140
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/188315141
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/188315529
+    height_m: 9.0
+    source: building_levels_estimate
+  - feature_id: way/188315530
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/188315532
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/188315533
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/188315534
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/188315538
+    height_m: 9.0
+    source: building_levels_estimate
+  - feature_id: way/188316106
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/188316107
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/188316108
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/188316109
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/188316111
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/231526764
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/231570424
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/231576097
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/231600582
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/231601951
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/257478108
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/257478109
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/257478110
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/257478113
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/257478114
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/257478115
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/259362421
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102752
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102754
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102758
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102776
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102789
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102808
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102823
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102834
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102836
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102856
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102874
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102879
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102894
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102895
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102901
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102928
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102934
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102953
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102962
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102967
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102987
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264102997
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264103000
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264103015
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264103023
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/264103042
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344712486
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344712659
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344712680
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344722692
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344722697
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344724216
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344724219
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344724220
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344724221
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344724222
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344725379
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344725403
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344727010
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344727127
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344736803
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344928838
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344928840
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344929201
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344929203
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344929208
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344929647
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344929648
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344929649
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344929650
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344930356
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344931150
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344931151
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344931911
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344933987
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344933988
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344933989
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344933991
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344933992
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344933994
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344933997
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344933999
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344934000
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344937277
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344937278
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344937871
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344937873
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344937875
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/344938474
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/347219442
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/348846088
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/348846147
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/349454280
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1298939998
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163702
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163703
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163704
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163705
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163706
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163708
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163709
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163710
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163711
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163717
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163718
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163719
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163720
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1312163721
+    height_m: 12.0
+    source: default_assumption
+  - feature_id: way/1346135039
+    height_m: 12.0
+    source: default_assumption
+  note: Records which source supplied each represented building's exported height;
+    default_assumption means no usable OSM height/levels tag was available.
+stats:
+  features_received: 116
+  buildings_exported: 115
+  exported: 311
+  skipped_geometry: 1
+  skipped_too_small: 0
+  height_source_counts: *id001
+  building_coverage_ratios:
+  - feature_id: way/188315139
+    area_ratio: 1.04756
+    obstacle_boxes: 18
+    footprint_area_m2: 6810.091
+  - feature_id: way/188315140
+    area_ratio: 1.01111
+    obstacle_boxes: 9
+    footprint_area_m2: 5346.017
+  - feature_id: way/188315141
+    area_ratio: 1.03342
+    obstacle_boxes: 13
+    footprint_area_m2: 5886.555
+  - feature_id: way/188315529
+    area_ratio: 1.04064
+    obstacle_boxes: 1
+    footprint_area_m2: 3073.759
+  - feature_id: way/188315530
+    area_ratio: 1.06873
+    obstacle_boxes: 4
+    footprint_area_m2: 6989.588
+  - feature_id: way/188315532
+    area_ratio: 1.14142
+    obstacle_boxes: 2
+    footprint_area_m2: 4347.665
+  - feature_id: way/188315533
+    area_ratio: 1.12343
+    obstacle_boxes: 5
+    footprint_area_m2: 6325.653
+  - feature_id: way/188315534
+    area_ratio: 1.1044
+    obstacle_boxes: 9
+    footprint_area_m2: 2164.099
+  - feature_id: way/188315538
+    area_ratio: 1.08299
+    obstacle_boxes: 1
+    footprint_area_m2: 2885.277
+  - feature_id: way/188316106
+    area_ratio: 1.14959
+    obstacle_boxes: 1
+    footprint_area_m2: 2670.78
+  - feature_id: way/188316107
+    area_ratio: 1.00583
+    obstacle_boxes: 1
+    footprint_area_m2: 1342.784
+  - feature_id: way/188316108
+    area_ratio: 1.09155
+    obstacle_boxes: 11
+    footprint_area_m2: 2698.477
+  - feature_id: way/188316109
+    area_ratio: 1.0803
+    obstacle_boxes: 9
+    footprint_area_m2: 2504.93
+  - feature_id: way/188316111
+    area_ratio: 1.14289
+    obstacle_boxes: 7
+    footprint_area_m2: 2433.396
+  - feature_id: way/231526764
+    area_ratio: 1.06519
+    obstacle_boxes: 1
+    footprint_area_m2: 5605.695
+  - feature_id: way/231570424
+    area_ratio: 1.00096
+    obstacle_boxes: 1
+    footprint_area_m2: 894.465
+  - feature_id: way/231576097
+    area_ratio: 1.09059
+    obstacle_boxes: 15
+    footprint_area_m2: 1789.082
+  - feature_id: way/231600582
+    area_ratio: 1.05296
+    obstacle_boxes: 23
+    footprint_area_m2: 3597.585
+  - feature_id: way/231601951
+    area_ratio: 1.05312
+    obstacle_boxes: 20
+    footprint_area_m2: 3878.152
+  - feature_id: way/257478108
+    area_ratio: 1.00031
+    obstacle_boxes: 7
+    footprint_area_m2: 1875.191
+  - feature_id: way/257478109
+    area_ratio: 1.00138
+    obstacle_boxes: 2
+    footprint_area_m2: 501.928
+  - feature_id: way/257478110
+    area_ratio: 1.02439
+    obstacle_boxes: 6
+    footprint_area_m2: 3973.954
+  - feature_id: way/257478113
+    area_ratio: 1.11249
+    obstacle_boxes: 4
+    footprint_area_m2: 579.028
+  - feature_id: way/257478114
+    area_ratio: 1.08602
+    obstacle_boxes: 8
+    footprint_area_m2: 562.5
+  - feature_id: way/257478115
+    area_ratio: 1.10426
+    obstacle_boxes: 4
+    footprint_area_m2: 524.88
+  - feature_id: way/259362421
+    area_ratio: 1.10706
+    obstacle_boxes: 1
+    footprint_area_m2: 1384.271
+  - feature_id: way/264102752
+    area_ratio: 1.1351
+    obstacle_boxes: 1
+    footprint_area_m2: 3629.692
+  - feature_id: way/264102754
+    area_ratio: 1.04264
+    obstacle_boxes: 4
+    footprint_area_m2: 447.848
+  - feature_id: way/264102758
+    area_ratio: 1.00026
+    obstacle_boxes: 4
+    footprint_area_m2: 5723.78
+  - feature_id: way/264102776
+    area_ratio: 1.01838
+    obstacle_boxes: 5
+    footprint_area_m2: 3128.33
+  - feature_id: way/264102789
+    area_ratio: 1.06218
+    obstacle_boxes: 8
+    footprint_area_m2: 1479.221
+  - feature_id: way/264102808
+    area_ratio: 1.00023
+    obstacle_boxes: 1
+    footprint_area_m2: 573.249
+  - feature_id: way/264102823
+    area_ratio: 1.00182
+    obstacle_boxes: 1
+    footprint_area_m2: 328.304
+  - feature_id: way/264102834
+    area_ratio: 1.00039
+    obstacle_boxes: 1
+    footprint_area_m2: 713.595
+  - feature_id: way/264102836
+    area_ratio: 1.00083
+    obstacle_boxes: 1
+    footprint_area_m2: 279.49
+  - feature_id: way/264102856
+    area_ratio: 1.00227
+    obstacle_boxes: 1
+    footprint_area_m2: 122.835
+  - feature_id: way/264102874
+    area_ratio: 1.00024
+    obstacle_boxes: 1
+    footprint_area_m2: 1279.375
+  - feature_id: way/264102879
+    area_ratio: 1.00455
+    obstacle_boxes: 1
+    footprint_area_m2: 614.79
+  - feature_id: way/264102894
+    area_ratio: 1.00189
+    obstacle_boxes: 1
+    footprint_area_m2: 1617.17
+  - feature_id: way/264102895
+    area_ratio: 1.00025
+    obstacle_boxes: 1
+    footprint_area_m2: 966.394
+  - feature_id: way/264102901
+    area_ratio: 1.0022
+    obstacle_boxes: 1
+    footprint_area_m2: 330.606
+  - feature_id: way/264102928
+    area_ratio: 1.00052
+    obstacle_boxes: 1
+    footprint_area_m2: 464.989
+  - feature_id: way/264102934
+    area_ratio: 1.0024
+    obstacle_boxes: 1
+    footprint_area_m2: 120.255
+  - feature_id: way/264102953
+    area_ratio: 1.00077
+    obstacle_boxes: 1
+    footprint_area_m2: 330.094
+  - feature_id: way/264102962
+    area_ratio: 1.00048
+    obstacle_boxes: 1
+    footprint_area_m2: 1103.839
+  - feature_id: way/264102967
+    area_ratio: 1.00023
+    obstacle_boxes: 1
+    footprint_area_m2: 1188.984
+  - feature_id: way/264102987
+    area_ratio: 1.00055
+    obstacle_boxes: 2
+    footprint_area_m2: 907.574
+  - feature_id: way/264102997
+    area_ratio: 1.06607
+    obstacle_boxes: 1
+    footprint_area_m2: 315.08
+  - feature_id: way/264103000
+    area_ratio: 1.09006
+    obstacle_boxes: 1
+    footprint_area_m2: 495.932
+  - feature_id: way/264103015
+    area_ratio: 1.01529
+    obstacle_boxes: 3
+    footprint_area_m2: 493.359
+  - feature_id: way/264103023
+    area_ratio: 1.12154
+    obstacle_boxes: 1
+    footprint_area_m2: 689.676
+  - feature_id: way/264103042
+    area_ratio: 1.00299
+    obstacle_boxes: 3
+    footprint_area_m2: 369.403
+  - feature_id: way/344712486
+    area_ratio: 1.00163
+    obstacle_boxes: 1
+    footprint_area_m2: 117.074
+  - feature_id: way/344712659
+    area_ratio: 1.00229
+    obstacle_boxes: 1
+    footprint_area_m2: 69.747
+  - feature_id: way/344712680
+    area_ratio: 1.00271
+    obstacle_boxes: 1
+    footprint_area_m2: 149.477
+  - feature_id: way/344722692
+    area_ratio: 1.00057
+    obstacle_boxes: 1
+    footprint_area_m2: 748.538
+  - feature_id: way/344722697
+    area_ratio: 1.08563
+    obstacle_boxes: 1
+    footprint_area_m2: 189.474
+  - feature_id: way/344724216
+    area_ratio: 1.00101
+    obstacle_boxes: 1
+    footprint_area_m2: 108.248
+  - feature_id: way/344724219
+    area_ratio: 1.0018
+    obstacle_boxes: 1
+    footprint_area_m2: 157.866
+  - feature_id: way/344724220
+    area_ratio: 1.00125
+    obstacle_boxes: 1
+    footprint_area_m2: 250.961
+  - feature_id: way/344724221
+    area_ratio: 1.00069
+    obstacle_boxes: 1
+    footprint_area_m2: 319.496
+  - feature_id: way/344724222
+    area_ratio: 1.00075
+    obstacle_boxes: 1
+    footprint_area_m2: 554.634
+  - feature_id: way/344725379
+    area_ratio: 1.00181
+    obstacle_boxes: 1
+    footprint_area_m2: 84.212
+  - feature_id: way/344725403
+    area_ratio: 1.00105
+    obstacle_boxes: 1
+    footprint_area_m2: 103.883
+  - feature_id: way/344727010
+    area_ratio: 1.04787
+    obstacle_boxes: 1
+    footprint_area_m2: 333.714
+  - feature_id: way/344727127
+    area_ratio: 1.00073
+    obstacle_boxes: 1
+    footprint_area_m2: 121.422
+  - feature_id: way/344736803
+    area_ratio: 1.02949
+    obstacle_boxes: 1
+    footprint_area_m2: 814.153
+  - feature_id: way/344928838
+    area_ratio: 1.00366
+    obstacle_boxes: 1
+    footprint_area_m2: 69.226
+  - feature_id: way/344928840
+    area_ratio: 1.00207
+    obstacle_boxes: 1
+    footprint_area_m2: 97.672
+  - feature_id: way/344929201
+    area_ratio: 1.00157
+    obstacle_boxes: 1
+    footprint_area_m2: 294.015
+  - feature_id: way/344929203
+    area_ratio: 1.00335
+    obstacle_boxes: 1
+    footprint_area_m2: 48.394
+  - feature_id: way/344929208
+    area_ratio: 1.00054
+    obstacle_boxes: 1
+    footprint_area_m2: 271.853
+  - feature_id: way/344929647
+    area_ratio: 1.00085
+    obstacle_boxes: 1
+    footprint_area_m2: 212.304
+  - feature_id: way/344929648
+    area_ratio: 1.09064
+    obstacle_boxes: 1
+    footprint_area_m2: 325.419
+  - feature_id: way/344929649
+    area_ratio: 1.00823
+    obstacle_boxes: 2
+    footprint_area_m2: 129.412
+  - feature_id: way/344929650
+    area_ratio: 1.00111
+    obstacle_boxes: 1
+    footprint_area_m2: 52.989
+  - feature_id: way/344930356
+    area_ratio: 1.00141
+    obstacle_boxes: 2
+    footprint_area_m2: 129.31
+  - feature_id: way/344931150
+    area_ratio: 1.00225
+    obstacle_boxes: 1
+    footprint_area_m2: 173.927
+  - feature_id: way/344931151
+    area_ratio: 1.00085
+    obstacle_boxes: 1
+    footprint_area_m2: 611.996
+  - feature_id: way/344931911
+    area_ratio: 1.00212
+    obstacle_boxes: 1
+    footprint_area_m2: 257.395
+  - feature_id: way/344933987
+    area_ratio: 1.00128
+    obstacle_boxes: 1
+    footprint_area_m2: 127.249
+  - feature_id: way/344933988
+    area_ratio: 1.00294
+    obstacle_boxes: 1
+    footprint_area_m2: 66.448
+  - feature_id: way/344933989
+    area_ratio: 1.00125
+    obstacle_boxes: 1
+    footprint_area_m2: 228.139
+  - feature_id: way/344933991
+    area_ratio: 1.00109
+    obstacle_boxes: 1
+    footprint_area_m2: 252.683
+  - feature_id: way/344933992
+    area_ratio: 1.12919
+    obstacle_boxes: 4
+    footprint_area_m2: 207.451
+  - feature_id: way/344933994
+    area_ratio: 1.00103
+    obstacle_boxes: 1
+    footprint_area_m2: 133.678
+  - feature_id: way/344933997
+    area_ratio: 1.00062
+    obstacle_boxes: 1
+    footprint_area_m2: 276.056
+  - feature_id: way/344933999
+    area_ratio: 1.11502
+    obstacle_boxes: 1
+    footprint_area_m2: 232.953
+  - feature_id: way/344934000
+    area_ratio: 1.0014
+    obstacle_boxes: 1
+    footprint_area_m2: 163.092
+  - feature_id: way/344937277
+    area_ratio: 1.00343
+    obstacle_boxes: 1
+    footprint_area_m2: 239.869
+  - feature_id: way/344937278
+    area_ratio: 1.00175
+    obstacle_boxes: 1
+    footprint_area_m2: 61.493
+  - feature_id: way/344937871
+    area_ratio: 1.00086
+    obstacle_boxes: 1
+    footprint_area_m2: 376.118
+  - feature_id: way/344937873
+    area_ratio: 1.00059
+    obstacle_boxes: 1
+    footprint_area_m2: 157.949
+  - feature_id: way/344937875
+    area_ratio: 1.00073
+    obstacle_boxes: 1
+    footprint_area_m2: 118.122
+  - feature_id: way/344938474
+    area_ratio: 1.00104
+    obstacle_boxes: 1
+    footprint_area_m2: 114.279
+  - feature_id: way/347219442
+    area_ratio: 1.12133
+    obstacle_boxes: 4
+    footprint_area_m2: 462.428
+  - feature_id: way/348846088
+    area_ratio: 1.00064
+    obstacle_boxes: 1
+    footprint_area_m2: 111.4
+  - feature_id: way/348846147
+    area_ratio: 1.00142
+    obstacle_boxes: 1
+    footprint_area_m2: 93.649
+  - feature_id: way/349454280
+    area_ratio: 1.00116
+    obstacle_boxes: 1
+    footprint_area_m2: 214.65
+  - feature_id: way/1298939998
+    area_ratio: 1.00064
+    obstacle_boxes: 2
+    footprint_area_m2: 1946.13
+  - feature_id: way/1312163702
+    area_ratio: 1.00227
+    obstacle_boxes: 1
+    footprint_area_m2: 244.013
+  - feature_id: way/1312163703
+    area_ratio: 1.00216
+    obstacle_boxes: 1
+    footprint_area_m2: 228.488
+  - feature_id: way/1312163704
+    area_ratio: 1.00237
+    obstacle_boxes: 1
+    footprint_area_m2: 152.312
+  - feature_id: way/1312163705
+    area_ratio: 1.00236
+    obstacle_boxes: 1
+    footprint_area_m2: 166.804
+  - feature_id: way/1312163706
+    area_ratio: 1.0023
+    obstacle_boxes: 1
+    footprint_area_m2: 355.89
+  - feature_id: way/1312163708
+    area_ratio: 1.04749
+    obstacle_boxes: 2
+    footprint_area_m2: 2075.616
+  - feature_id: way/1312163709
+    area_ratio: 1.00077
+    obstacle_boxes: 1
+    footprint_area_m2: 383.082
+  - feature_id: way/1312163710
+    area_ratio: 1.00136
+    obstacle_boxes: 1
+    footprint_area_m2: 247.605
+  - feature_id: way/1312163711
+    area_ratio: 1.00019
+    obstacle_boxes: 1
+    footprint_area_m2: 1257.221
+  - feature_id: way/1312163717
+    area_ratio: 1.00043
+    obstacle_boxes: 1
+    footprint_area_m2: 484.463
+  - feature_id: way/1312163718
+    area_ratio: 1.0954
+    obstacle_boxes: 8
+    footprint_area_m2: 450.541
+  - feature_id: way/1312163719
+    area_ratio: 1.00111
+    obstacle_boxes: 1
+    footprint_area_m2: 192.374
+  - feature_id: way/1312163720
+    area_ratio: 1.00127
+    obstacle_boxes: 1
+    footprint_area_m2: 174.504
+  - feature_id: way/1312163721
+    area_ratio: 1.00089
+    obstacle_boxes: 1
+    footprint_area_m2: 2547.224
+  - feature_id: way/1346135039
+    area_ratio: 1.12909
+    obstacle_boxes: 1
+    footprint_area_m2: 792.108
+  coverage_area_ratio_mean: 1.02932
+  coverage_area_ratio_max: 1.14959
+  buildings_over_area_ratio: 0
+layout_file: bengaluru_ecity_phase1_rotated_v2_layout.yaml
+preview_file: bengaluru_ecity_phase1_rotated_v2_preview.png
