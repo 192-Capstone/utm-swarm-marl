@@ -58,7 +58,7 @@ the exact geometry.
 
 import numpy as np
 
-from envs.scenario_manager import surface_distance
+from envs.scenario_manager import surface_distance, box_frame
 
 
 def closest_point(ob, q):
@@ -69,12 +69,19 @@ def closest_point(ob, q):
         n = np.linalg.norm(d)
         return c + (d / n if n > 1e-9 else np.array([1.0, 0.0])) * ob['radius']
     hx, hy = ob['half']
-    rel = q - c
+    rel = np.array(box_frame(ob, q))                       # in the box's own axes (handles 'yaw')
     if abs(rel[0]) <= hx and abs(rel[1]) <= hy:            # inside: nearest edge
         if hx - abs(rel[0]) < hy - abs(rel[1]):
-            return c + np.array([np.sign(rel[0]) * hx, rel[1]])
-        return c + np.array([rel[0], np.sign(rel[1]) * hy])
-    return c + np.array([np.clip(rel[0], -hx, hx), np.clip(rel[1], -hy, hy)])
+            local = np.array([np.sign(rel[0]) * hx, rel[1]])
+        else:
+            local = np.array([rel[0], np.sign(rel[1]) * hy])
+    else:
+        local = np.array([np.clip(rel[0], -hx, hx), np.clip(rel[1], -hy, hy)])
+    yaw = ob.get('yaw', 0.0)
+    if yaw:                                                # back to world axes
+        cy, sy = np.cos(yaw), np.sin(yaw)
+        local = np.array([cy * local[0] - sy * local[1], sy * local[0] + cy * local[1]])
+    return c + local
 
 
 class RepulsionController:

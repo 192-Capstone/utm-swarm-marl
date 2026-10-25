@@ -171,6 +171,7 @@ class PyBulletAdapter:
             body = p.createMultiBody(baseMass=0.0, baseCollisionShapeIndex=col,
                                      baseVisualShapeIndex=vis,
                                      basePosition=[ob['center'][0], ob['center'][1], h / 2],
+                                     baseOrientation=p.getQuaternionFromEuler([0, 0, ob.get('yaw', 0.0)]),
                                      physicsClientId=self.client)
             if not contact:
                 for d in self.drone_ids:

@@ -9,7 +9,11 @@ reason about it without asking the simulator.
 Two obstacle types, both tall enough that drones (flying at 1-5 m) can't go
 over them and have to go around:
     pillar : vertical cylinder   {'type': 'pillar', 'center': (x, y), 'radius': r,      'height': h}
-    box    : axis-aligned block  {'type': 'box',    'center': (x, y), 'half': (hx, hy), 'height': h}
+    box    : rectangular block   {'type': 'box',    'center': (x, y), 'half': (hx, hy), 'height': h,
+                                  'yaw': a}
+The optional box 'yaw' (radians, counter-clockwise about z) rotates the block; half = (hx, hy)
+are its half-sizes along its own axes. Without 'yaw' the box is axis-aligned, as before (a real
+map's buildings, e.g. from OpenStreetMap, are rarely aligned with north-south).
 
 Placement: obstacles that never stand in anyone's way teach nothing, so a share
 of them is placed ON a drone's straight path (between 30% and 70% of the way
@@ -54,10 +58,21 @@ def obstacle_config(config):
 
 
 # --------------------------------------------------------------- geometry ---
+def box_frame(ob, point):
+    """A point relative to the obstacle's centre, in the obstacle's own axes
+    (rotated by -yaw for a rotated box; just shifted otherwise)."""
+    px, py = point[0] - ob['center'][0], point[1] - ob['center'][1]
+    yaw = ob.get('yaw', 0.0)
+    if yaw:
+        c, s = np.cos(yaw), np.sin(yaw)
+        px, py = c * px + s * py, -s * px + c * py
+    return px, py
+
+
 def surface_distance(ob, point):
     """Horizontal distance from a point to the obstacle's surface (negative
     inside). Height is handled separately (obstacles start at the ground)."""
-    px, py = point[0] - ob['center'][0], point[1] - ob['center'][1]
+    px, py = box_frame(ob, point)
     if ob['type'] == 'pillar':
         return float(np.hypot(px, py) - ob['radius'])
     hx, hy = ob['half']
