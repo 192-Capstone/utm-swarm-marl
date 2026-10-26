@@ -1,3 +1,4 @@
+
 """D7 route planner benchmark."""
 import time
 import statistics
@@ -10,8 +11,12 @@ from envs.osm_scenario import load_osm_layout, layout_bounds
 from envs.route_planner import build_grid, plan, simplify
 from envs.scenario_manager import DRONE_RADIUS
 
-CROP = Path("data/osm_city/bengaluru_ecity_phase1_rotated_v2_crop50_cand1_layout.yaml")
-FULL = Path("data/osm_city/bengaluru_ecity_phase1_rotated_v2_layout.yaml")
+CROP = Path(
+    "data/osm_city/bengaluru_ecity_phase1_rotated_v2_crop50_cand1_layout.yaml"
+)
+FULL = Path(
+    "data/osm_city/bengaluru_ecity_phase1_rotated_v2_layout.yaml"
+)
 PAIRS = 20
 SEEDS = range(5)
 
@@ -31,6 +36,7 @@ def run_benchmark(name, grid, seed, grid_build_s):
     for i in range(PAIRS):
         a = free[rng.randint(len(free))]
         b = free[rng.randint(len(free))]
+
         while np.array_equal(a, b):
             b = free[rng.randint(len(free))]
 
@@ -44,9 +50,11 @@ def run_benchmark(name, grid, seed, grid_build_s):
 
         if path is not None:
             successes += 1
+
             t0 = time.perf_counter()
             simplified = simplify(grid, path)
             simplify_time = time.perf_counter() - t0
+
             waypoint_counts.append(len(simplified))
         else:
             simplify_time = 0.0
@@ -73,7 +81,12 @@ def run_benchmark(name, grid, seed, grid_build_s):
 
 def make_grid(layout, bounds, res, inflate):
     t0 = time.perf_counter()
-    grid = build_grid(layout, bounds=bounds, res=res, inflate=inflate)
+    grid = build_grid(
+        layout,
+        bounds=bounds,
+        res=res,
+        inflate=inflate,
+    )
     return grid, time.perf_counter() - t0
 
 
@@ -83,7 +96,11 @@ def main():
     # Procedural cities: five seeds per difficulty.
     for level in ("easy", "medium", "hard"):
         for seed in SEEDS:
-            city = generate_city(np.random.RandomState(seed), level=level)
+            city = generate_city(
+                np.random.RandomState(seed),
+                level=level,
+            )
+
             width, height = city["size"]
             bounds = (
                 (-width / 2, width / 2),
@@ -96,23 +113,45 @@ def main():
                 res=city["res"],
                 inflate=DRONE_RADIUS + 0.35,
             )
-            rows.append(run_benchmark(
-                f"city-{level}", grid, seed, build_s
-            ))
 
-    # OSM crop: one map, 20 pairs.
+            rows.append(
+                run_benchmark(
+                    f"city-{level}",
+                    grid,
+                    seed,
+                    build_s,
+                )
+            )
+
+    # OSM crop: exact crop bounds, 20 pairs.
     crop = load_osm_layout(CROP)
-    grid, build_s = make_grid(
-        crop, ((-25, 25), (-25, 25)), res=0.25, inflate=0.5
-    )
-    rows.append(run_benchmark("osm-crop", grid, 0, build_s))
 
-    # Full OSM: one map, 20 pairs at 0.5 m resolution.
+    grid, build_s = make_grid(
+        crop,
+        ((-25, 25), (-25, 25)),
+        res=0.25,
+        inflate=0.5,
+    )
+
+    rows.append(
+        run_benchmark("osm-crop", grid, 0, build_s)
+    )
+
+    # Full OSM: use the exact layout bounds, at 0.5 m resolution.
     full = load_osm_layout(FULL)
     xmin, ymin, xmax, ymax = layout_bounds(full)
-    bounds = ((xmin - 3, xmax + 3), (ymin - 3, ymax + 3))
-    grid, build_s = make_grid(full, bounds, res=0.5, inflate=0.5)
-    rows.append(run_benchmark("osm-full", grid, 0, build_s))
+    bounds = ((xmin, xmax), (ymin, ymax))
+
+    grid, build_s = make_grid(
+        full,
+        bounds,
+        res=0.5,
+        inflate=0.5,
+    )
+
+    rows.append(
+        run_benchmark("osm-full", grid, 0, build_s)
+    )
 
     print("\nD7 ROUTE PLANNER BENCHMARK RESULTS")
     print(
