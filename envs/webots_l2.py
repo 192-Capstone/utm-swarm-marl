@@ -27,7 +27,7 @@ import numpy as np
 
 from envs import lidar as lidar_mod
 from envs.webots_adapter import (WebotsAdapter, scan_lidar, PILLAR_NODE, BOX_NODE,
-                                 ROOT, _euler_from_matrix)
+                                 ROOT, _euler_from_matrix, _note_lag_ignored)
 import os
 
 L2_WORLD = os.path.join(ROOT, 'webots', 'worlds', 'swarm_l2.wbt')
@@ -100,6 +100,7 @@ class WebotsL2Adapter(WebotsAdapter):
         self._vel_report = None
         self.goals, self.layout, self._heading = {}, [], {}
         self.lidar_cfg = lidar_mod.lidar_config(config)
+        _note_lag_ignored(config)
         self._start_webots(gui, config['webots'])
         self.basic_ms = int(round(self.sup.getBasicTimeStep()))
         self.dt = self.basic_ms / 1000.0
@@ -143,6 +144,7 @@ class WebotsL2Adapter(WebotsAdapter):
         # setpoint = current altitude, zero velocity command
         self.pid.reset(integrator=(HOVER_RAD_S - 48.0) / VelocityPID.G["ki_z"])
         self.cmd[:] = 0.0
+        self.hold = None
         self.z_des = start[2]
         self._set_motors([HOVER_RAD_S] * 4)
         # hold the drone at the spawn while the rotors spin up to hover speed
@@ -168,6 +170,16 @@ class WebotsL2Adapter(WebotsAdapter):
         self._orn[0] = _euler_from_matrix(self.node.getOrientation())
 
     # -------------------------------------------------------------- control
+    def set_position_hold(self, goal=None, gain=1.0, v_cap=0.3):
+        """Hand control to a position hold at `goal` (x, y, z), or back to the policy
+        (goal=None). Bitcraze's velocity controller has no x/y position mode, so this is a
+        simple outer loop run every basic step on the GPS position (as onboard):
+        horizontal velocity setpoint = gain * (goal - position), capped at v_cap m/s;
+        altitude setpoint = goal z. While holding, apply_actions is ignored."""
+        self.hold = None if goal is None else (np.asarray(goal, dtype=np.float64), float(gain), float(v_cap))
+        if self.hold is not None:
+            self.z_des = float(self.hold[0][2])
+
     def apply_actions(self, actions: dict):
         a = actions['drone_0']
         self.cmd = np.clip(np.asarray(a[:3], dtype=np.float64), -self.v_max, self.v_max)
@@ -182,9 +194,19 @@ class WebotsL2Adapter(WebotsAdapter):
             cy, sy = math.cos(yaw), math.sin(yaw)
             vx_b = v_world[0] * cy + v_world[1] * sy
             vy_b = -v_world[0] * sy + v_world[1] * cy
-            cx_b = self.cmd[0] * cy + self.cmd[1] * sy
-            cy_b = -self.cmd[0] * sy + self.cmd[1] * cy
-            self.z_des = max(0.2, self.z_des + self.cmd[2] * self.dt)
+            if getattr(self, 'hold', None) is not None:      # position hold (outer loop)
+                goal, gain, cap = self.hold
+                vxy = gain * (goal[:2] - g[:2])
+                n = float(np.linalg.norm(vxy))
+                if n > cap:
+                    vxy *= cap / n
+                cmd = np.array([vxy[0], vxy[1], 0.0])
+                self.z_des = float(goal[2])
+            else:
+                cmd = self.cmd
+                self.z_des = max(0.2, self.z_des + cmd[2] * self.dt)
+            cx_b = cmd[0] * cy + cmd[1] * sy
+            cy_b = -cmd[0] * sy + cmd[1] * cy
             m = self.pid(self.dt, cx_b, cy_b, 0.0, self.z_des, roll, pitch, yaw_rate, g[2], vx_b, vy_b)
             self._set_motors(m)
             if self.sup.step(self.basic_ms) == -1:
