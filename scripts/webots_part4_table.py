@@ -17,6 +17,13 @@ for f in glob.glob(f'{ROOT}/*.json'):
     D[(r['variant'], r['test'])] = r['episodes']
 
 
+def lost(x):
+    """Loss of control: the drone flipped / tumbled (true speed > 3 m/s, which a 2 m/s-per-axis
+    command can't explain, or |roll| / |pitch| > 60 deg where tilt is logged)."""
+    t = x.get('tilt_deg')
+    return x['max_speed'] > 3.0 or (t is not None and max(t['roll_max'], t['pitch_max']) > 60.0)
+
+
 def pct(x):
     return f'{100 * np.mean(x):.1f}' if len(x) else '-'
 
@@ -31,8 +38,8 @@ def exact_mcnemar(b, c):
 
 
 print('### Outcomes (validation seeds 20-24 x 100 episodes = 500 per test)')
-print('| variant | test | strict success | success @0.20 m/s | ended within 0.5 m | crashes | timeouts: inside goal, moving | 0.5-1 m short | stuck > 1 m |')
-print('|---|---|---|---|---|---|---|---|---|')
+print('| variant | test | strict success | success @0.20 m/s | ended within 0.5 m | crashes | timeouts: inside goal, moving | 0.5-1 m short | stuck > 1 m | lost control (flip), counted in crashes/timeouts |')
+print('|---|---|---|---|---|---|---|---|---|---|')
 for v in V:
     rows_all = []
     for t in T + ['ALL']:
@@ -44,10 +51,11 @@ for v in V:
         label = f'**{t} ({n})**' if t == 'ALL' else f'{t} ({n})'
         print(f"| {v} {NAMES[v]} | {label} | {pct([x['success_strict'] for x in e])} | {pct([x['success_020'] for x in e])} | "
               f"{pct([x['ended_within_0.5'] for x in e])} | {pct([x['outcome'] == 'collision' for x in e])} | "
-              f"{100 * to.count('inside_moving') / n:.1f} | {100 * to.count('short_0.5_1') / n:.1f} | {100 * to.count('stuck_gt1') / n:.1f} |")
+              f"{100 * to.count('inside_moving') / n:.1f} | {100 * to.count('short_0.5_1') / n:.1f} | {100 * to.count('stuck_gt1') / n:.1f} | "
+              f"{sum(lost(x) for x in e)} |")
 
 print('\n### At the goal')
-print('| variant | test | median speed inside goal sphere (m/s) | longest still stretch, median (steps < 0.15 m/s) | time to settle after first entry, median (s) | flights that entered the goal sphere |')
+print('| variant | test | median speed inside goal sphere (m/s) | longest still stretch in failed flights that reached the sphere, median (steps < 0.15 m/s; 31 = settle) | time to settle after first entry, median (s) | flights that entered the goal sphere |')
 print('|---|---|---|---|---|---|')
 for v in V:
     for t in T + ['ALL']:
@@ -56,10 +64,10 @@ for v in V:
             continue
         ent = [x for x in e if x['first_entry_step'] is not None]
         ms = [x['median_speed_in_goal'] for x in ent if x['median_speed_in_goal'] is not None]
-        ls = [x['longest_still_in_goal'] for x in ent]
+        ls = [x['longest_still_in_goal'] for x in ent if not x['success_strict']]
         ts = [x['time_to_settle_s'] for x in ent if x['time_to_settle_s'] is not None]
         label = f'**{t}**' if t == 'ALL' else t
-        print(f"| {v} | {label} | {np.median(ms):.3f} | {np.median(ls):.0f} | {np.median(ts) if ts else float('nan'):.2f} | {len(ent)}/{len(e)} |")
+        print(f"| {v} | {label} | {np.median(ms):.3f} | {(f'{np.median(ls):.0f} (n={len(ls)})') if ls else '-'} | {np.median(ts) if ts else float('nan'):.2f} | {len(ent)}/{len(e)} |")
 
 print('\n### V1 vs V2 on matched episodes (exact McNemar, strict rule)')
 print('| test | matched pairs | both succeed | only V1 | only V2 | neither | V1 | V2 | exact p |')
