@@ -1,0 +1,2799 @@
+- type: box
+  center:
+  - 128.6733
+  - 99.4312
+  half:
+  - 7.329
+  - 2.838
+  height: 12.0
+  yaw: -0.50637326
+- type: box
+  center:
+  - 119.9828
+  - 96.1288
+  half:
+  - 6.239
+  - 2.184
+  height: 12.0
+  yaw: -1.51950698
+- type: box
+  center:
+  - 105.7707
+  - 60.8346
+  half:
+  - 3.779
+  - 2.298
+  height: 12.0
+  yaw: -1.43358396
+- type: box
+  center:
+  - 83.9106
+  - 57.1826
+  half:
+  - 20.915
+  - 2.017
+  height: 12.0
+  yaw: -0.080547
+- type: box
+  center:
+  - 95.2161
+  - 125.7706
+  half:
+  - 5.432
+  - 5.34
+  height: 12.0
+  yaw: -0.92303913
+- type: box
+  center:
+  - 132.3642
+  - 101.0411
+  half:
+  - 9.723
+  - 1.073
+  height: 12.0
+  yaw: -0.35955133
+- type: box
+  center:
+  - 117.2919
+  - 93.4684
+  half:
+  - 8.646
+  - 1.54
+  height: 12.0
+  yaw: 1.37294805
+- type: box
+  center:
+  - 83.3159
+  - 57.2322
+  half:
+  - 20.448
+  - 2.409
+  height: 12.0
+  yaw: -0.09977471
+- type: box
+  center:
+  - 113.3082
+  - 115.1724
+  half:
+  - 13.75
+  - 3.462
+  height: 12.0
+  yaw: -1.00078033
+- type: box
+  center:
+  - 113.13
+  - 115.4498
+  half:
+  - 13.409
+  - 3.677
+  height: 12.0
+  yaw: -0.98478109
+- type: box
+  center:
+  - 84.5551
+  - 75.9055
+  half:
+  - 24.021
+  - 5.846
+  height: 12.0
+  yaw: -0.19363617
+- type: box
+  center:
+  - 86.6435
+  - 83.4843
+  half:
+  - 24.117
+  - 5.302
+  height: 12.0
+  yaw: -0.32911933
+- type: box
+  center:
+  - 133.8293
+  - 181.5164
+  half:
+  - 19.087
+  - 3.589
+  height: 12.0
+  yaw: -0.17127449
+- type: box
+  center:
+  - 106.7125
+  - 159.554
+  half:
+  - 23.187
+  - 2.593
+  height: 12.0
+  yaw: 1.34327625
+- type: box
+  center:
+  - 100.7378
+  - 117.0437
+  half:
+  - 20.97
+  - 7.727
+  height: 12.0
+  yaw: -0.37072749
+- type: box
+  center:
+  - 92.8666
+  - 99.6651
+  half:
+  - 24.744
+  - 12.092
+  height: 12.0
+  yaw: -0.33183832
+- type: box
+  center:
+  - 127.3742
+  - 140.4758
+  half:
+  - 38.339
+  - 22.163
+  height: 12.0
+  yaw: 1.37948107
+- type: box
+  center:
+  - 83.3615
+  - 66.0612
+  half:
+  - 24.178
+  - 6.638
+  height: 12.0
+  yaw: -0.08780883
+- type: box
+  center:
+  - 17.6689
+  - 200.8341
+  half:
+  - 13.147
+  - 0.378
+  height: 12.0
+  yaw: -0.90514709
+- type: box
+  center:
+  - 48.2417
+  - 198.2413
+  half:
+  - 39.402
+  - 9.751
+  height: 12.0
+  yaw: -0.08771723
+- type: box
+  center:
+  - 14.8141
+  - 136.8562
+  half:
+  - 15.891
+  - 6.768
+  height: 12.0
+  yaw: 1.48667582
+- type: box
+  center:
+  - 32.3406
+  - 111.4388
+  half:
+  - 13.049
+  - 9.231
+  height: 12.0
+  yaw: -0.10701431
+- type: box
+  center:
+  - 12.6989
+  - 113.5126
+  half:
+  - 9.231
+  - 6.754
+  height: 12.0
+  yaw: 1.4691112
+- type: box
+  center:
+  - 5.5713
+  - 137.5594
+  half:
+  - 15.967
+  - 2.504
+  height: 12.0
+  yaw: 1.48667572
+- type: box
+  center:
+  - 16.8138
+  - 185.2775
+  half:
+  - 24.339
+  - 9.318
+  height: 12.0
+  yaw: 1.48101097
+- type: box
+  center:
+  - 7.9079
+  - 86.3368
+  half:
+  - 26.858
+  - 9.332
+  height: 12.0
+  yaw: 1.50057099
+- type: box
+  center:
+  - 42.7486
+  - 154.541
+  half:
+  - 33.095
+  - 9.59
+  height: 12.0
+  yaw: -0.09064261
+- type: box
+  center:
+  - 209.9883
+  - 106.2083
+  half:
+  - 4.024
+  - 3.664
+  height: 12.0
+  yaw: -0.92820777
+- type: box
+  center:
+  - 204.179
+  - 60.9352
+  half:
+  - 20.171
+  - 4.358
+  height: 12.0
+  yaw: -0.07826645
+- type: box
+  center:
+  - 202.7924
+  - 81.0086
+  half:
+  - 20.013
+  - 4.441
+  height: 12.0
+  yaw: 0.18774817
+- type: box
+  center:
+  - 182.9201
+  - 104.2316
+  half:
+  - 18.887
+  - 2.375
+  height: 12.0
+  yaw: 0.33923413
+- type: box
+  center:
+  - 180.1308
+  - 105.9601
+  half:
+  - 20.874
+  - 1.695
+  height: 12.0
+  yaw: 0.24943333
+- type: box
+  center:
+  - 186.086
+  - 102.0567
+  half:
+  - 17.221
+  - 3.136
+  height: 12.0
+  yaw: 0.4774888
+- type: box
+  center:
+  - 201.0912
+  - 84.9178
+  half:
+  - 20.49
+  - 4.226
+  height: 12.0
+  yaw: 0.40794258
+- type: box
+  center:
+  - 189.3859
+  - 99.7744
+  half:
+  - 16.559
+  - 3.791
+  height: 12.0
+  yaw: 0.67966045
+- type: box
+  center:
+  - 187.9894
+  - 133.5643
+  half:
+  - 36.016
+  - 21.992
+  height: 12.0
+  yaw: 1.37737411
+- type: box
+  center:
+  - 196.8446
+  - 95.4211
+  half:
+  - 20.073
+  - 7.509
+  height: 12.0
+  yaw: 0.42814021
+- type: box
+  center:
+  - 200.3345
+  - 48.9765
+  half:
+  - 21.752
+  - 12.27
+  height: 12.0
+  yaw: -0.27712532
+- type: box
+  center:
+  - 204.3294
+  - 70.8427
+  half:
+  - 20.206
+  - 8.367
+  height: 12.0
+  yaw: 0.06101046
+- type: box
+  center:
+  - 194.4616
+  - 171.2493
+  half:
+  - 11.606
+  - 2.428
+  height: 12.0
+  yaw: -0.20044977
+- type: box
+  center:
+  - 107.0717
+  - -10.0173
+  half:
+  - 34.835
+  - 22.956
+  height: 9.0
+  yaw: 1.37591051
+- type: box
+  center:
+  - 323.6571
+  - 132.8926
+  half:
+  - 45.355
+  - 1.738
+  height: 12.0
+  yaw: -0.9583081
+- type: box
+  center:
+  - 281.1509
+  - 96.6628
+  half:
+  - 49.008
+  - 2.665
+  height: 12.0
+  yaw: -0.80493524
+- type: box
+  center:
+  - 303.6061
+  - 115.4966
+  half:
+  - 48.693
+  - 29.285
+  height: 12.0
+  yaw: -0.85967203
+- type: box
+  center:
+  - 264.2198
+  - 160.2539
+  half:
+  - 30.617
+  - 12.634
+  height: 12.0
+  yaw: 0.65869588
+- type: box
+  center:
+  - 353.5749
+  - -56.9695
+  half:
+  - 51.685
+  - 13.478
+  height: 12.0
+  yaw: -0.05683486
+- type: box
+  center:
+  - 344.481
+  - -29.4554
+  half:
+  - 40.368
+  - 13.478
+  height: 12.0
+  yaw: -0.05683486
+- type: box
+  center:
+  - 190.4728
+  - 192.0411
+  half:
+  - 38.45
+  - 2.433
+  height: 12.0
+  yaw: -0.13080006
+- type: box
+  center:
+  - 149.3318
+  - 203.0171
+  half:
+  - 3.804
+  - 3.322
+  height: 12.0
+  yaw: -0.14069977
+- type: box
+  center:
+  - 106.4949
+  - 229.6214
+  half:
+  - 42.043
+  - 17.745
+  height: 12.0
+  yaw: -0.12340886
+- type: box
+  center:
+  - 82.6166
+  - 234.2685
+  half:
+  - 21.515
+  - 15.169
+  height: 12.0
+  yaw: 1.32023619
+- type: box
+  center:
+  - 172.5039
+  - 212.9676
+  half:
+  - 76.919
+  - 17.739
+  height: 12.0
+  yaw: -0.23436456
+- type: box
+  center:
+  - 268.6009
+  - -36.6396
+  half:
+  - 17.929
+  - 2.226
+  height: 12.0
+  yaw: -1.50527246
+- type: box
+  center:
+  - 260.0483
+  - -39.1528
+  half:
+  - 24.539
+  - 3.425
+  height: 12.0
+  yaw: 1.48583838
+- type: box
+  center:
+  - 237.4318
+  - -37.2442
+  half:
+  - 25.701
+  - 3.684
+  height: 12.0
+  yaw: 1.48591459
+- type: box
+  center:
+  - 230.6803
+  - -36.6837
+  half:
+  - 22.832
+  - 3.095
+  height: 12.0
+  yaw: 1.48585797
+- type: box
+  center:
+  - 263.2987
+  - -36.9898
+  half:
+  - 22.829
+  - 3.092
+  height: 12.0
+  yaw: -1.50521304
+- type: box
+  center:
+  - 225.3797
+  - -36.24
+  half:
+  - 17.933
+  - 2.228
+  height: 12.0
+  yaw: 1.48591033
+- type: box
+  center:
+  - 222.0011
+  - -35.9554
+  half:
+  - 11.439
+  - 1.167
+  height: 12.0
+  yaw: 1.4860418
+- type: box
+  center:
+  - 271.1128
+  - -40.0776
+  half:
+  - 14.847
+  - 2.309
+  height: 12.0
+  yaw: 1.48589822
+- type: box
+  center:
+  - 248.8701
+  - -38.2099
+  half:
+  - 26.29
+  - 7.798
+  height: 12.0
+  yaw: 1.48591459
+- type: box
+  center:
+  - 176.1458
+  - -24.2868
+  half:
+  - 33.003
+  - 23.67
+  height: 9.0
+  yaw: 1.37575786
+- type: box
+  center:
+  - 326.2268
+  - -123.9729
+  half:
+  - 39.379
+  - 19.492
+  height: 12.0
+  yaw: -0.08085755
+- type: box
+  center:
+  - 295.3991
+  - 32.4905
+  half:
+  - 18.794
+  - 17.966
+  height: 12.0
+  yaw: 0.6070737
+- type: box
+  center:
+  - 291.8598
+  - -190.1411
+  half:
+  - 7.623
+  - 1.856
+  height: 12.0
+  yaw: -0.29122028
+- type: box
+  center:
+  - 337.7282
+  - -193.4486
+  half:
+  - 4.05
+  - 2.237
+  height: 12.0
+  yaw: 0.73720074
+- type: box
+  center:
+  - 354.797
+  - -209.0456
+  half:
+  - 20.004
+  - 2.465
+  height: 12.0
+  yaw: 1.51132229
+- type: box
+  center:
+  - 281.2181
+  - -206.4377
+  half:
+  - 16.818
+  - 2.741
+  height: 12.0
+  yaw: 1.51231167
+- type: box
+  center:
+  - 292.9521
+  - -190.4863
+  half:
+  - 7.783
+  - 2.034
+  height: 12.0
+  yaw: -0.31622617
+- type: box
+  center:
+  - 341.4944
+  - -194.0163
+  half:
+  - 6.392
+  - 1.157
+  height: 12.0
+  yaw: 0.44768061
+- type: box
+  center:
+  - 351.8975
+  - -210.5273
+  half:
+  - 18.883
+  - 2.832
+  height: 12.0
+  yaw: -1.49941819
+- type: box
+  center:
+  - 282.8652
+  - -204.4318
+  half:
+  - 17.962
+  - 7.309
+  height: 12.0
+  yaw: 0.9040409
+- type: box
+  center:
+  - 345.8358
+  - -212.0953
+  half:
+  - 18.898
+  - 6.23
+  height: 12.0
+  yaw: -1.34905486
+- type: box
+  center:
+  - 317.9453
+  - -211.1402
+  half:
+  - 39.403
+  - 15.018
+  height: 12.0
+  yaw: -0.07740919
+- type: box
+  center:
+  - 317.2897
+  - -192.3515
+  half:
+  - 6.901
+  - 3.807
+  height: 12.0
+  yaw: -0.05682577
+- type: box
+  center:
+  - 149.2572
+  - -128.5889
+  half:
+  - 6.773
+  - 1.892
+  height: 12.0
+  yaw: -0.36280954
+- type: box
+  center:
+  - 98.5124
+  - -122.8459
+  half:
+  - 10.221
+  - 3.732
+  height: 12.0
+  yaw: -0.04354039
+- type: box
+  center:
+  - 136.6622
+  - -114.4621
+  half:
+  - 11.001
+  - 2.027
+  height: 12.0
+  yaw: 0.8355526
+- type: box
+  center:
+  - 99.8317
+  - -108.6146
+  half:
+  - 17.915
+  - 10.038
+  height: 12.0
+  yaw: 1.47727782
+- type: box
+  center:
+  - 139.8229
+  - -115.73
+  half:
+  - 10.636
+  - 3.256
+  height: 12.0
+  yaw: 1.02723406
+- type: box
+  center:
+  - 107.5478
+  - -105.0607
+  half:
+  - 16.758
+  - 14.422
+  height: 12.0
+  yaw: -0.04864706
+- type: box
+  center:
+  - 132.5763
+  - -112.9354
+  half:
+  - 9.424
+  - 8.621
+  height: 12.0
+  yaw: -0.06490781
+- type: box
+  center:
+  - 159.6305
+  - -117.4087
+  half:
+  - 18.726
+  - 15.445
+  height: 12.0
+  yaw: 1.49344851
+- type: box
+  center:
+  - 143.4255
+  - -113.0564
+  half:
+  - 12.178
+  - 2.638
+  height: 12.0
+  yaw: 1.36551546
+- type: box
+  center:
+  - 94.5119
+  - -167.6676
+  half:
+  - 9.539
+  - 4.097
+  height: 12.0
+  yaw: -0.04945674
+- type: box
+  center:
+  - 123.8516
+  - -192.0707
+  half:
+  - 6.633
+  - 1.587
+  height: 12.0
+  yaw: 0.18738397
+- type: box
+  center:
+  - 134.7812
+  - -181.4513
+  half:
+  - 8.579
+  - 3.139
+  height: 12.0
+  yaw: 1.37975696
+- type: box
+  center:
+  - 121.6247
+  - -183.2731
+  half:
+  - 7.98
+  - 6.615
+  height: 12.0
+  yaw: -1.31005182
+- type: box
+  center:
+  - 126.5445
+  - -180.3267
+  half:
+  - 8.119
+  - 5.164
+  height: 12.0
+  yaw: 1.37975628
+- type: box
+  center:
+  - 154.514
+  - -180.7428
+  half:
+  - 17.547
+  - 17.155
+  height: 12.0
+  yaw: 1.45294113
+- type: box
+  center:
+  - 100.787
+  - -181.9859
+  half:
+  - 17.715
+  - 16.913
+  height: 12.0
+  yaw: 1.49907039
+- type: box
+  center:
+  - -190.0992
+  - 106.7515
+  half:
+  - 60.51
+  - 24.67
+  height: 12.0
+  yaw: -0.09937929
+- type: box
+  center:
+  - -80.251
+  - 54.511
+  half:
+  - 23.306
+  - 9.604
+  height: 12.0
+  yaw: -0.09558854
+- type: box
+  center:
+  - -43.4802
+  - -152.2611
+  half:
+  - 3.846
+  - 0.434
+  height: 12.0
+  yaw: -0.38581093
+- type: box
+  center:
+  - -44.7529
+  - -152.1711
+  half:
+  - 2.731
+  - 0.402
+  height: 12.0
+  yaw: -0.54505211
+- type: box
+  center:
+  - -42.1082
+  - -152.1243
+  half:
+  - 5.027
+  - 0.655
+  height: 12.0
+  yaw: -0.21511711
+- type: box
+  center:
+  - -40.8112
+  - -151.5551
+  half:
+  - 6.126
+  - 0.781
+  height: 12.0
+  yaw: -0.0592937
+- type: box
+  center:
+  - -17.9366
+  - -96.1839
+  half:
+  - 11.924
+  - 1.517
+  height: 12.0
+  yaw: -0.21438383
+- type: box
+  center:
+  - -23.674
+  - -89.5096
+  half:
+  - 8.27
+  - 3.905
+  height: 12.0
+  yaw: 0.56090452
+- type: box
+  center:
+  - -30.776
+  - -142.1767
+  half:
+  - 9.115
+  - 3.508
+  height: 12.0
+  yaw: 1.52999163
+- type: box
+  center:
+  - -28.1754
+  - -106.6961
+  half:
+  - 8.753
+  - 4.207
+  height: 12.0
+  yaw: -1.05188417
+- type: box
+  center:
+  - -17.3727
+  - -101.5037
+  half:
+  - 12.964
+  - 9.061
+  height: 12.0
+  yaw: -0.86883902
+- type: box
+  center:
+  - -43.32
+  - -128.6852
+  half:
+  - 6.288
+  - 4.394
+  height: 12.0
+  yaw: -0.17493088
+- type: box
+  center:
+  - -43.2461
+  - -139.4255
+  half:
+  - 12.95
+  - 11.238
+  height: 12.0
+  yaw: -0.05356067
+- type: box
+  center:
+  - -51.3302
+  - -116.4006
+  half:
+  - 7.26
+  - 1.06
+  height: 12.0
+  yaw: -1.35550891
+- type: box
+  center:
+  - -41.1928
+  - -114.437
+  half:
+  - 12.475
+  - 10.939
+  height: 12.0
+  yaw: -1.05188618
+- type: box
+  center:
+  - -18.0947
+  - -92.1163
+  half:
+  - 11.527
+  - 3.977
+  height: 12.0
+  yaw: -0.08247135
+- type: box
+  center:
+  - -52.3299
+  - -113.9415
+  half:
+  - 4.862
+  - 0.464
+  height: 12.0
+  yaw: 1.56661789
+- type: box
+  center:
+  - 42.6366
+  - -133.1039
+  half:
+  - 13.298
+  - 1.396
+  height: 12.0
+  yaw: 0.52095606
+- type: box
+  center:
+  - 61.0016
+  - -129.1132
+  half:
+  - 3.913
+  - 0.394
+  height: 12.0
+  yaw: -0.42498379
+- type: box
+  center:
+  - 64.0991
+  - -136.4974
+  half:
+  - 12.691
+  - 1.329
+  height: 12.0
+  yaw: -0.86557594
+- type: box
+  center:
+  - 63.6969
+  - -134.2897
+  half:
+  - 10.967
+  - 1.135
+  height: 12.0
+  yaw: -0.74421775
+- type: box
+  center:
+  - 62.8213
+  - -132.2191
+  half:
+  - 9.108
+  - 0.939
+  height: 12.0
+  yaw: -0.61945866
+- type: box
+  center:
+  - 33.0864
+  - -179.6512
+  half:
+  - 10.754
+  - 2.452
+  height: 12.0
+  yaw: -1.20176356
+- type: box
+  center:
+  - 14.936
+  - -180.2576
+  half:
+  - 9.839
+  - 2.87
+  height: 12.0
+  yaw: 1.30721024
+- type: box
+  center:
+  - 46.665
+  - -127.3686
+  half:
+  - 8.11
+  - 1.256
+  height: 12.0
+  yaw: 0.11361448
+- type: box
+  center:
+  - 46.5564
+  - -165.7859
+  half:
+  - 10.797
+  - 3.404
+  height: 12.0
+  yaw: -0.23142707
+- type: box
+  center:
+  - 20.1069
+  - -181.5868
+  half:
+  - 11.75
+  - 4.986
+  height: 12.0
+  yaw: -1.5371548
+- type: box
+  center:
+  - 63.311
+  - -119.6051
+  half:
+  - 5.901
+  - 5.418
+  height: 12.0
+  yaw: 1.42415262
+- type: box
+  center:
+  - 43.108
+  - -169.719
+  half:
+  - 11.227
+  - 6.436
+  height: 12.0
+  yaw: -0.69077584
+- type: box
+  center:
+  - 5.2867
+  - -177.9154
+  half:
+  - 16.33
+  - 8.593
+  height: 12.0
+  yaw: 1.46905868
+- type: box
+  center:
+  - 20.2938
+  - -192.7644
+  half:
+  - 5.205
+  - 2.659
+  height: 12.0
+  yaw: -0.10230343
+- type: box
+  center:
+  - 53.2409
+  - -116.9032
+  half:
+  - 10.659
+  - 9.234
+  height: 12.0
+  yaw: 1.50302564
+- type: box
+  center:
+  - 53.6749
+  - -99.6575
+  half:
+  - 16.123
+  - 7.326
+  height: 12.0
+  yaw: -0.0888165
+- type: box
+  center:
+  - 51.5345
+  - -149.0882
+  half:
+  - 18.186
+  - 16.9
+  height: 12.0
+  yaw: 0.52095606
+- type: box
+  center:
+  - 61.5055
+  - -130.3826
+  half:
+  - 7.129
+  - 0.739
+  height: 12.0
+  yaw: -0.48756913
+- type: box
+  center:
+  - 29.6126
+  - -181.7931
+  half:
+  - 11.401
+  - 4.655
+  height: 12.0
+  yaw: -1.524229
+- type: box
+  center:
+  - 33.7499
+  - -155.1051
+  half:
+  - 5.767
+  - 0.427
+  height: 12.0
+  yaw: -1.08277435
+- type: box
+  center:
+  - 62.3183
+  - -162.4096
+  half:
+  - 5.134
+  - 0.347
+  height: 12.0
+  yaw: 0.58365203
+- type: box
+  center:
+  - 36.4151
+  - -177.0477
+  half:
+  - 11.163
+  - 5.345
+  height: 12.0
+  yaw: -0.85605266
+- type: box
+  center:
+  - 43.2659
+  - -130.1147
+  half:
+  - 11.624
+  - 2.297
+  height: 12.0
+  yaw: 0.40070862
+- type: box
+  center:
+  - -109.9202
+  - -202.2528
+  half:
+  - 8.25
+  - 5.635
+  height: 12.0
+  yaw: 1.562047
+- type: box
+  center:
+  - -114.9462
+  - -173.8524
+  half:
+  - 6.78
+  - 1.611
+  height: 12.0
+  yaw: 1.34584208
+- type: box
+  center:
+  - -74.7646
+  - -178.4216
+  half:
+  - 10.834
+  - 3.636
+  height: 12.0
+  yaw: 0.71851974
+- type: box
+  center:
+  - -82.619
+  - -202.373
+  half:
+  - 7.836
+  - 2.62
+  height: 12.0
+  yaw: 1.56211433
+- type: box
+  center:
+  - -91.3766
+  - -224.248
+  half:
+  - 7.322
+  - 2.352
+  height: 12.0
+  yaw: 1.55220445
+- type: box
+  center:
+  - -88.2439
+  - -233.5455
+  half:
+  - 1.979
+  - 0.825
+  height: 12.0
+  yaw: -1.52199001
+- type: box
+  center:
+  - -106.7559
+  - -202.3046
+  half:
+  - 8.817
+  - 8.207
+  height: 12.0
+  yaw: -0.00660684
+- type: box
+  center:
+  - -111.8603
+  - -177.3536
+  half:
+  - 8.784
+  - 4.236
+  height: 12.0
+  yaw: -1.12100273
+- type: box
+  center:
+  - -100.0923
+  - -173.9887
+  half:
+  - 17.04
+  - 2.465
+  height: 12.0
+  yaw: -0.68197538
+- type: box
+  center:
+  - -94.7306
+  - -188.7571
+  half:
+  - 9.493
+  - 5.349
+  height: 12.0
+  yaw: 0.00120351
+- type: box
+  center:
+  - -87.9124
+  - -167.732
+  half:
+  - 19.663
+  - 14.948
+  height: 12.0
+  yaw: 0.38805484
+- type: box
+  center:
+  - -99.9412
+  - -259.3782
+  half:
+  - 18.54
+  - 7.199
+  height: 12.0
+  yaw: -0.01463107
+- type: box
+  center:
+  - -92.2857
+  - -201.7616
+  half:
+  - 11.032
+  - 9.851
+  height: 12.0
+  yaw: -1.33854714
+- type: box
+  center:
+  - -94.609
+  - -252.6451
+  half:
+  - 14.032
+  - 13.284
+  height: 12.0
+  yaw: 1.55785885
+- type: box
+  center:
+  - -95.2325
+  - -153.8761
+  half:
+  - 19.772
+  - 7.666
+  height: 12.0
+  yaw: -0.01239062
+- type: box
+  center:
+  - -95.794
+  - -213.7399
+  half:
+  - 3.317
+  - 2.2
+  height: 12.0
+  yaw: -1.57027807
+- type: box
+  center:
+  - -99.7472
+  - -180.2673
+  half:
+  - 16.812
+  - 4.966
+  height: 12.0
+  yaw: -0.52027022
+- type: box
+  center:
+  - -99.0024
+  - -230.9771
+  half:
+  - 14.086
+  - 10.126
+  height: 12.0
+  yaw: 1.55020988
+- type: box
+  center:
+  - -70.7742
+  - -154.3275
+  half:
+  - 7.877
+  - 4.588
+  height: 12.0
+  yaw: -1.56974538
+- type: box
+  center:
+  - -68.4038
+  - -176.1654
+  half:
+  - 7.834
+  - 3.099
+  height: 12.0
+  yaw: 1.23157652
+- type: box
+  center:
+  - -231.9042
+  - -303.3398
+  half:
+  - 5.351
+  - 4.12
+  height: 12.0
+  yaw: 0.00637914
+- type: box
+  center:
+  - -264.9854
+  - -340.6971
+  half:
+  - 12.151
+  - 11.913
+  height: 12.0
+  yaw: 0.00623901
+- type: box
+  center:
+  - -231.834
+  - -313.898
+  half:
+  - 14.675
+  - 5.352
+  height: 12.0
+  yaw: -1.56415669
+- type: box
+  center:
+  - -261.1806
+  - -318.1367
+  half:
+  - 10.565
+  - 9.561
+  height: 12.0
+  yaw: 1.56955787
+- type: box
+  center:
+  - -239.7234
+  - -318.0651
+  half:
+  - 13.269
+  - 10.56
+  height: 12.0
+  yaw: 0.00658583
+- type: box
+  center:
+  - -261.1891
+  - -304.1306
+  half:
+  - 9.56
+  - 3.516
+  height: 12.0
+  yaw: 0.00628407
+- type: box
+  center:
+  - -265.0572
+  - -330.0675
+  half:
+  - 22.543
+  - 12.145
+  height: 12.0
+  yaw: -1.56455306
+- type: box
+  center:
+  - -270.9943
+  - -255.7875
+  half:
+  - 13.921
+  - 8.003
+  height: 12.0
+  yaw: 1.35365671
+- type: box
+  center:
+  - -266.5518
+  - -247.9671
+  half:
+  - 10.643
+  - 5.353
+  height: 12.0
+  yaw: -0.21469117
+- type: box
+  center:
+  - -228.8089
+  - -206.6519
+  half:
+  - 13.762
+  - 13.253
+  height: 12.0
+  yaw: 1.54739732
+- type: box
+  center:
+  - -211.1151
+  - -207.0613
+  half:
+  - 13.76
+  - 9.332
+  height: 12.0
+  yaw: 1.54716498
+- type: box
+  center:
+  - -221.2237
+  - -187.7729
+  half:
+  - 6.112
+  - 5.44
+  height: 12.0
+  yaw: -0.02361262
+- type: box
+  center:
+  - -215.6554
+  - -222.3135
+  half:
+  - 5.154
+  - 1.602
+  height: 12.0
+  yaw: -0.02296443
+- type: box
+  center:
+  - -225.3039
+  - -160.7994
+  half:
+  - 22.967
+  - 10.321
+  height: 12.0
+  yaw: 1.56917475
+- type: box
+  center:
+  - -197.9619
+  - -157.2027
+  half:
+  - 27.346
+  - 17.113
+  height: 12.0
+  yaw: 1.57023713
+- type: box
+  center:
+  - 221.5917
+  - -125.323
+  half:
+  - 11.758
+  - 3.181
+  height: 12.0
+  yaw: 1.49563734
+- type: box
+  center:
+  - 215.2779
+  - -124.471
+  half:
+  - 12.96
+  - 3.181
+  height: 12.0
+  yaw: 1.49563734
+- type: box
+  center:
+  - 208.9241
+  - -124.1505
+  half:
+  - 13.629
+  - 3.181
+  height: 12.0
+  yaw: 1.49563734
+- type: box
+  center:
+  - 202.4717
+  - -125.1405
+  half:
+  - 12.291
+  - 3.181
+  height: 12.0
+  yaw: 1.49563734
+- type: box
+  center:
+  - 210.7392
+  - -164.9221
+  half:
+  - 11.408
+  - 1.622
+  height: 12.0
+  yaw: -0.03197272
+- type: box
+  center:
+  - 210.1105
+  - -161.6602
+  half:
+  - 12.22
+  - 1.622
+  height: 12.0
+  yaw: -0.03197272
+- type: box
+  center:
+  - 209.4819
+  - -158.3983
+  half:
+  - 13.032
+  - 1.622
+  height: 12.0
+  yaw: -0.03197272
+- type: box
+  center:
+  - 209.2215
+  - -155.1482
+  half:
+  - 13.475
+  - 1.622
+  height: 12.0
+  yaw: -0.03197272
+- type: box
+  center:
+  - 209.7477
+  - -151.9233
+  half:
+  - 13.131
+  - 1.622
+  height: 12.0
+  yaw: -0.03197272
+- type: box
+  center:
+  - 210.6936
+  - -148.7118
+  half:
+  - 12.368
+  - 1.622
+  height: 12.0
+  yaw: -0.03197272
+- type: box
+  center:
+  - 211.6089
+  - -145.4993
+  half:
+  - 11.574
+  - 1.622
+  height: 12.0
+  yaw: -0.03197272
+- type: box
+  center:
+  - 210.8302
+  - -142.2326
+  half:
+  - 7.045
+  - 1.622
+  height: 12.0
+  yaw: -0.03197272
+- type: box
+  center:
+  - 198.5638
+  - -186.092
+  half:
+  - 11.92
+  - 2.927
+  height: 12.0
+  yaw: -1.56043935
+- type: box
+  center:
+  - 204.4021
+  - -184.7544
+  half:
+  - 13.197
+  - 2.927
+  height: 12.0
+  yaw: -1.56043935
+- type: box
+  center:
+  - 210.2582
+  - -185.1272
+  half:
+  - 12.763
+  - 2.927
+  height: 12.0
+  yaw: -1.56043935
+- type: box
+  center:
+  - 216.1214
+  - -186.192
+  half:
+  - 11.638
+  - 2.927
+  height: 12.0
+  yaw: -1.56043935
+- type: box
+  center:
+  - -199.7461
+  - -75.3982
+  half:
+  - 22.282
+  - 17.194
+  height: 12.0
+  yaw: 1.53259502
+- type: box
+  center:
+  - -312.3018
+  - 163.2922
+  half:
+  - 44.281
+  - 23.261
+  height: 12.0
+  yaw: -0.07597764
+- type: box
+  center:
+  - -233.6392
+  - 7.8945
+  half:
+  - 7.421
+  - 4.986
+  height: 12.0
+  yaw: -1.26406603
+- type: box
+  center:
+  - -238.5435
+  - 18.8037
+  half:
+  - 8.752
+  - 5.39
+  height: 12.0
+  yaw: -1.0703769
+- type: box
+  center:
+  - -243.5926
+  - 28.4525
+  half:
+  - 8.674
+  - 5.151
+  height: 12.0
+  yaw: -1.05247757
+- type: box
+  center:
+  - -248.4844
+  - 36.0474
+  half:
+  - 5.463
+  - 4.892
+  height: 12.0
+  yaw: 0.66945032
+- type: box
+  center:
+  - 17.2761
+  - -306.8823
+  half:
+  - 21.026
+  - 9.622
+  height: 12.0
+  yaw: 0.00075522
+- type: box
+  center:
+  - 57.1275
+  - -340.651
+  half:
+  - 24.232
+  - 24.214
+  height: 12.0
+  yaw: 0.00098556
+- type: box
+  center:
+  - 90.0409
+  - -324.9911
+  half:
+  - 19.001
+  - 13.475
+  height: 12.0
+  yaw: 0.00190326
+- type: box
+  center:
+  - 17.2924
+  - -331.0834
+  half:
+  - 33.816
+  - 21.027
+  height: 12.0
+  yaw: -1.57011895
+- type: box
+  center:
+  - 60.3402
+  - -256.3748
+  half:
+  - 14.224
+  - 11.679
+  height: 12.0
+  yaw: -1.56992202
+- type: box
+  center:
+  - 49.071
+  - -288.1412
+  half:
+  - 14.802
+  - 7.417
+  height: 12.0
+  yaw: 0.00100121
+- type: box
+  center:
+  - 28.1675
+  - -275.8782
+  half:
+  - 21.197
+  - 7.103
+  height: 12.0
+  yaw: 0.00102039
+- type: box
+  center:
+  - 41.0289
+  - -254.1258
+  half:
+  - 16.493
+  - 8.309
+  height: 12.0
+  yaw: -1.56947558
+- type: box
+  center:
+  - 82.5971
+  - -289.9516
+  half:
+  - 33.224
+  - 9.262
+  height: 12.0
+  yaw: 0.00102238
+- type: box
+  center:
+  - -158.2828
+  - -67.4561
+  half:
+  - 3.603
+  - 0.654
+  height: 12.0
+  yaw: -0.29725152
+- type: box
+  center:
+  - -149.7225
+  - -135.1582
+  half:
+  - 4.844
+  - 2.195
+  height: 12.0
+  yaw: -0.0800756
+- type: box
+  center:
+  - -157.8512
+  - -123.1769
+  half:
+  - 12.077
+  - 8.321
+  height: 12.0
+  yaw: 0.94663119
+- type: box
+  center:
+  - -149.5151
+  - -98.9209
+  half:
+  - 12.392
+  - 1.742
+  height: 12.0
+  yaw: 0.73446315
+- type: box
+  center:
+  - -148.6547
+  - -112.531
+  half:
+  - 20.854
+  - 8.989
+  height: 12.0
+  yaw: 1.54597366
+- type: box
+  center:
+  - -161.1692
+  - -75.3289
+  half:
+  - 8.651
+  - 7.04
+  height: 12.0
+  yaw: 0.91759262
+- type: box
+  center:
+  - -167.1857
+  - -73.8574
+  half:
+  - 5.028
+  - 1.047
+  height: 12.0
+  yaw: 1.3920274
+- type: box
+  center:
+  - -152.5563
+  - -89.2066
+  half:
+  - 16.902
+  - 8.445
+  height: 12.0
+  yaw: 1.50419054
+- type: box
+  center:
+  - 92.4905
+  - -254.0912
+  half:
+  - 15.787
+  - 9.08
+  height: 12.0
+  yaw: -0.00823257
+- type: box
+  center:
+  - -267.5502
+  - -186.6773
+  half:
+  - 10.726
+  - 7.666
+  height: 12.0
+  yaw: 1.38984549
+- type: box
+  center:
+  - -166.7789
+  - 235.3993
+  half:
+  - 37.088
+  - 4.812
+  height: 12.0
+  yaw: -0.00427855
+- type: box
+  center:
+  - -137.3699
+  - 216.0676
+  half:
+  - 12.991
+  - 5.383
+  height: 12.0
+  yaw: 0.03658611
+- type: box
+  center:
+  - -112.6227
+  - 19.5086
+  half:
+  - 7.456
+  - 4.128
+  height: 12.0
+  yaw: 1.29255834
+- type: box
+  center:
+  - -287.0318
+  - 240.792
+  half:
+  - 28.314
+  - 11.299
+  height: 12.0
+  yaw: 0.00310907
+- type: box
+  center:
+  - 14.1992
+  - -241.5506
+  half:
+  - 14.388
+  - 10.731
+  height: 12.0
+  yaw: 1.0101132
+- type: box
+  center:
+  - 207.3978
+  - -279.5759
+  half:
+  - 23.088
+  - 17.544
+  height: 12.0
+  yaw: -1.38922871
+- type: box
+  center:
+  - -153.1657
+  - -194.2566
+  half:
+  - 20.333
+  - 11.885
+  height: 12.0
+  yaw: -1.56926909
+- type: box
+  center:
+  - -260.4407
+  - -160.9424
+  half:
+  - 10.78
+  - 7.684
+  height: 12.0
+  yaw: 1.36645154
+- type: box
+  center:
+  - 147.6319
+  - -275.3736
+  half:
+  - 13.151
+  - 8.844
+  height: 12.0
+  yaw: 1.56834287
+- type: box
+  center:
+  - -108.9714
+  - 36.1522
+  half:
+  - 6.931
+  - 4.348
+  height: 12.0
+  yaw: 1.35222093
+- type: box
+  center:
+  - -164.3825
+  - 212.187
+  half:
+  - 12.19
+  - 6.775
+  height: 12.0
+  yaw: -0.02418807
+- type: box
+  center:
+  - -288.0363
+  - 215.5629
+  half:
+  - 28.004
+  - 9.859
+  height: 12.0
+  yaw: 0.00658689
+- type: box
+  center:
+  - -284.3447
+  - 298.6743
+  half:
+  - 28.386
+  - 10.474
+  height: 12.0
+  yaw: 0.00059257
+- type: box
+  center:
+  - -234.4257
+  - -272.7146
+  half:
+  - 17.765
+  - 10.438
+  height: 12.0
+  yaw: 1.55269994
+- type: box
+  center:
+  - -239.0269
+  - -281.0606
+  half:
+  - 14.883
+  - 9.345
+  height: 12.0
+  yaw: -0.01755866
+- type: box
+  center:
+  - -180.214
+  - -225.3788
+  half:
+  - 11.391
+  - 7.372
+  height: 12.0
+  yaw: -0.01932262
+- type: box
+  center:
+  - 266.5824
+  - -296.0773
+  half:
+  - 13.049
+  - 10.357
+  height: 12.0
+  yaw: 0.10654203
+- type: box
+  center:
+  - -109.1864
+  - -12.8981
+  half:
+  - 9.57
+  - 2.795
+  height: 12.0
+  yaw: -0.07130506
+- type: box
+  center:
+  - -108.6707
+  - -5.7749
+  half:
+  - 9.926
+  - 9.574
+  height: 12.0
+  yaw: 1.49842249
+- type: box
+  center:
+  - -121.6161
+  - -1.4969
+  half:
+  - 6.586
+  - 5.396
+  height: 12.0
+  yaw: 1.25527372
+- type: box
+  center:
+  - -2.969
+  - -6.977
+  half:
+  - 21.769
+  - 8.883
+  height: 12.0
+  yaw: -0.03495903
+- type: box
+  center:
+  - -264.1755
+  - 18.4888
+  half:
+  - 4.384
+  - 3.682
+  height: 12.0
+  yaw: 0.91739481
+- type: box
+  center:
+  - -273.4196
+  - 24.899
+  half:
+  - 9.023
+  - 5.359
+  height: 12.0
+  yaw: -0.44133364
+- type: box
+  center:
+  - -274.5128
+  - 33.3547
+  half:
+  - 12.559
+  - 4.36
+  height: 12.0
+  yaw: 1.12445461
+- type: box
+  center:
+  - 181.6095
+  - 294.6415
+  half:
+  - 16.396
+  - 1.788
+  height: 12.0
+  yaw: -0.18959224
+- type: box
+  center:
+  - 207.711
+  - 290.5114
+  half:
+  - 4.972
+  - 3.515
+  height: 12.0
+  yaw: -0.21803651
+- type: box
+  center:
+  - 194.9815
+  - 281.4843
+  half:
+  - 7.155
+  - 5.237
+  height: 12.0
+  yaw: -0.16489416
+- type: box
+  center:
+  - -228.9507
+  - 312.4987
+  half:
+  - 21.003
+  - 8.915
+  height: 12.0
+  yaw: 1.56623768
+- type: box
+  center:
+  - -155.7479
+  - 308.738
+  half:
+  - 18.366
+  - 2.8
+  height: 12.0
+  yaw: -1.27011929
+- type: box
+  center:
+  - -152.0702
+  - 275.7064
+  half:
+  - 6.374
+  - 4.25
+  height: 12.0
+  yaw: -1.53487964
+- type: box
+  center:
+  - -239.5419
+  - 230.8381
+  half:
+  - 14.156
+  - 2.793
+  height: 12.0
+  yaw: 1.51893669
+- type: box
+  center:
+  - -159.1158
+  - 253.2799
+  half:
+  - 18.536
+  - 3.389
+  height: 12.0
+  yaw: -0.00846601
+- type: box
+  center:
+  - -200.7842
+  - 254.8913
+  half:
+  - 20.521
+  - 3.895
+  height: 12.0
+  yaw: -0.02446746
+- type: box
+  center:
+  - -231.5173
+  - 265.2177
+  half:
+  - 18.35
+  - 7.562
+  height: 12.0
+  yaw: 1.56396831
+- type: box
+  center:
+  - -85.0667
+  - 291.2046
+  half:
+  - 5.282
+  - 3.993
+  height: 12.0
+  yaw: -1.56599934
+- type: box
+  center:
+  - -107.1874
+  - 294.9056
+  half:
+  - 5.862
+  - 4.435
+  height: 12.0
+  yaw: 0.02073939
+- type: box
+  center:
+  - -97.4967
+  - 264.5374
+  half:
+  - 14.259
+  - 6.131
+  height: 12.0
+  yaw: -0.07399055
+- type: box
+  center:
+  - -80.2909
+  - 257.2454
+  half:
+  - 14.182
+  - 2.142
+  height: 12.0
+  yaw: 1.50293559
+- type: box
+  center:
+  - -153.7609
+  - 166.6918
+  half:
+  - 14.979
+  - 13.989
+  height: 12.0
+  yaw: -0.15678517
+- type: box
+  center:
+  - 159.116
+  - 300.691
+  half:
+  - 4.514
+  - 3.848
+  height: 12.0
+  yaw: -0.1875809
+- type: box
+  center:
+  - 139.5244
+  - 289.805
+  half:
+  - 5.373
+  - 4.554
+  height: 12.0
+  yaw: -0.15552484
+- type: box
+  center:
+  - 173.8104
+  - 285.7153
+  half:
+  - 11.957
+  - 6.157
+  height: 12.0
+  yaw: -0.1959886
+- type: box
+  center:
+  - 108.0383
+  - 298.3574
+  half:
+  - 5.287
+  - 2.296
+  height: 12.0
+  yaw: 1.35384533
+- type: box
+  center:
+  - -1.1131
+  - 294.2823
+  half:
+  - 14.422
+  - 4.715
+  height: 12.0
+  yaw: 0.04798197
+- type: box
+  center:
+  - -34.0204
+  - 289.6131
+  half:
+  - 8.855
+  - 5.999
+  height: 12.0
+  yaw: 1.55530251
+- type: box
+  center:
+  - -56.7854
+  - 272.5169
+  half:
+  - 10.789
+  - 8.224
+  height: 12.0
+  yaw: -1.56044486
+- type: box
+  center:
+  - -58.555
+  - 246.1715
+  half:
+  - 4.599
+  - 3.61
+  height: 12.0
+  yaw: -1.52253705
+- type: box
+  center:
+  - -60.4019
+  - 254.8938
+  half:
+  - 4.516
+  - 3.648
+  height: 12.0
+  yaw: -1.52249563
+- type: box
+  center:
+  - -51.3313
+  - 247.7421
+  half:
+  - 4.31
+  - 3.077
+  height: 12.0
+  yaw: -1.43527251
+- type: box
+  center:
+  - -47.3957
+  - 294.6523
+  half:
+  - 5.479
+  - 5.196
+  height: 12.0
+  yaw: -1.52573451
+- type: box
+  center:
+  - -49.7311
+  - 298.2514
+  half:
+  - 7.364
+  - 1.79
+  height: 12.0
+  yaw: 0.04343455
+- type: box
+  center:
+  - -107.2971
+  - 249.0836
+  half:
+  - 6.994
+  - 6.231
+  height: 12.0
+  yaw: -1.40819598
+- type: box
+  center:
+  - -9.2672
+  - 241.4799
+  half:
+  - 16.954
+  - 9.032
+  height: 12.0
+  yaw: -0.04453782
+- type: box
+  center:
+  - 97.5611
+  - 276.3735
+  half:
+  - 9.716
+  - 6.637
+  height: 12.0
+  yaw: -0.19944468
+- type: box
+  center:
+  - 52.0441
+  - -60.5319
+  half:
+  - 7.509
+  - 4.242
+  height: 12.0
+  yaw: -0.10500742
+- type: box
+  center:
+  - 76.5087
+  - -63.3783
+  half:
+  - 4.763
+  - 3.498
+  height: 12.0
+  yaw: -0.15349655
+- type: box
+  center:
+  - -55.5463
+  - 180.1017
+  half:
+  - 7.948
+  - 7.185
+  height: 12.0
+  yaw: -0.07617278
+- type: box
+  center:
+  - -36.6444
+  - 176.478
+  half:
+  - 14.845
+  - 4.26
+  height: 12.0
+  yaw: 1.52783445
+- type: box
+  center:
+  - -26.8608
+  - 165.1985
+  half:
+  - 17.222
+  - 0.695
+  height: 12.0
+  yaw: 1.56241933
+- type: box
+  center:
+  - -28.2881
+  - 160.3123
+  half:
+  - 22.183
+  - 0.695
+  height: 12.0
+  yaw: 1.56241933
+- type: box
+  center:
+  - -29.6756
+  - 160.1673
+  half:
+  - 22.402
+  - 0.695
+  height: 12.0
+  yaw: 1.56241933
+- type: box
+  center:
+  - -31.0632
+  - 160.0223
+  half:
+  - 22.621
+  - 0.695
+  height: 12.0
+  yaw: 1.56241933
+- type: box
+  center:
+  - -25.5887
+  - 201.695
+  half:
+  - 6.757
+  - 4.951
+  height: 12.0
+  yaw: 0.03167219
+- type: box
+  center:
+  - -87.6126
+  - 225.2753
+  half:
+  - 14.74
+  - 4.685
+  height: 12.0
+  yaw: 0.06107884
+- type: box
+  center:
+  - -56.9426
+  - 224.2144
+  half:
+  - 15.056
+  - 4.313
+  height: 12.0
+  yaw: 0.0191652
+- type: box
+  center:
+  - -54.5838
+  - 201.5165
+  half:
+  - 7.792
+  - 5.24
+  height: 12.0
+  yaw: 0.03735157
+- type: box
+  center:
+  - 57.6977
+  - 41.7853
+  half:
+  - 8.663
+  - 6.946
+  height: 12.0
+  yaw: -0.34018834
+- type: box
+  center:
+  - 116.3616
+  - 48.476
+  half:
+  - 4.395
+  - 3.504
+  height: 12.0
+  yaw: -0.03752998
+- type: box
+  center:
+  - -96.4958
+  - 203.5571
+  half:
+  - 10.437
+  - 9.017
+  height: 12.0
+  yaw: 0.05705147
+- type: box
+  center:
+  - -78.896
+  - 203.8167
+  half:
+  - 7.128
+  - 5.543
+  height: 12.0
+  yaw: -1.53452537
+- type: box
+  center:
+  - -67.5033
+  - 205.5731
+  half:
+  - 7.229
+  - 4.088
+  height: 12.0
+  yaw: -1.52812217
+- type: box
+  center:
+  - -37.8734
+  - 89.343
+  half:
+  - 9.039
+  - 3.164
+  height: 12.0
+  yaw: 1.55049425
+- type: box
+  center:
+  - 301.5218
+  - 292.0413
+  half:
+  - 14.227
+  - 2.59
+  height: 12.0
+  yaw: -0.95557562
+- type: box
+  center:
+  - 305.7598
+  - 295.0146
+  half:
+  - 14.215
+  - 2.59
+  height: 12.0
+  yaw: -0.95557562
+- type: box
+  center:
+  - 309.0795
+  - 299.2871
+  half:
+  - 12.612
+  - 2.59
+  height: 12.0
+  yaw: -0.95557562
+- type: box
+  center:
+  - 313.1055
+  - 302.5604
+  half:
+  - 9.019
+  - 2.59
+  height: 12.0
+  yaw: -0.95557562
+- type: box
+  center:
+  - -149.9429
+  - 263.2719
+  half:
+  - 6.402
+  - 4.353
+  height: 12.0
+  yaw: -0.0147315
+- type: box
+  center:
+  - -22.8256
+  - 292.0593
+  half:
+  - 7.288
+  - 3.217
+  height: 12.0
+  yaw: 1.55729179
+- type: box
+  center:
+  - -110.9235
+  - 280.4144
+  half:
+  - 9.442
+  - 5.69
+  height: 12.0
+  yaw: -0.08368707
+- type: box
+  center:
+  - -307.1339
+  - -114.4156
+  half:
+  - 30.812
+  - 14.478
+  height: 12.0
+  yaw: 1.47127675
+- type: box
+  center:
+  - -312.9469
+  - -134.1427
+  half:
+  - 18.286
+  - 10.634
+  height: 12.0
+  yaw: -0.09794127
+- type: box
+  center:
+  - 218.0904
+  - 245.916
+  half:
+  - 8.931
+  - 6.846
+  height: 12.0
+  yaw: -0.19863147
+- type: box
+  center:
+  - 177.0939
+  - 258.156
+  half:
+  - 9.634
+  - 5.942
+  height: 12.0
+  yaw: 1.37021216
+- type: box
+  center:
+  - 124.9311
+  - 270.3855
+  half:
+  - 8.33
+  - 4.582
+  height: 12.0
+  yaw: 1.37008578
+- type: box
+  center:
+  - 114.0251
+  - 271.9774
+  half:
+  - 7.924
+  - 5.275
+  height: 12.0
+  yaw: 1.37012163
+- type: box
+  center:
+  - 140.8822
+  - 266.2166
+  half:
+  - 10.671
+  - 8.357
+  height: 12.0
+  yaw: -0.19856702
+- type: box
+  center:
+  - -289.0493
+  - -25.3167
+  half:
+  - 35.166
+  - 11.317
+  height: 12.0
+  yaw: 1.15693268
+- type: box
+  center:
+  - -272.9113
+  - -11.3143
+  half:
+  - 20.386
+  - 15.952
+  height: 12.0
+  yaw: -0.40914383
+- type: box
+  center:
+  - -154.0023
+  - -42.5049
+  half:
+  - 14.454
+  - 6.631
+  height: 12.0
+  yaw: -0.06751067
+- type: box
+  center:
+  - -107.616
+  - -42.8663
+  half:
+  - 10.614
+  - 5.84
+  height: 12.0
+  yaw: 1.43623157
+- type: box
+  center:
+  - 149.4329
+  - -326.5618
+  half:
+  - 30.126
+  - 10.435
+  height: 12.0
+  yaw: 1.56852984
+- type: box
+  center:
+  - -9.195
+  - -34.1149
+  half:
+  - 17.253
+  - 7.023
+  height: 12.0
+  yaw: -0.07381723
+- type: box
+  center:
+  - -51.0632
+  - -59.0279
+  half:
+  - 13.602
+  - 1.635
+  height: 12.0
+  yaw: 0.71676081
+- type: box
+  center:
+  - -52.6521
+  - -56.0785
+  half:
+  - 12.846
+  - 1.635
+  height: 12.0
+  yaw: 0.71676081
+- type: box
+  center:
+  - -54.3745
+  - -53.2454
+  half:
+  - 11.912
+  - 1.635
+  height: 12.0
+  yaw: 0.71676081
+- type: box
+  center:
+  - -56.2383
+  - -50.5356
+  half:
+  - 10.792
+  - 1.635
+  height: 12.0
+  yaw: 0.71676081
+- type: box
+  center:
+  - -58.2617
+  - -47.9648
+  half:
+  - 9.459
+  - 1.635
+  height: 12.0
+  yaw: 0.71676081
+- type: box
+  center:
+  - -60.5339
+  - -45.6107
+  half:
+  - 7.796
+  - 1.635
+  height: 12.0
+  yaw: 0.71676081
+- type: box
+  center:
+  - -63.0643
+  - -43.4817
+  half:
+  - 5.791
+  - 1.635
+  height: 12.0
+  yaw: 0.71676081
+- type: box
+  center:
+  - -65.9522
+  - -41.6642
+  half:
+  - 3.312
+  - 1.635
+  height: 12.0
+  yaw: 0.71676081
+- type: box
+  center:
+  - -41.5726
+  - -203.94
+  half:
+  - 9.389
+  - 5.128
+  height: 12.0
+  yaw: -0.08300106
+- type: box
+  center:
+  - -47.4504
+  - -277.8358
+  half:
+  - 7.99
+  - 5.467
+  height: 12.0
+  yaw: -0.08273145
+- type: box
+  center:
+  - -39.4497
+  - -241.1371
+  half:
+  - 31.794
+  - 20.047
+  height: 12.0
+  yaw: 1.48697795
+- type: box
+  center:
+  - -252.7689
+  - -50.9328
+  half:
+  - 16.051
+  - 13.93
+  height: 12.0
+  yaw: -0.39996645

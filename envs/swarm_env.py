@@ -27,6 +27,7 @@ from envs.episode_manager import EpisodeManager
 from envs.pybullet_adapter import PyBulletAdapter
 from envs import scenarios
 from envs import scenario_manager
+from envs.lidar import lidar_config
 
 
 class SwarmEnv:
@@ -54,11 +55,25 @@ class SwarmEnv:
         # Obstacles count too: 1 per step closer than obstacle_cost_distance
         # (drone centre to obstacle surface), plus collision_cost on a hit.
         self.obstacle_cost_distance = safety.get('obstacle_cost_distance', 0.5)
-        self.curriculum_stage = 1
+        self.curriculum_stage = int(config.get('training', {}).get('initial_curriculum_stage', 1))
+        if not 1 <= self.curriculum_stage <= 4:
+            raise ValueError("training.initial_curriculum_stage must be between 1 and 4")
 
         # Stage-2 static obstacles (config block 'obstacles'; None = empty world)
         self.obstacle_cfg = scenario_manager.obstacle_config(config)
         self.layout = []
+
+        # Sensor noise (environment.sensor_noise, standard deviations): only what
+        # the policy SEES is perturbed. The simulator, collisions, the settle
+        # check, rewards and the teacher all keep the true state. Off when the
+        # block is missing or all zero, and then no random numbers are drawn,
+        # so older configs and seeds behave exactly as before.
+        sn = config['environment'].get('sensor_noise') or {}
+        self.noise_std = {k: float(sn.get(k, 0.0))
+                          for k in ('position', 'velocity', 'orientation', 'lidar')}
+        self.noise_on = any(v > 0 for v in self.noise_std.values())
+        self._noise_rng = np.random.default_rng(int(sn.get('seed', 0)))
+        self.lidar_range = lidar_config(config)['range']
 
         # environment.simulator: pybullet (default) | webots | webots_l2
         if adapter is None:
@@ -95,7 +110,7 @@ class SwarmEnv:
         # every episode is the plain random task and no extra RNG is drawn,
         # so existing configs and seeds behave exactly as before.
         mix = config.get('scenario_mix') or {'random': 1.0}
-        unknown = set(mix) - {'random', *scenarios.GENERATORS, *scenarios.COURSES,
+        unknown = set(mix) - {'random', 'osm_ecity', *scenarios.GENERATORS, *scenarios.COURSES,
                                  *(f'{k}_open' for k in scenarios.GENERATORS)}
         if unknown:
             raise ValueError(f"scenario_mix has unknown scenarios: {sorted(unknown)}")
@@ -104,6 +119,8 @@ class SwarmEnv:
         self.scenario_probs = weights / weights.sum()
         self._use_mix = self.scenario_names != ['random']
         self.current_scenario = 'random'
+        self._osm_layout_cache = None
+        self._osm_layout_cache_path = None
 
     # ---- world layout (a tiny Stage-1 scenario generator) -------------------
     def _sample_positions(self):
@@ -168,6 +185,27 @@ class SwarmEnv:
         self.current_scenario = scenario
         if scenario == 'random':
             spawns, goals = self._sample_positions()
+        elif scenario == 'osm_ecity':
+            from pathlib import Path
+            from envs.osm_scenario import DEFAULT_LAYOUT_PATH, load_osm_layout, sample_flights
+            osm_cfg = self.config.get('osm_scenario', {})
+            raw_path = Path(osm_cfg.get('layout_path', str(DEFAULT_LAYOUT_PATH)))
+            layout_path = raw_path if raw_path.is_absolute() else Path(__file__).resolve().parents[1] / raw_path
+            if self._osm_layout_cache is None or self._osm_layout_cache_path != layout_path:
+                self._osm_layout_cache = load_osm_layout(layout_path)
+                self._osm_layout_cache_path = layout_path
+            spawns, goals = sample_flights(
+                self._osm_layout_cache, self.n_agents, rng=np.random,
+                min_goal_distance_m=float(osm_cfg.get('min_goal_distance_m', 15.0)),
+                max_goal_distance_m=float(osm_cfg.get('max_goal_distance_m', 45.0)),
+                obstacle_clearance_m=float(osm_cfg.get('obstacle_clearance_m', 2.0)),
+                min_point_separation_m=float(osm_cfg.get('min_point_separation_m', self.min_spawn_sep)),
+                boundary_margin_m=float(osm_cfg.get('boundary_margin_m', 2.0)),
+                min_altitude_m=float(osm_cfg.get('min_altitude_m', 2.0)),
+                max_altitude_m=float(osm_cfg.get('max_altitude_m', 4.0)),
+                max_sampling_attempts=int(osm_cfg.get('max_sampling_attempts', 1000)),
+            )
+            return self.start_episode(spawns, goals, obstacles=self._osm_layout_cache)
         elif scenario in scenarios.COURSES:          # comes with its own obstacle layout
             spawns, goals, layout = scenarios.COURSES[scenario](np.random, self.n_agents)
             return self.start_episode(spawns, goals, obstacles=layout)
@@ -377,7 +415,36 @@ class SwarmEnv:
                 }}
         return self._build_obs(raw), rewards_dict, bool(done), info
 
+    def _noisy(self, raw):
+        """Copy of raw with sensor noise added. Positions double as the
+        neighbour broadcasts, so those get the same noise. LiDAR noise only
+        touches rays that hit something: a ray that sees nothing stays at
+        full range (a real LiDAR doesn't invent returns)."""
+        rng, s = self._noise_rng, self.noise_std
+        out = {'goals': raw['goals']}
+        for key, d in raw.items():
+            if key == 'goals':
+                continue
+            d = dict(d)
+            for name, std in (('position', s['position']), ('velocity', s['velocity']),
+                              ('orientation', s['orientation'])):
+                if std > 0:
+                    d[name] = (np.asarray(d[name], dtype=np.float64)
+                               + rng.normal(0.0, std, 3)).tolist()
+            if s['lidar'] > 0:
+                for name in ('lidar', 'lidar_ring'):
+                    if name in d:
+                        r = np.asarray(d[name], dtype=np.float64)
+                        hit = r < self.lidar_range - 1e-6
+                        r = np.where(hit, np.clip(r + rng.normal(0.0, s['lidar'], r.shape),
+                                                  0.0, self.lidar_range), r)
+                        d[name] = r.tolist()
+            out[key] = d
+        return out
+
     def _build_obs(self, raw):
+        if self.noise_on:
+            raw = self._noisy(raw)
         extra = None
         if self.obs_processor.critic_version >= 2:
             # critic.version 2: the critic also sees each drone's settle state

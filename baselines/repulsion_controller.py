@@ -58,7 +58,7 @@ the exact geometry.
 
 import numpy as np
 
-from envs.scenario_manager import surface_distance
+from envs.scenario_manager import surface_distance, box_frame
 
 
 def closest_point(ob, q):
@@ -69,12 +69,21 @@ def closest_point(ob, q):
         n = np.linalg.norm(d)
         return c + (d / n if n > 1e-9 else np.array([1.0, 0.0])) * ob['radius']
     hx, hy = ob['half']
-    rel = q - c
+    rel = np.array(box_frame(ob, q))                       # in the box's own axes (handles 'yaw')
     if abs(rel[0]) <= hx and abs(rel[1]) <= hy:            # inside: nearest edge
         if hx - abs(rel[0]) < hy - abs(rel[1]):
-            return c + np.array([np.sign(rel[0]) * hx, rel[1]])
-        return c + np.array([rel[0], np.sign(rel[1]) * hy])
-    return c + np.array([np.clip(rel[0], -hx, hx), np.clip(rel[1], -hy, hy)])
+            x_sign = 1.0 if rel[0] >= 0.0 else -1.0
+            local = np.array([x_sign * hx, rel[1]])
+        else:
+            y_sign = 1.0 if rel[1] >= 0.0 else -1.0
+            local = np.array([rel[0], y_sign * hy])
+    else:
+        local = np.array([np.clip(rel[0], -hx, hx), np.clip(rel[1], -hy, hy)])
+    yaw = ob.get('yaw', 0.0)
+    if yaw:                                                # back to world axes
+        cy, sy = np.cos(yaw), np.sin(yaw)
+        local = np.array([cy * local[0] - sy * local[1], sy * local[0] + cy * local[1]])
+    return c + local
 
 
 class RepulsionController:
@@ -111,6 +120,14 @@ class RepulsionController:
         self.k_close = float(teacher_cfg.get('k_close', self.k_close))
         self.obs_close = float(teacher_cfg.get('obs_close', self.obs_close))
         self.k_obs_close = float(teacher_cfg.get('k_obs_close', self.k_obs_close))
+        # Lag compensation (teacher.predict_s, seconds; default 0 = off): with a velocity
+        # lag (environment.dynamics) a command takes effect only after the dead time, so
+        # every rule below is evaluated from where the drones WILL be by then, assuming
+        # they keep their current velocity: p + v * predict_s. Needs only the current
+        # state (no command history), so it also labels a student's own flights correctly.
+        self.predict_s = float(teacher_cfg.get('predict_s', 0.0))
+        self.k_goal = float(teacher_cfg.get('k_goal', self.k_goal))   # lower = gentler arrival (helps settling under lag)
+        self.horizon = float(teacher_cfg.get('horizon', self.horizon))
         self.side_from_lidar = bool(teacher_cfg.get('side_from_lidar', False))
         self.side_margin = float(teacher_cfg.get('side_margin', 0.5))   # metres
         # Only obstacles centred within side_band of the intended path count as
@@ -185,6 +202,8 @@ class RepulsionController:
         """lidar: (n, 14) raw ray distances, used only with teacher.side_from_lidar."""
         n = len(positions)
         out = np.zeros((n, 3))
+        if self.predict_s > 0:
+            positions = np.asarray(positions, dtype=float) + np.asarray(velocities, dtype=float) * self.predict_s
         if layout is not getattr(self, '_layout_ref', None):   # new episode: new layout object
             self._side.clear()
             self._layout_ref = layout

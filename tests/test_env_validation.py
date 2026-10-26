@@ -12,6 +12,7 @@ Tests:
   F. Boundary discontinuity — entering goal zone must not cause reward cliff
 
 Run: conda run -n utm-swarm-marl python tests/test_env_validation.py
+     python -m pytest tests/test_env_validation.py -q
 """
 
 import copy
@@ -34,7 +35,11 @@ def load_config():
 
 
 class MockAdapter:
-    """Adapter that lets us script exact positions and velocities."""
+    """Adapter that lets us script exact positions and velocities.
+
+    reset_world() takes the same arguments as PyBulletAdapter.reset_world(),
+    including the obstacle layout that SwarmEnv.start_episode() passes (the
+    mock has no obstacles to place, so it ignores it)."""
 
     def __init__(self, n_agents):
         self.n_agents = n_agents
@@ -42,7 +47,7 @@ class MockAdapter:
         self.velocities = np.zeros((n_agents, 3), dtype=np.float32)
         self.goals = {}
 
-    def reset_world(self, spawn_positions, goal_positions):
+    def reset_world(self, spawn_positions, goal_positions, obstacles=None):
         for i in range(self.n_agents):
             key = f'drone_{i}'
             self.positions[i] = spawn_positions[key]

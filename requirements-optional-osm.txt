@@ -1,0 +1,3 @@
+# Install only when regenerating building footprints from OpenStreetMap.
+# OSMnx brings compatible GeoPandas and Shapely dependencies.
+osmnx>=1.9

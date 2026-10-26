@@ -171,3 +171,7 @@ def course(rng, n_agents, lane_gap=5.0):
 
 
 COURSES = {'course': course}
+
+# Stage-3 city districts (envs/city_generator.py): city_easy / city_medium / city_hard, same signature.
+from envs.city_generator import CITIES  # noqa: E402
+COURSES.update(CITIES)

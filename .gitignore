@@ -57,3 +57,6 @@ eval_results/
 
 # Local-only notes, not for the shared repository
 docs/pybullet_to_webots_transfer.md
+
+# Project virtual environment
+.venv/
