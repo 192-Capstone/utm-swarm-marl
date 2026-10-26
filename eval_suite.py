@@ -57,6 +57,7 @@ from envs.swarm_env import SwarmEnv
 from baselines.repulsion_controller import RepulsionController, closest_point
 from envs.scenario_manager import DRONE_RADIUS
 from envs import scenarios
+from eval_stats import wilson
 from record_rollout import (setup_crossing_scenario, setup_swap_scenario,
                             setup_headon_scenario, disable_all_collision_physics,
                             _apply_scenario)
@@ -66,18 +67,6 @@ SEP_THRESHOLDS = (0.2, 0.3, 0.4, 0.5)
 
 
 # ---------------------------------------------------------------- helpers ---
-def wilson(k, n, z=1.96):
-    """95% Wilson score interval for k successes out of n. Behaves sensibly
-    at k=0 and k=n, unlike the normal approximation."""
-    if n == 0:
-        return (float('nan'), float('nan'))
-    phat = k / n
-    denom = 1 + z * z / n
-    centre = (phat + z * z / (2 * n)) / denom
-    half = z * math.sqrt(phat * (1 - phat) / n + z * z / (4 * n * n)) / denom
-    return (max(0.0, centre - half), min(1.0, centre + half))
-
-
 def pct(values, q):
     v = [x for x in values if x is not None and not (isinstance(x, float) and math.isnan(x))]
     return float(np.percentile(v, q)) if v else float('nan')
