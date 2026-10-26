@@ -230,7 +230,9 @@ class ObservationProcessor:
             global_state    : (N, 17)     tensor — per-drone global state
         """
         if drone_ids is None:
-            drone_ids = sorted([k for k in raw_state.keys() if k != 'goals'])
+            # numeric order (drone_2 before drone_10): row i must be drone_i, which a plain
+            # text sort breaks from 11 drones on
+            drone_ids = sorted([k for k in raw_state.keys() if k != 'goals'], key=lambda k: (len(k), k))
 
         N = len(drone_ids)
 

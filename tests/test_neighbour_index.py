@@ -68,6 +68,21 @@ def test_same_neighbours_as_brute_force(kind):
             assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
 
 
+def test_rows_follow_drone_number():
+    """Row i of every observation is drone_i, also from 11 drones on (text sort would put
+    drone_10 in row 2)."""
+    cfg = yaml.safe_load(open(CONFIG, encoding='utf-8'))
+    proc = ObservationProcessor(cfg, torch.device('cpu'))
+    n = 12
+    dx = 0.1 * (np.arange(n) + 1)                     # drone_i's goal is dx[i] ahead of it
+    raw = {f'drone_{i}': {'position': [3.0 * i, 0.0, 2.0], 'velocity': [0.0] * 3,
+                          'orientation': [0.0] * 3, 'lidar': [10.0] * proc.n_lidar_rays,
+                          'lidar_ring': [10.0] * proc.ring_rays} for i in reversed(range(n))}
+    raw['goals'] = {f'drone_{i}': [3.0 * i + dx[i], 0.0, 2.0] for i in range(n)}
+    local = np.asarray(proc.process(raw, 1)[0])
+    assert np.allclose(local[:, 9] * proc.goal_vector_cap, dx, atol=1e-5)   # [9] goal vector x
+
+
 def test_defaults_and_errors():
     cfg = yaml.safe_load(open(CONFIG, encoding='utf-8'))
     assert ObservationProcessor(cfg, torch.device('cpu')).neighbour_index.kind == 'brute'
