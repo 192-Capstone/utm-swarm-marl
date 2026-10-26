@@ -70,6 +70,23 @@ def ray_directions(yaw):
     return out
 
 
+_AZ = np.radians(np.array([az for az, _ in RAYS], dtype=float))
+_EL = np.radians(np.array([el for _, el in RAYS], dtype=float))
+
+
+def ray_directions_batch(yaws):
+    """(N, 14, 3): ray_directions for N headings at once (the same values bit for bit)."""
+    a = _AZ[None, :] + np.asarray(yaws, dtype=float)[:, None]
+    ce = np.cos(_EL)[None, :]
+    return np.stack([ce * np.cos(a), ce * np.sin(a), np.broadcast_to(np.sin(_EL), a.shape)], axis=2)
+
+
+def ring_directions_batch(yaws, n):
+    """(N, n, 3): ring_directions for N headings at once (the same values bit for bit)."""
+    a = np.asarray(yaws, dtype=float)[:, None] + 2.0 * np.pi * np.arange(n) / n
+    return np.stack([np.cos(a), np.sin(a), np.zeros_like(a)], axis=2)
+
+
 def ring_directions(yaw, n):
     """(n, 3) unit vectors of the horizontal ring, ray 0 along the heading."""
     a = yaw + 2.0 * np.pi * np.arange(n) / n

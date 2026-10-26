@@ -230,31 +230,27 @@ class PyBulletAdapter:
         if not self.lidar_cfg['enabled']:
             return ([[rng] * self.n_lidar for _ in range(self.n_agents)],
                     [[rng] * n_ring for _ in range(self.n_agents)])
-        per_drone = self.n_lidar + n_ring
-        starts, ends = [], []
+        yaws = []
         for i, pos in enumerate(positions):
             key = f'drone_{i}'
             yaw = lidar_mod.heading_to_goal(pos, self.goals[key], self._heading.get(key, 0.0))
             self._heading[key] = yaw
-            dirs = lidar_mod.ray_directions(yaw)
-            if n_ring:
-                dirs = np.vstack([dirs, lidar_mod.ring_directions(yaw, n_ring)])
-            for d in dirs:
-                starts.append((pos + RAY_START * d).tolist())
-                ends.append((pos + rng * d).tolist())
+            yaws.append(yaw)
+        # all rays of all drones as arrays (no Python loop per ray; the same values bit for bit)
+        dirs = lidar_mod.ray_directions_batch(yaws)                       # (N, 14, 3)
+        if n_ring:
+            dirs = np.concatenate([dirs, lidar_mod.ring_directions_batch(yaws, n_ring)], axis=1)
+        pos = np.asarray(positions, dtype=float)[:, None, :]
+        starts = (pos + RAY_START * dirs).reshape(-1, 3).tolist()
+        ends = (pos + rng * dirs).reshape(-1, 3).tolist()
         hits = p.rayTestBatch(starts, ends, physicsClientId=self.client)
-        drones = set(self.drone_ids)
-        out, rings = [], []
-        for i in range(self.n_agents):
-            row = []
-            for k in range(per_drone):
-                obj, _, frac = hits[i * per_drone + k][:3]
-                seen = obj >= 0 and obj != self.plane_id and \
-                    (obj not in drones or self.lidar_cfg['sees_drones'])
-                row.append(RAY_START + frac * (rng - RAY_START) if seen else rng)
-            out.append(row[:self.n_lidar])
-            rings.append(row[self.n_lidar:])
-        return out, rings
+        obj = np.fromiter((h[0] for h in hits), dtype=np.int64, count=len(hits))
+        frac = np.fromiter((h[2] for h in hits), dtype=float, count=len(hits))
+        seen = (obj >= 0) & (obj != self.plane_id)
+        if not self.lidar_cfg['sees_drones']:
+            seen &= ~np.isin(obj, self.drone_ids)
+        dist = np.where(seen, RAY_START + frac * (rng - RAY_START), rng).reshape(self.n_agents, -1)
+        return dist[:, :self.n_lidar].tolist(), dist[:, self.n_lidar:].tolist()
 
     def get_positions(self) -> np.ndarray:
         return np.array(

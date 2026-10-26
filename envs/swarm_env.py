@@ -278,11 +278,12 @@ class SwarmEnv:
         self.min_dist_ever = np.minimum(self.min_dist_ever, curr_dist)
 
         # 3. pairwise drone distances (feed proximity + drone-collision reward)
-        drone_distances = [
-            [float(np.linalg.norm(positions[i] - positions[j]))
-             for j in range(self.n_agents) if j != i]
-            for i in range(self.n_agents)
-        ]
+        # (one batched product instead of a Python loop per pair; for the float32
+        # positions this matches the old per-pair np.linalg.norm bit for bit,
+        # which an axis-wise norm or sum does not)
+        diff = positions[:, None, :] - positions[None, :, :]
+        rows = np.sqrt((diff[..., None, :] @ diff[..., :, None])[..., 0, 0]).tolist()
+        drone_distances = [row[:i] + row[i + 1:] for i, row in enumerate(rows)]
         # drone-drone collision flags (used for termination)
         drone_collision = [bool(d and min(d) < self.collision_radius)
                            for d in drone_distances]
