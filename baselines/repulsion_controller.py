@@ -72,9 +72,11 @@ def closest_point(ob, q):
     rel = np.array(box_frame(ob, q))                       # in the box's own axes (handles 'yaw')
     if abs(rel[0]) <= hx and abs(rel[1]) <= hy:            # inside: nearest edge
         if hx - abs(rel[0]) < hy - abs(rel[1]):
-            local = np.array([np.sign(rel[0]) * hx, rel[1]])
+            x_sign = 1.0 if rel[0] >= 0.0 else -1.0
+            local = np.array([x_sign * hx, rel[1]])
         else:
-            local = np.array([rel[0], np.sign(rel[1]) * hy])
+            y_sign = 1.0 if rel[1] >= 0.0 else -1.0
+            local = np.array([rel[0], y_sign * hy])
     else:
         local = np.array([np.clip(rel[0], -hx, hx), np.clip(rel[1], -hy, hy)])
     yaw = ob.get('yaw', 0.0)

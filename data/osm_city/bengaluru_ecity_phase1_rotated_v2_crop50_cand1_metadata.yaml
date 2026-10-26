@@ -1,0 +1,11 @@
+source_layout: data/osm_city/bengaluru_ecity_phase1_rotated_v2_layout.yaml
+crop_center_in_source_local_metres:
+- -73.0
+- 230.0
+crop_width_m: 50.0
+crop_height_m: 50.0
+output_coordinate_frame: Crop centre is (0, 0); X east, Y north; metres
+source_obstacle_boxes: 311
+cropped_obstacle_boxes: 23
+method: Oriented footprints clipped to the crop rectangle; fully internal boxes preserve
+  yaw; boundary fragments are conservatively re-boxed axis-aligned inside the crop

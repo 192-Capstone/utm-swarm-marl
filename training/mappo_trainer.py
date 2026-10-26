@@ -158,7 +158,11 @@ class MAPPOTrainer:
         # State tracking
         self.global_step     = 0
         self.episode_count   = 0
-        self.curriculum_stage= 1
+        self.curriculum_stage = int(config.get('training', {}).get('initial_curriculum_stage', 1))
+        if not 1 <= self.curriculum_stage <= 4:
+            raise ValueError("training.initial_curriculum_stage must be between 1 and 4")
+        if self.env is not None and hasattr(self.env, 'set_curriculum_stage'):
+            self.env.set_curriculum_stage(self.curriculum_stage)
         self.best_success_rate = 0.0
         # Lexicographic ranking key: (success_rate, -mean_min_dist, -final_speed).
         # Plain success-rate comparison treats every 100% policy as equal —
