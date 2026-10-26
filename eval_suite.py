@@ -774,6 +774,10 @@ def main():
                     help="ablation: MAPPO actor sees no other drones (all neighbour slots masked)")
     ap.add_argument("--blind-lidar", action="store_true",
                     help="ablation: MAPPO actor's LiDAR inputs read 'nothing seen'")
+    ap.add_argument("--simulator", choices=["pybullet", "webots", "webots_l2"], default="pybullet",
+                    help="simulator backend (webots: Level 1, envs/webots_adapter.py; webots_l2: Level 2 quadrotor, envs/webots_l2.py)")
+    ap.add_argument("--webots-real", action="store_true",
+                    help="Webots: realistic world; with webots_l2 the drone is Bitcraze's official Crazyflie model")
     ap.add_argument("--collision-physics", choices=["on", "off"], required=True,
                     help="off = policy-only safety (PyBullet contact response disabled); "
                          "on = system-level, also records PyBullet contact events")
@@ -815,6 +819,12 @@ def main():
     # between drones and obstacles (the adapter does that when building them),
     # otherwise PyBullet pushes a drone off a pillar before the crash check fires.
     config['environment']['collision_physics'] = args.collision_physics == "on"
+    if args.simulator != 'pybullet':
+        if args.collision_physics == 'on':
+            ap.error("--collision-physics on needs PyBullet (contact checks use its API)")
+        config['environment']['simulator'] = args.simulator
+        if args.webots_real:
+            config.setdefault('webots', {})['real'] = True
     if interaction:
         config['environment']['n_agents'] = 2
     elif obstacle_test:
@@ -846,7 +856,9 @@ def main():
     tag = (f"{policy_label}_{args.scenario}_{dist_tag}_n{n_agents}_"
            f"phys{args.collision_physics}_s{'-'.join(map(str, args.seeds))}_e{args.episodes}"
            + (f"_T{max_steps}" if args.max_steps is not None else "")
-           + ("_noobs" if args.no_obstacles else ""))
+           + ("_noobs" if args.no_obstacles else "")
+           + (f"_{args.simulator}" if args.simulator != "pybullet" else "")
+           + ("_real" if args.webots_real else ""))
     out_dir = args.out_dir or os.path.join(args.results_root, tag)
     if os.path.exists(os.path.join(out_dir, "summary.json")) and not args.overwrite:
         ap.error(f"{out_dir} already has results. Pass --overwrite or choose --out-dir.")

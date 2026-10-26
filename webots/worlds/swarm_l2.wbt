@@ -1,0 +1,137 @@
+#VRML_SIM R2025a utf8
+# UTM swarm, Level 2: one quadrotor with real dynamics (gravity, motors, propellers).
+# The drone is a Crazyflie-equivalent built from Webots' built-in nodes (no PROTO
+# download): mass 50 g, Crazyflie inertia (Foerster 2015), Propellers with the
+# Crazyflie thrust/torque constants (4e-05, 2.4e-06), motors m1..m4 laid out and
+# spinning as on the real drone and in Bitcraze's Webots model. The drone robot is
+# also the Supervisor (to reset itself and build obstacles), controlled <extern>
+# Motor response: Webots spins a Propeller's motor with a unit rotor inertia, so maxTorque
+# is the rotor's angular acceleration (rad/s^2). Bitcraze's model uses 30 (1.8 s from 0 to
+# hover speed, fine for a ground take-off); here 1000 (0 -> hover in 55 ms).
+# by envs/webots_l2.py, which runs Bitcraze's velocity PID every basic step.
+
+WorldInfo {
+  info [ "UTM swarm Level 2: Crazyflie-equivalent quadrotor, velocity PID, gravity" ]
+  basicTimeStep 4
+  coordinateSystem "ENU"
+}
+Viewpoint {
+  orientation -0.3 0.3 0.9 1.7
+  position 0 -12 8
+}
+Background {
+  skyColor [ 0.75 0.85 0.95 ]
+}
+DirectionalLight {
+  direction -0.5 -0.5 -1
+}
+DEF FLOOR Solid {
+  children [
+    Shape {
+      appearance PBRAppearance { baseColor 0.35 0.45 0.35 roughness 1 metalness 0 }
+      geometry Plane { size 100 100 }
+    }
+  ]
+  name "floor"
+  boundingObject Plane { size 100 100 }
+}
+DEF OBSTACLES Group {
+}
+DEF DRONES Group {
+  children [
+    DEF DRONE_0 Robot {
+      translation 0 0 1
+      name "swarm_supervisor"
+      controller "<extern>"
+      supervisor TRUE
+      children [
+        Shape {
+          appearance PBRAppearance { baseColor 0.1 0.4 0.9 roughness 0.5 metalness 0 }
+          geometry Box { size 0.09 0.09 0.03 }
+        }
+        InertialUnit { name "inertial_unit" }
+        GPS { name "gps" }
+        Gyro { name "gyro" }
+        Propeller {
+          shaftAxis 0 0 1
+          centerOfThrust 0.031 -0.031 0.008
+          thrustConstants -4e-05 0
+          torqueConstants 2.4e-06 0
+          fastHelixThreshold 50
+          device RotationalMotor { name "m1_motor" maxVelocity 600 maxTorque 1000 }
+          fastHelix Solid {
+            translation 0.031 -0.031 0.008
+            children [ Shape { appearance PBRAppearance { baseColor 0.5 0.5 0.5 transparency 0.7 metalness 0 } geometry Cylinder { height 0.002 radius 0.023 } } ]
+            name "fast_helix_1"
+          }
+          slowHelix Solid {
+            translation 0.031 -0.031 0.008
+            children [ Shape { appearance PBRAppearance { baseColor 0.1 0.1 0.1 transparency 0 metalness 0 } geometry Cylinder { height 0.002 radius 0.023 } } ]
+            name "slow_helix_1"
+          }
+        }
+        Propeller {
+          shaftAxis 0 0 1
+          centerOfThrust -0.031 -0.031 0.008
+          thrustConstants 4e-05 0
+          torqueConstants 2.4e-06 0
+          fastHelixThreshold 50
+          device RotationalMotor { name "m2_motor" maxVelocity 600 maxTorque 1000 }
+          fastHelix Solid {
+            translation -0.031 -0.031 0.008
+            children [ Shape { appearance PBRAppearance { baseColor 0.5 0.5 0.5 transparency 0.7 metalness 0 } geometry Cylinder { height 0.002 radius 0.023 } } ]
+            name "fast_helix_2"
+          }
+          slowHelix Solid {
+            translation -0.031 -0.031 0.008
+            children [ Shape { appearance PBRAppearance { baseColor 0.1 0.1 0.1 transparency 0 metalness 0 } geometry Cylinder { height 0.002 radius 0.023 } } ]
+            name "slow_helix_2"
+          }
+        }
+        Propeller {
+          shaftAxis 0 0 1
+          centerOfThrust -0.031 0.031 0.008
+          thrustConstants -4e-05 0
+          torqueConstants 2.4e-06 0
+          fastHelixThreshold 50
+          device RotationalMotor { name "m3_motor" maxVelocity 600 maxTorque 1000 }
+          fastHelix Solid {
+            translation -0.031 0.031 0.008
+            children [ Shape { appearance PBRAppearance { baseColor 0.5 0.5 0.5 transparency 0.7 metalness 0 } geometry Cylinder { height 0.002 radius 0.023 } } ]
+            name "fast_helix_3"
+          }
+          slowHelix Solid {
+            translation -0.031 0.031 0.008
+            children [ Shape { appearance PBRAppearance { baseColor 0.1 0.1 0.1 transparency 0 metalness 0 } geometry Cylinder { height 0.002 radius 0.023 } } ]
+            name "slow_helix_3"
+          }
+        }
+        Propeller {
+          shaftAxis 0 0 1
+          centerOfThrust 0.031 0.031 0.008
+          thrustConstants 4e-05 0
+          torqueConstants 2.4e-06 0
+          fastHelixThreshold 50
+          device RotationalMotor { name "m4_motor" maxVelocity 600 maxTorque 1000 }
+          fastHelix Solid {
+            translation 0.031 0.031 0.008
+            children [ Shape { appearance PBRAppearance { baseColor 0.5 0.5 0.5 transparency 0.7 metalness 0 } geometry Cylinder { height 0.002 radius 0.023 } } ]
+            name "fast_helix_4"
+          }
+          slowHelix Solid {
+            translation 0.031 0.031 0.008
+            children [ Shape { appearance PBRAppearance { baseColor 0.1 0.1 0.1 transparency 0 metalness 0 } geometry Cylinder { height 0.002 radius 0.023 } } ]
+            name "slow_helix_4"
+          }
+        }
+      ]
+      boundingObject Box { size 0.09 0.09 0.03 }
+      physics Physics {
+        density -1
+        mass 0.05
+        centerOfMass [ 0 0 0 ]
+        inertiaMatrix [ 1.395e-05 1.436e-05 2.173e-05, 0 0 0 ]
+      }
+    }
+  ]
+}
