@@ -18,6 +18,8 @@ The env is simulator-agnostic: swap PyBulletAdapter for a WebotsAdapter that
 emits the same raw-state dict and nothing else here changes.
 """
 
+import hashlib
+
 import numpy as np
 import torch
 
@@ -73,6 +75,13 @@ class SwarmEnv:
                           for k in ('position', 'velocity', 'orientation', 'lidar')}
         self.noise_on = any(v > 0 for v in self.noise_std.values())
         self._noise_rng = np.random.default_rng(int(sn.get('seed', 0)))
+        # Optional (sensor_noise.per_episode_seed, default off): reseed the
+        # noise at the start of every episode from that episode's spawns and
+        # goals, so the same scenario always gets the same noise, whatever
+        # ran before it (paired comparisons stay in step). Off: one generator
+        # runs on across episodes, exactly as before.
+        self._noise_seed = int(sn.get('seed', 0))
+        self.noise_per_episode = bool(sn.get('per_episode_seed', False))
         self.lidar_range = lidar_config(config)['range']
 
         self.adapter        = adapter or PyBulletAdapter(config, gui=gui)
@@ -222,6 +231,8 @@ class SwarmEnv:
         self.adapter.reset_world(spawns, goals, self.layout)
         self.goals = np.array([goals[f'drone_{i}'] for i in range(self.n_agents)],
                               dtype=np.float32)
+        if self.noise_per_episode:
+            self._noise_rng = np.random.default_rng(self._episode_noise_seed(spawns))
         self.episode_manager.reset()
 
         raw       = self.adapter.get_raw_state()
@@ -403,6 +414,15 @@ class SwarmEnv:
                     k: float(v.sum()) for k, v in rewards.items() if k != 'total'
                 }}
         return self._build_obs(raw), rewards_dict, bool(done), info
+
+    def _episode_noise_seed(self, spawns):
+        """Seed for one episode's sensor noise: the base seed plus a hash of
+        the spawns and goals (rounded to mm, like eval_suite's scenario_id)."""
+        sp = np.round(np.array([spawns[f'drone_{i}'] for i in range(self.n_agents)],
+                               dtype=np.float64), 3)
+        gl = np.round(self.goals.astype(np.float64), 3)
+        digest = hashlib.sha1(np.concatenate([sp.ravel(), gl.ravel()]).tobytes()).digest()
+        return [self._noise_seed, int.from_bytes(digest[:8], 'little')]
 
     def _noisy(self, raw):
         """Copy of raw with sensor noise added. Positions double as the

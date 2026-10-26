@@ -60,6 +60,7 @@ from envs import scenarios
 from record_rollout import (setup_crossing_scenario, setup_swap_scenario,
                             setup_headon_scenario, disable_all_collision_physics,
                             _apply_scenario)
+from modules.goal_hold import GoalHoldPolicy, goal_hold_enabled
 
 SUITE_VERSION = "v1"
 SEP_THRESHOLDS = (0.2, 0.3, 0.4, 0.5)
@@ -836,6 +837,10 @@ def main():
             ap.error("--no-obstacles applies to the multi-drone scenarios")
         config.setdefault('obstacles', {})['enabled'] = False
     n_agents = config['environment']['n_agents']
+    # A1 part 3: goal-hold handover, only when the config's goal_hold block enables it
+    goal_hold = goal_hold_enabled(config)
+    if goal_hold:
+        policy_label += "-goalhold"
     max_steps = config['environment']['max_steps']
     dt = config['environment'].get('control_timestep', 0.032)
     physics_on = args.collision_physics == "on"
@@ -872,6 +877,8 @@ def main():
         else:
             policy = PController(config, args.kp) if args.policy == 'pcontroller' else RepulsionController(config)
         ckpt_episode = None
+    if goal_hold:
+        policy = GoalHoldPolicy(policy, config)
     # clip_hits counts inputs pinned at the normalizer's limit; schema v2 has
     # no normalizer, so nothing can be clipped
     schema = env.obs_processor.schema
@@ -897,6 +904,7 @@ def main():
         'seeds': args.seeds, 'episodes_per_seed': args.episodes,
         'max_steps': max_steps, 'control_timestep': dt,
         'kp': args.kp if args.policy == 'pcontroller' else None,
+        'goal_hold': config.get('goal_hold') if goal_hold else None,
     }
 
     wb = None
@@ -968,6 +976,13 @@ def main():
         summary = summarize(episodes, agents, n_agents, physics_on)
     summary['config'] = run_cfg
     summary['wall_time_s'] = round(time.time() - t0, 1)
+    if goal_hold:
+        st = policy.stats
+        summary['goal_hold_stats'] = {
+            **st,
+            'holding_frac': st['holding_steps'] / max(st['drone_steps'], 1),
+            'guard_frac': st['guard_steps'] / max(st['drone_steps'], 1),
+        }
 
     for name, rows in (("episodes.csv", episodes), ("agents.csv", agents)):
         if not rows:
