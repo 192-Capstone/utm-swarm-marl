@@ -1,0 +1,201 @@
+# R1: MAPPO fine-tune of the round-7 imitation model on 8-drone crowds under realistic lag + noise.
+# Why: under lag the rule teacher is no longer near-perfect in crowds (fly-through 94%, crossing 88% with
+# obstacles), so copying it better cannot go past it; RL optimises the real objective and can. The weak
+# spots of the best round-7 student (r7v3ft_s0_laptop, validation seeds) are drone-drone crashes in
+# 8-drone fly-through (19%) and crossing (10%).
+# Built from config_stage2_critic2_KS.yaml (per-drone critic, KL action budget, separate anchor step to
+# the teacher, constant std 0.05, timeout bootstrapping) + the round-7 environment and teacher
+# (config_stage2_round7_teacher.yaml: lag 3-9 steps, sensor noise, medium drone margins).
+# 8 drones; 80% obstacle-free crowd scenes (weighted to fly-through / crossing), 20% crowds with obstacles
+# so the obstacle skill is exercised too. Resume from the round-7 model's bc_resume.pth: the critic
+# starts fresh (critic.version 2), warm-up to episode 650, then 1000 RL episodes.
+environment:
+  n_agents: 8
+  max_steps: 1000
+  v_max: 2.0
+  omega_max: 1.0
+  world_size: 50
+  goal_threshold: 0.5
+  collision_radius: 0.2
+  collision_physics: false
+  settle_speed: 0.15
+  settle_steps: 31
+  control_timestep: 0.032
+  dynamics:
+    lag: true
+    delay_steps:
+    - 3
+    - 9
+    tau_xy:
+    - 0.33
+    - 0.43
+    tau_z:
+    - 0.1
+    - 0.2
+  sensor_noise:
+    position: 0.03
+    velocity: 0.05
+    orientation: 0.01
+    lidar: 0.02
+    seed: 0
+  training:
+    physics_timestep: 0.016
+    action_repeat: 2
+  evaluation:
+    physics_timestep: 0.008
+    action_repeat: 4
+observation:
+  schema: v3
+  local_obs_dim: 74
+  neighbor_obs_dim: 6
+  neighbor_context_dim: 32
+  total_obs_dim: 106
+  k_neighbors_max: 5
+  n_lidar_rays: 14
+  n_lidar_quadrants: 5
+  neighbor_encoding: attention
+  neighbor_selection: knn
+  sensing_radius: 30.0
+  neighbor_pos_scale: 3.0
+  neighbor_vel_scale: 2.0
+network:
+  hidden_dim: 256
+  n_hidden_layers: 2
+  activation: tanh
+  action_dim: 4
+  attention_heads: 1
+  attention_dim: 32
+training:
+  gamma: 0.995
+  lambda_gae: 0.95
+  clip_epsilon: 0.2
+  actor_lr: 1.5e-05
+  actor_warmup_until_episode: 650
+  freeze_normalizer: true
+  critic_lr: 0.0003
+  n_epochs: 4
+  batch_size: 1024
+  buffer_size: 2048
+  max_grad_norm: 0.25
+  target_kl: 0.03
+  entropy_coef: 0.003
+  value_loss_coef: 0.5
+  save_interval: 100
+  eval_interval: 50
+  eval_episodes: 20
+  total_episodes: 1650
+  bootstrap_timeouts: true
+  kl_action_budget: 0.02
+  bc_anchor_mode: separate
+  bc_anchor_lr: 1.5e-05
+  bc_anchor_epochs: 2
+  bc_anchor_coef: 750.0
+  device: cpu
+  num_workers: 1
+  early_stop_success_rate: null
+reward:
+  goal_progress_scale: 5.0
+  goal_reached_bonus: 100.0
+  obstacle_collision_penalty: -50.0
+  drone_collision_penalty: -50.0
+  step_penalty: -0.01
+  lambda_smooth: 0.0
+  lambda_prox: 2.0
+  r_danger: 1.5
+  lambda_brake: 0.0
+  goal_entry_bonus: 10.0
+  settle_counter_scale: 2.0
+exploration:
+  log_std_init: -3.0
+  log_std_final: -3.0
+  anneal_start_episode: 500
+  anneal_end_episode: 500
+  log_std_floor_final: -3.0
+  floor_anneal_start_episode: 500
+  floor_anneal_end_episode: 500
+scenario_mix:
+  headon_open: 0.15
+  crossing_open: 0.25
+  flythrough_open: 0.3
+  swap_open: 0.1
+  crossing: 0.1
+  flythrough: 0.1
+obstacles:
+  enabled: true
+  count:
+  - 3
+  - 8
+  on_path_share: 0.6
+  pillar_share: 0.6
+  pillar_radius:
+  - 0.3
+  - 0.8
+  box_half:
+  - 0.4
+  - 1.2
+  height: 8.0
+  spawn_clearance: 1.5
+  goal_clearance: 1.5
+  gap: 1.0
+teacher:
+  side_from_lidar: true
+  side_margin: 0.5
+  side_band: 0.6
+  obs_horizon: 3.0
+  horizon: 3.0
+  predict_s: 0.4
+  k_goal: 1.2
+  safe_dist: 1.4
+  close_dist: 0.9
+  k_avoid: 2.0
+  k_close: 2.0
+  obs_close: 1.0
+  k_obs_close: 4.5
+lidar:
+  enabled: true
+  range: 6.0
+  sees_drones: true
+  ring_rays: 32
+goal_curriculum:
+  start_dist: 2.0
+  end_dist: 2.0
+  step_dist: 0.0
+  advance_sr: 0.3
+  window: 50
+curriculum:
+  progression_window: 100
+  progression_threshold: 0.8
+  stages:
+    1:
+      name: empty_sandbox
+      description: "No obstacles \u2014 learn basic navigation first"
+      action_dim_active: 3
+      global_state_dim: 12
+      world_size: 50
+      obstacles: false
+      obstacle_count: 0
+      domain_randomization: none
+      success_threshold: 0.8
+domain_randomization:
+  mild_noise:
+    position_noise_std: 0.05
+    imu_noise_std: 0.01
+    lidar_noise_std: 0.02
+safety:
+  cost_distance: 0.7
+  collision_cost: 20.0
+  obstacle_cost_distance: 0.5
+scenario_manager:
+  obstacle_pool_size: 50
+  spawn_margin: 3.0
+  goal_margin: 2.0
+  min_spawn_separation: 5.0
+logging:
+  wandb_project: utm-swarm-marl
+  wandb_entity: null
+  log_interval: 10
+  log_reward_components: true
+  checkpoint_dir: checkpoints/stage2_r1_crowd_rl/
+  best_checkpoint: checkpoints/stage2_r1_crowd_rl/best_policy.pth
+critic:
+  version: 2
