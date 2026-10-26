@@ -25,7 +25,7 @@ only the velocity command of drones that are holding:
 Honest inputs: everything comes from the drone's own observation, with the
 same sensor noise the policy sees (goal vector local_fixed[9:12], neighbour
 slots, LiDAR). Nothing reads the simulator's true state or the settle flag.
-(env.goals is used only to notice that a new episode has started.)
+(SwarmEnv.episode_index tells it when a new episode starts.)
 
 Config (off when the block is missing or enabled is false):
     goal_hold:
@@ -96,7 +96,7 @@ class GoalHoldPolicy:
         self.inner = inner
         self.holding = None          # per drone: inside the hold zone (with hysteresis)
         self.guarded = None          # per drone: guard has handed control back to the policy
-        self._goals = None           # last episode's goals, to notice a new episode
+        self._episode = None         # the episode the hold state belongs to
         self.stats = {'drone_steps': 0, 'holding_steps': 0, 'guard_steps': 0}
 
     def __getattr__(self, name):
@@ -135,13 +135,15 @@ class GoalHoldPolicy:
 
     # ------------------------------------------------------------------ helpers
     def _start_episode_if_new(self, env, n_agents):
-        goals = np.asarray(env.goals, dtype=np.float32)
-        if (self.holding is None or len(self.holding) != n_agents
-                or self._goals is None or self._goals.shape != goals.shape
-                or not np.array_equal(self._goals, goals)):
+        # SwarmEnv counts its episodes; an env without the counter falls back
+        # to "the goals changed".
+        episode = getattr(env, 'episode_index', None)
+        if episode is None:
+            episode = np.asarray(env.goals, dtype=np.float32).tobytes()
+        if self.holding is None or len(self.holding) != n_agents or episode != self._episode:
             self.holding = np.zeros(n_agents, dtype=bool)
             self.guarded = np.zeros(n_agents, dtype=bool)
-            self._goals = goals.copy()
+            self._episode = episode
 
     def _sense(self, obs, env, n_agents):
         """Goal vector (m), nearest neighbour (m) and nearest obstacle (m),

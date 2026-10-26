@@ -90,6 +90,7 @@ class SwarmEnv:
         self.episode_manager = EpisodeManager(config)
 
         self.goals        = None
+        self.episode_index = 0      # +1 at every start_episode(); lets wrappers notice a new episode
         self.prev_dist    = None
         self.prev_actions = None
 
@@ -223,6 +224,7 @@ class SwarmEnv:
         obstacles : 'auto' = generate a layout if obstacles are enabled,
                     or an explicit layout list ([] for an empty world)
         """
+        self.episode_index += 1
         rng = np.random if rng is None else rng
         if obstacles == 'auto':
             obstacles = (scenario_manager.generate_layout(rng, spawns, goals, self.obstacle_cfg)
