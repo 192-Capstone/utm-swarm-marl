@@ -133,7 +133,8 @@ def alongside(env, pos, goal):
 
 
 def train(actor, data, epochs, device, lr, batch=1024, near_weight=1.0, near_dist=0.0,
-          along_weight=1.0, loss_parts=None, arrival_dist=1.0, crowd_dist=1.5):
+          along_weight=1.0, loss_parts=None, arrival_dist=1.0, crowd_dist=1.5,
+          history_dropout=0.0, history_slots=0):
     """Weighted MSE on the action mean. Two modes:
     per-sample weights (near_weight / along_weight), or, with loss_parts =
     (general, passing, arrival), a balanced loss: every batch's error is
@@ -148,7 +149,15 @@ def train(actor, data, epochs, device, lr, batch=1024, near_weight=1.0, near_dis
         crowd   : (only with a 4th weight) another drone within crowd_dist m; in 8-drone
                   crowds students dodged at ~30% of the teacher's strength and passed
                   each other 21-25 cm apart
-        general : everything else"""
+        general : everything else
+
+    history_dropout (schema v4 only): in each batch, this share of samples has
+    its whole command history (the last history_slots inputs) set to 0, the
+    value at the start of an episode. Against the "copycat" shortcut: with its
+    own last commands in view, a cloned policy can match the teacher mostly by
+    repeating them, and then reacts late to obstacles and stays stopped once it
+    has slowed down. Hiding the history half of the time makes it keep reading
+    its sensors. Training only; rollouts and evaluation always see the history."""
     lf = torch.tensor(np.concatenate(data['lf']), device=device)
     ns = torch.tensor(np.concatenate(data['ns']), device=device)
     nm = torch.tensor(np.concatenate(data['nm']), device=device)
@@ -177,7 +186,12 @@ def train(actor, data, epochs, device, lr, batch=1024, near_weight=1.0, near_dis
         tot = 0.0
         for k in range(0, n, batch):
             idx = perm[k:k + batch]
-            mean, _ = actor.forward(lf[idx], ns[idx], nm[idx])
+            x = lf[idx]
+            if history_dropout > 0 and history_slots:
+                hide = torch.rand(len(idx), device=device) < history_dropout
+                x = x.clone()
+                x[hide, -history_slots:] = 0.0
+            mean, _ = actor.forward(x, ns[idx], nm[idx])
             err = ((mean[:, :3] - y[idx]) ** 2).mean(dim=1)
             if loss_parts:
                 pb = part[idx]
@@ -226,6 +240,9 @@ def main():
                     help="'near' = within this many metres of an obstacle surface")
     ap.add_argument("--n-agents", default=None,
                     help="drone count per episode, e.g. 3-8 (uniform); default: the config's n_agents")
+    ap.add_argument("--history-dropout", type=float, default=0.0,
+                    help="schema v4 only: share of training samples whose command history is hidden "
+                         "(set to 0) in each batch, e.g. 0.5; 0 = off")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -244,6 +261,12 @@ def main():
     if base.get('observation_schema', 'v1') != schema:
         sys.exit(f"--base uses observation schema {base.get('observation_schema', 'v1')}, config uses "
                  f"{schema}; convert it with scripts/convert_checkpoint_inputs.py")
+
+    hist_slots = 3 * int(cfg['observation'].get('action_history', 0)) if schema == 'v4' else 0
+    if args.history_dropout > 0 and not hist_slots:
+        sys.exit("--history-dropout needs a config with observation.schema v4")
+    if hist_slots:
+        print(f"command history: last {hist_slots // 3} commands, dropout {args.history_dropout:.0%}")
 
     if args.n_agents:
         lo, hi = (int(x) for x in args.n_agents.split("-"))
@@ -286,7 +309,8 @@ def main():
                          near_weight=args.near_weight, near_dist=args.near_dist,
                          along_weight=args.along_weight,
                          loss_parts=parts, arrival_dist=args.arrival_dist,
-                             crowd_dist=args.crowd_dist)
+                             crowd_dist=args.crowd_dist,
+                             history_dropout=args.history_dropout, history_slots=hist_slots)
 
     for r, beta in enumerate(betas):
         print(f"[3.{r + 1}] DAgger: cloned actor flies {args.dagger_episodes} episodes (teacher steps in {beta:.0%} of the time)")
@@ -297,7 +321,8 @@ def main():
                              near_weight=args.near_weight, near_dist=args.near_dist,
                              along_weight=args.along_weight,
                              loss_parts=parts, arrival_dist=args.arrival_dist,
-                             crowd_dist=args.crowd_dist)
+                             crowd_dist=args.crowd_dist,
+                             history_dropout=args.history_dropout, history_slots=hist_slots)
     for env in envs.values():
         env.close()
     actor.eval()
@@ -308,7 +333,8 @@ def main():
               'log_std_ceiling': base.get('log_std_ceiling'), 'log_std_floor': base.get('log_std_floor'),
               'episode': base.get('episode_count'),
               'source': f"imitation of RepulsionController, from {args.init_actor or args.base}, "
-                        f"mix {cfg.get('scenario_mix')}, {counts[0]}-{counts[-1]} drones"}
+                        f"mix {cfg.get('scenario_mix')}, {counts[0]}-{counts[-1]} drones"
+                        + (f", history dropout {args.history_dropout}" if args.history_dropout else "")}
     if schema == 'v1':
         policy.update(normalizer_mean=base['normalizer_mean'], normalizer_var=base['normalizer_var'],
                       normalizer_count=base['normalizer_count'])
