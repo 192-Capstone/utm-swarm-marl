@@ -12,7 +12,8 @@ per-episode sensor-noise seed (environment.sensor_noise.per_episode_seed).
   D. A drone that has settled keeps being held (the policy would push it away).
   E. Safety guard: a close neighbour or obstacle hands control back to the
      policy; holding resumes only once they are beyond the resume distances.
-  F. A new episode clears the hold state; other attributes pass through.
+  F. A new episode clears the hold state (also when the goals repeat);
+     other attributes pass through.
   G. Noise default unchanged: without per_episode_seed one generator runs on
      across episodes, exactly as before.
   H. With per_episode_seed the same scenario always gets the same noise,
@@ -223,6 +224,21 @@ def test_new_episode_resets_and_attributes_pass_through():
     obs = env.start_episode({'drone_0': [5.6, 5.0, 2.0]}, {'drone_0': other_goal}, obstacles=[])
     assert gh.act(obs, env, 1)['drone_0'] == [1.0, 1.0, 1.0, 0.5]   # 0.6 m, new episode: not holding
     assert gh.ckpt == {'episode': 123}
+
+
+def test_new_episode_with_the_same_goals_resets():
+    print_test_header('F2', 'new episode, same goals',
+                      "the episode counter clears hold and guard state even when the goals repeat")
+    cfg = config(n_agents=2)
+    env, _ = make_env(cfg, [offset(0.3), FAR], [GOAL, FAR])
+    gh = GoalHoldPolicy(ConstantPolicy(), cfg)
+    me = offset(0.3)
+    gh.act(place(env, [me, [me[0], me[1] + 0.8, me[2]]]), env, 2)      # neighbour close: guarded
+    assert gh.guarded[0]
+    obs = env.start_episode({'drone_0': offset(0.6), 'drone_1': FAR},
+                            {'drone_0': GOAL, 'drone_1': FAR}, obstacles=[])  # same goals
+    assert gh.act(obs, env, 2)['drone_0'] == [1.0, 1.0, 1.0, 0.5]     # 0.6 m, fresh: not holding
+    assert not gh.guarded[0] and not gh.holding[0]
 
 
 # ------------------------------------------------------------ G/H. noise seed
