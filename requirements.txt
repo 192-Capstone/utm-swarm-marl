@@ -13,4 +13,7 @@ matplotlib>=3.7
 pybullet>=3.2.5
 gymnasium>=0.29
 
+# H3 hexagonal airspace cells (envs/airspace.py)
+h3>=4.1
+
 # Optional OSM map regeneration dependencies are in requirements-optional-osm.txt.
