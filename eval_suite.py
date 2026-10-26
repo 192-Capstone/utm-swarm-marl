@@ -145,7 +145,9 @@ class MappoPolicy:
         # obstacle-test differences show how much it relies on LiDAR.
         self.blind_lidar = blind_lidar
         self.actor = ActorNetwork(config).to(device)
-        self.ckpt = torch.load(ckpt_path, map_location=device)
+        # weights_only=False: our own checkpoints hold numpy scalars/arrays, which
+        # torch >= 2.6 rejects by default
+        self.ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         state = self.ckpt.get('actor_state_dict', self.ckpt)
         self.actor.load_state_dict(state)
         self.actor.eval()

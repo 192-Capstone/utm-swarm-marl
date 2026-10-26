@@ -402,7 +402,7 @@ def load_actor(config_path: str, checkpoint_path: str = None) -> ActorNetwork:
     actor = ActorNetwork(config)
 
     if checkpoint_path is not None:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         # checkpoint may contain full training state — extract actor weights only
         if 'actor_state_dict' in checkpoint:
             actor.load_state_dict(checkpoint['actor_state_dict'])
