@@ -100,6 +100,7 @@ PILLAR_NODE = """Solid {{
 
 BOX_NODE = """Solid {{
   translation {x} {y} {zc}
+  rotation 0 0 1 {yaw}
   name "obstacle_{k}"
   children [
     Shape {{
@@ -135,11 +136,21 @@ def building_node(k, ob):
         wall = TOWER_WALLS[k % len(TOWER_WALLS)]
     else:
         hx, hy = ob['half']
-        corners = f'{hx} {hy}, {hx} {-hy}, {-hx} {-hy}, {-hx} {hy}'
+        c, s_ = math.cos(ob.get('yaw', 0.0)), math.sin(ob.get('yaw', 0.0))
+        corners = ', '.join(f'{c * px - s_ * py:.4f} {s_ * px + c * py:.4f}'
+                            for px, py in ((hx, hy), (hx, -hy), (-hx, -hy), (-hx, hy)))
         wall = BOX_WALLS[k % len(BOX_WALLS)]
     return (f'SimpleBuilding {{ translation {x} {y} 0 name "obstacle_{k}" corners [ {corners} ] '
             f'floorHeight {h / 3:.4f} floorNumber 3 roofShape "flat roof" roofHeight 0.01 roofType "gravel" '
             f'wallType "{wall}" enableBoundingObject FALSE }}')
+
+
+def _note_lag_ignored(config):
+    """environment.dynamics.lag is PyBullet's lag MODEL. Webots never applies it: Level 1
+    must match plain PyBullet, and Level 2's quadrotor has the real lag itself."""
+    if (config['environment'].get('dynamics') or {}).get('lag'):
+        print("webots: environment.dynamics.lag is ignored (PyBullet's lag model; "
+              "Webots Level 2 has the real quadrotor dynamics)", file=sys.stderr)
 
 
 def _free_port():
@@ -238,7 +249,15 @@ def scan_lidar(positions, yaws, headings, layout, cfg, n_lidar):
             t_in, t_out = _cylinder_entry(o, d, cx, cy, ob['radius'], h)
         else:
             hx, hy = ob['half']
-            t_in, t_out = _slab_entry(o, d, np.array([cx - hx, cy - hy, 0.0]), np.array([cx + hx, cy + hy, h]))
+            yaw = ob.get('yaw', 0.0)
+            if yaw:                    # rotated box: express the rays in the box's frame
+                c, s_ = np.cos(yaw), np.sin(yaw)
+                rx, ry = o[:, 0] - cx, o[:, 1] - cy
+                ob_o = np.stack([c * rx + s_ * ry, -s_ * rx + c * ry, o[:, 2]], axis=1)
+                ob_d = np.stack([c * d[:, 0] + s_ * d[:, 1], -s_ * d[:, 0] + c * d[:, 1], d[:, 2]], axis=1)
+                t_in, t_out = _slab_entry(ob_o, ob_d, np.array([-hx, -hy, 0.0]), np.array([hx, hy, h]))
+            else:
+                t_in, t_out = _slab_entry(o, d, np.array([cx - hx, cy - hy, 0.0]), np.array([cx + hx, cy + hy, h]))
         consider(t_in, t_out, True)
     for j in range(n):
         # drone j's box, rotated by its yaw: express the rays in its frame
@@ -276,6 +295,7 @@ class WebotsAdapter:
         self.layout = []
         self.lidar_cfg = lidar_mod.lidar_config(config)
         self._heading = {}
+        _note_lag_ignored(config)
 
         self._start_webots(gui, wcfg)
         self.basic_ms = int(round(self.sup.getBasicTimeStep()))
@@ -359,7 +379,7 @@ class WebotsAdapter:
                 s = PILLAR_NODE.format(k=k, x=x, y=y, zc=h / 2, r=ob['radius'], h=h)
             else:
                 hx, hy = ob['half']
-                s = BOX_NODE.format(k=k, x=x, y=y, zc=h / 2, sx=2 * hx, sy=2 * hy, h=h)
+                s = BOX_NODE.format(k=k, x=x, y=y, zc=h / 2, sx=2 * hx, sy=2 * hy, h=h, yaw=ob.get('yaw', 0.0))
             self._obstacle_root.importMFNodeFromString(-1, s)
 
     # -------------------------------------------------------------- control

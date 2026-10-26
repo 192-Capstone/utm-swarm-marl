@@ -32,6 +32,7 @@ def main():
     ap.add_argument('--layouts', type=int, default=200)
     ap.add_argument('--drones', type=int, default=8)
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--rotated', action='store_true', help="give every box a random yaw")
     a = ap.parse_args()
     cfg = yaml.safe_load(open(a.config))
     cfg['environment']['n_agents'] = a.drones
@@ -47,6 +48,10 @@ def main():
         layout = scenario_manager.generate_layout(
             rng, {f'drone_{i}': spawns[i].tolist() for i in range(a.drones)},
             {f'drone_{i}': goals[i].tolist() for i in range(a.drones)}, ocfg)
+        if a.rotated:
+            for ob in layout:
+                if ob['type'] == 'box':
+                    ob['yaw'] = float(rng.uniform(-np.pi, np.pi))
         if not layout:   # fall back to hand-made shapes
             layout = [{'type': 'pillar', 'center': (rng.uniform(-5, 5), rng.uniform(-5, 5)),
                        'radius': rng.uniform(0.3, 0.8), 'height': 8.0},
