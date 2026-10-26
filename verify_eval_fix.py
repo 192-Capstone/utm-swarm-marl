@@ -43,7 +43,7 @@ def main():
 
     trainer = MAPPOTrainer(config, actor, critic, env=env, device=device)
 
-    ckpt = torch.load(args.checkpoint, map_location=device)
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     trainer.actor.load_state_dict(ckpt['actor_state_dict'])
     if 'critic_state_dict' in ckpt:
         trainer.critic.load_state_dict(ckpt['critic_state_dict'])

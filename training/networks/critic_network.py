@@ -314,7 +314,7 @@ def load_critic(config_path: str,
     critic = CriticNetwork(config)
 
     if checkpoint_path is not None:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         if 'critic_state_dict' in checkpoint:
             critic.load_state_dict(checkpoint['critic_state_dict'])
         else:
