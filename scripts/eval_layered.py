@@ -7,6 +7,8 @@ is E1 still needed when the policy can avoid? Evaluation only.
 The same flights (random routable requests, as in eval_e1_flown.py) are flown in a 2 x 2:
     planning   no_e1    everyone leaves at its requested time, preferred layer
                e1       departure time and layer as E1 approved them
+               e4       as e1, plus E4 (utm/contingency.py) reacting in flight to E3's alerts,
+                        intruders and the mid-flight zone: re-planned drones get their new route
     pilot      learned  the policy as shipped (sees other drones: neighbour observations + LiDAR)
                blind    the same policy, blind to other drones (neighbour slots masked, LiDAR
                         ignores drones): it still flies its route and avoids buildings (caveat:
@@ -19,6 +21,8 @@ with the plan broken on purpose, the same way in all four (seeded):
     late       a share of flights takes off late (uniform in a range of seconds)
     slow       a share of flights flies slower (velocity command x factor)
     intruders  extra drones with no flight plan cross the area (E1 never hears of them)
+    zone       with --zone-at T, a no-fly zone appears at T where it cuts the most planned
+               routes (permanent from T); every condition is scored for drones inside it
 Scored: arrived, crashed, close pairs (< 2.0 / < 1.4 m), closest approach; with E1, E3's
 conformance alerts (utm/conformance.py) and, for each close pair, how long before it the first
 alert of either drone came, counting only alerts in the --horizon seconds before (warning time;
@@ -32,6 +36,7 @@ Seeds 10-19 are refused (reserved for test runs).
 """
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -53,7 +58,9 @@ from modules.goal_hold import GoalHoldPolicy, goal_hold_enabled    # noqa: E402
 from preview_route import load_map                                 # noqa: E402
 from preview_strategic import random_requests                      # noqa: E402
 from record_rollout import disable_all_collision_physics           # noqa: E402
+from utm.airspace_zones import Zone, tile_blocks, zone_keys        # noqa: E402
 from utm.conformance import ConformanceMonitor                     # noqa: E402
+from utm.contingency import ContingencyManager                     # noqa: E402
 from utm.strategic_planner import StrategicPlanner                 # noqa: E402
 
 
@@ -93,7 +100,20 @@ def intruders(rng, sky, n, window):
     return out
 
 
-def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed):
+def busiest_tile(sky, flights, bounds, size=6.0):
+    """The size x size m tile whose zone keys the most approved flights have booked."""
+    best = None
+    for x0, x1, y0, y1 in tile_blocks(bounds, size):
+        z = Zone('midflight', 'Mid-flight closure', polygon=[(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+        keys = zone_keys(z, sky.sky, sky.s.n_layers)
+        n = sum(1 for f in flights if any(k in keys for k in sky.current[f['id']].reservation))
+        if best is None or n > best[0]:
+            best = (n, z)
+    return best[1]
+
+
+def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, zone=None):
+    plan = 'no_e1' if mode == 'no_e1' else 'e1'
     n_f = len(flights)
     n = n_f + len(extra)
     cfg = json.loads(json.dumps(cfg))
@@ -104,8 +124,8 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed):
     dt = cfg['environment'].get('control_timestep', 0.032)
     starts = [f['start'] for f in flights] + [x['start'] for x in extra]
     goals = [f['goal'] for f in flights] + [x['goal'] for x in extra]
-    routes = [f[mode][1] for f in flights] + [x['route'] for x in extra]
-    deps = [f[mode][0] + late[i] for i, f in enumerate(flights)] + [x['t'] for x in extra]
+    routes = [f[plan][1] for f in flights] + [x['route'] for x in extra]
+    deps = [f[plan][0] + late[i] for i, f in enumerate(flights)] + [x['t'] for x in extra]
     factor = np.array(slow + [1.0] * len(extra))
     longest = max(sum(math.dist(a[:2], b[:2]) for a, b in zip(r, r[1:])) for r in routes)
     cfg['environment']['max_steps'] = int((max(deps) + 3.0 * longest / factor.min() + 30.0) / dt)
@@ -125,7 +145,11 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed):
     obs = env.start_episode({k: [*s, z0] for k, s in zip(key, starts)}, {k: [*g, z0] for k, g in zip(key, goals)},
                             obstacles=layout, routes=dict(zip(key, routes)), departures=dict(zip(key, deps)))
     ids = [f['id'] for f in flights] + [x['id'] for x in extra]
-    monitor = ConformanceMonitor(sky) if mode == 'e1' else None
+    sky = copy.deepcopy(sky)                      # E4 changes bookings: each run starts fresh
+    monitor = ConformanceMonitor(sky) if mode in ('e1', 'e4') else None
+    e4 = ContingencyManager(sky, monitor) if mode == 'e4' else None
+    zkeys = set(zone_keys(zone, sky.sky, sky.s.n_layers)) if zone is not None else set()
+    zone_on, entered, inside_s, replans = False, set(), 0.0, []
     every = max(1, int(round(1.0 / dt)))
     close = {t: {} for t in NEAR}                 # pair -> first time below the threshold
     min_sep = np.inf
@@ -139,8 +163,32 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed):
         t = (step + 1) * dt
         air = np.flatnonzero(~(env.waiting | env.landed | env.crashed))
         pos = env.adapter.get_positions()
-        if monitor is not None and (step + 1) % every == 0:
-            monitor.check(t, {ids[i]: pos[i] for i in air})
+        if (step + 1) % every == 0:
+            here = {ids[i]: pos[i] for i in air}
+            acts_e4 = []
+            if zone is not None and not zone_on and t >= args.zone_at:
+                zone_on = True
+                if e4 is not None:
+                    acts_e4 += e4.add_zone(zone, t, here)
+            if e4 is not None:
+                acts_e4 += e4.step(t, here)
+            elif monitor is not None:
+                monitor.check(t, here)
+            for a in acts_e4:
+                d = a['decision']
+                replans.append({'t': a['t'], 'flight': a['flight'], 'why': a['why'], 'status': d.status, 'reason': d.reason})
+                if a['flight'] not in ids:
+                    continue
+                i = ids.index(a['flight'])
+                if d.status == 'approved':
+                    env.set_route(i, d.waypoints, departure=d.t_dep)
+                elif a['why'].endswith('-> cancelled') and env.waiting[i]:
+                    env.cancel(i)
+            if zone_on:
+                for i in air:
+                    if (sky.sky.cell(pos[i][0], pos[i][1]), sky.layer_of(pos[i][2])) in zkeys:
+                        entered.add(ids[i])
+                        inside_s += 1.0
         if len(air) > 1:
             p = pos[air]
             d = np.linalg.norm(p[:, None, :] - p[None, :, :], axis=2)
@@ -154,11 +202,17 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed):
             break
     env.close()
     reached = np.asarray(info.get('drone_reached_goal', [False] * n), dtype=bool)
-    out = {'flights': n_f, 'intruders': len(extra), 'arrived': int(reached[:n_f].sum()),
+    home = {y['flight'] for y in replans if y['status'] == 'approved' and y['reason'] == 'return to base'}
+    arrived = sum(1 for i in range(n_f) if reached[i] and ids[i] not in home)   # at the ORIGINAL goal
+    out = {'flights': n_f, 'intruders': len(extra), 'arrived': arrived,
            'crashed': int(env.crashed[:n_f].sum()), 'crashed_all': int(env.crashed.sum()),
            'pairs_below_2.0': len(close[2.0]), 'pairs_below_1.4': len(close[1.4]),
            'pairs_below_1.4_with_intruder': sum(1 for a, b in close[1.4] if a >= n_f or b >= n_f),
-           'min_separation_m': None if min_sep == np.inf else round(min_sep, 3)}
+           'min_separation_m': None if min_sep == np.inf else round(min_sep, 3),
+           'zone_entries': len(entered), 'zone_seconds': inside_s,
+           'cancelled': int(env.cancelled[:n_f].sum()),
+           'returned': len(home),
+           'replans': replans}
     if monitor is not None:
         warn = []
         for (a, b), t_close in close[1.4].items():
@@ -192,7 +246,9 @@ def main():
     ap.add_argument('--p-slow', type=float, default=0.25)
     ap.add_argument('--slow', type=float, default=0.6, help='speed factor of slow drones')
     ap.add_argument('--intruders', type=int, default=2)
-    ap.add_argument('--modes', nargs='+', default=['no_e1', 'e1'], choices=['no_e1', 'e1'])
+    ap.add_argument('--modes', nargs='+', default=['no_e1', 'e1'], choices=['no_e1', 'e1', 'e4'])
+    ap.add_argument('--zone-at', type=float, default=None,
+                    help='a no-fly zone appears at this time (s), where it cuts the most routes')
     ap.add_argument('--pilots', nargs='+', default=['simple', 'blind', 'learned'], choices=['simple', 'blind', 'learned'])
     ap.add_argument('--horizon', type=float, default=20.0, help='alert precision: close pass within this many s')
     ap.add_argument('--out', default=None)
@@ -216,17 +272,21 @@ def main():
         rng = np.random.RandomState(5000 + seed)
         late, slow = disruptions(rng, flights, args)
         extra = intruders(rng, sky, args.intruders, args.window)
+        zone = busiest_tile(sky, flights, sky.bounds) if args.zone_at is not None else None
         row = {'seed': seed, 'approved': len(flights), 'late': sum(x > 0 for x in late),
                'slow': sum(x < 1 for x in slow), 'intruders': len(extra)}
         for mode in args.modes:
             for pilot in args.pilots:
                 t0 = time.time()
-                r = fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed)
+                r = fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, zone)
                 row[f'{mode}/{pilot}'] = r
                 print(f"seed {seed} {mode:5s} {pilot:7s}: arrived {r['arrived']}/{r['flights']}, crashed {r['crashed']} "
                       f"(+{r['crashed_all'] - r['crashed']} intruders), pairs < 1.4 m {r['pairs_below_1.4']} "
                       f"({r['pairs_below_1.4_with_intruder']} with an intruder), closest {r['min_separation_m']} m"
-                      + (f", E3 alerts {r['e3']['alerts']}" if 'e3' in r else '') + f"  ({time.time() - t0:.0f} s)",
+                      + (f", E3 alerts {r['e3']['alerts']}" if 'e3' in r else '')
+                      + (f", zone entries {r['zone_entries']}" if zone is not None else '')
+                      + (f", re-plans {sum(x['status'] == 'approved' for x in r['replans'])}/{len(r['replans'])}"
+                         if mode == 'e4' else '') + f"  ({time.time() - t0:.0f} s)",
                       flush=True)
         rows.append(row)
 
@@ -239,7 +299,13 @@ def main():
                     f"crashed {100 * sum(x['crashed'] for x in R) / fl:4.1f}%, "
                     f"pairs < 1.4 m {sum(x['pairs_below_1.4'] for x in R)} "
                     f"({sum(x['pairs_below_1.4_with_intruder'] for x in R)} with an intruder)")
-            if mode == 'e1':
+            if args.zone_at is not None:
+                line += f", zone entries {sum(x['zone_entries'] for x in R)} ({sum(x['zone_seconds'] for x in R):.0f} s)"
+            if mode == 'e4':
+                rp = [y for x in R for y in x['replans']]
+                line += (f", re-plans {sum(y['status'] == 'approved' for y in rp)} ok / {len(rp)}, "
+                         f"returned to base {sum(x['returned'] for x in R)}, cancelled {sum(x['cancelled'] for x in R)}")
+            if mode in ('e1', 'e4'):
                 w = [v for x in R for v in x['close_pair_warning_s']]
                 seen = [v for v in w if v is not None]
                 n_al = sum(x['e3']['alerts'] for x in R)
