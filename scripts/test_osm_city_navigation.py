@@ -1,6 +1,8 @@
 from pathlib import Path
+import math
 import random
 import sys
+import time
 
 import numpy as np
 import yaml
@@ -11,16 +13,20 @@ sys.path.insert(0, str(ROOT))
 from envs.pybullet_adapter import PyBulletAdapter
 from envs import scenario_manager
 from envs.route_planner import build_grid, plan, simplify, path_length
-from modules.grid_path_planner import connected_components, grid_distance
+from modules.grid_path_planner import connected_components
+
 
 CONFIG = ROOT / "configs/config_stage2_obstacles.yaml"
 LAYOUT = ROOT / "data/osm_city/bengaluru_ecity_phase1_rotated_v2_crop50_cand1_layout.yaml"
 
-STEP = 0.5
-GRID_MIN, GRID_MAX = -22.0, 22.0
+GRID_STEP = 0.5
+GRID_MIN = -22.0
+GRID_MAX = 22.0
 OBSTACLE_MARGIN = 1.25
-Z = 2.0
-SPEED = 0.7
+MIN_ROUTE_LENGTH = 12.0
+ALTITUDE = 2.0
+MAX_SPEED = 0.7
+WAYPOINT_RADIUS = 0.12
 
 
 def main():
@@ -28,13 +34,13 @@ def main():
     layout = yaml.safe_load(LAYOUT.read_text(encoding="utf-8"))
 
     if not isinstance(layout, list) or not layout:
-        raise RuntimeError("The obstacle layout is empty or invalid.")
+        raise RuntimeError(f"The obstacle layout is empty or invalid: {LAYOUT}")
 
-    # Build the shared D7 route-planning grid.
+    # Build the shared D7 grid using the existing OSM crop bounds and margin.
     grid = build_grid(
         layout,
         ((GRID_MIN, GRID_MAX), (GRID_MIN, GRID_MAX)),
-        STEP,
+        GRID_STEP,
         OBSTACLE_MARGIN,
     )
 
@@ -48,306 +54,473 @@ def main():
     if not free:
         raise RuntimeError("The route planner found no free grid cells.")
 
-    # Preserve the original connected-region restriction.
-    regions = connected_components(free, grid.occ.shape[0])
-
-    if not regions:
-        raise RuntimeError("No connected free-space region found.")
-
-    largest = max(regions, key=len)
-
     print(f"Obstacle boxes: {len(layout)}")
-    print(f"Connected free-space regions: {len(regions)}")
-    print(f"Largest region: {len(largest)} cells")
-    print(f"Grid resolution: {STEP:.2f} m")
-    print(f"Safety margin used by planner: {OBSTACLE_MARGIN:.2f} m")
-
-    def xy(cell):
-        """Convert a grid cell (iy, ix) into world coordinates (x, y)."""
-        return [float(v) for v in grid.to_world(cell)]
+    print(f"Free grid cells: {len(free)}")
+    print(f"Grid resolution: {GRID_STEP:.2f} m")
+    print(f"Planner obstacle margin: {OBSTACLE_MARGIN:.2f} m")
 
     rng = random.Random(2026)
-    candidates = sorted(largest)
-    endpoints = []
-    routes = []
 
-    # Plan three routes with separated start and goal endpoints.
-    for route_no in range(3):
-        starts = [
-            cell for cell in candidates
-            if all(
-                grid_distance(cell, p, STEP) >= 6.0
-                for p in endpoints
-            )
-        ]
+    def xy(cell):
+        """Convert a grid cell (iy, ix) to its world-coordinate centre."""
+        return [float(v) for v in grid.to_world(cell)]
 
-        if not starts:
-            starts = candidates
+    def cell_distance(a, b):
+        """Euclidean distance between grid cells, measured in metres."""
+        return math.hypot(a[0] - b[0], a[1] - b[1]) * GRID_STEP
 
-        picked = None
+    def route_cells(points):
+        """Rasterize route segments into cells for the separation buffer."""
+        cells = set()
 
-        for start in rng.sample(starts, min(80, len(starts))):
-            targets = [
-                cell for cell in candidates
-                if grid_distance(start, cell, STEP) >= 15.0
-                and all(
-                    grid_distance(cell, p, STEP) >= 6.0
-                    for p in endpoints
+        if len(points) == 1:
+            cells.add(grid.to_cell(points[0]))
+            return cells
+
+        for a, b in zip(points, points[1:]):
+            distance = math.hypot(b[0] - a[0], b[1] - a[1])
+            samples = max(1, math.ceil(distance / (GRID_STEP / 2)))
+
+            for k in range(samples + 1):
+                t = k / samples
+                point = (
+                    a[0] + t * (b[0] - a[0]),
+                    a[1] + t * (b[1] - a[1]),
                 )
-            ]
+                cells.add(grid.to_cell(point))
 
-            if not targets:
-                targets = [
-                    cell for cell in candidates
-                    if grid_distance(start, cell, STEP) >= 15.0
-                ]
+        return cells
 
-            if not targets:
-                continue
+    def choose_long_path(allowed):
+        """Find the longest sufficiently long D7 route in remaining free space."""
+        if len(allowed) < 50:
+            return None
 
-            targets.sort(
-                key=lambda cell: grid_distance(start, cell, STEP),
-                reverse=True,
+        search_started = time.perf_counter()
+
+        # Connected components avoid planning between disconnected areas.
+        grid_width = grid.occ.shape[1]
+        components = connected_components(allowed, grid_width)
+        components.sort(key=len, reverse=True)
+
+        original_occ = grid.occ.copy()
+        allowed_mask = np.zeros_like(grid.occ, dtype=bool)
+
+        for cell in allowed:
+            allowed_mask[cell] = True
+
+        best_route = None
+        best_length = MIN_ROUTE_LENGTH
+
+        try:
+            # Block cells outside the remaining available route space.
+            grid.occ[:] = original_occ | ~allowed_mask
+
+            for component in components:
+                if len(component) < 50:
+                    continue
+
+                component_cells = sorted(component)
+
+                # Include map-boundary cells to encourage map-spanning routes.
+                min_y = min(cell[0] for cell in component_cells)
+                max_y = max(cell[0] for cell in component_cells)
+                min_x = min(cell[1] for cell in component_cells)
+                max_x = max(cell[1] for cell in component_cells)
+
+                extreme_starts = {
+                    min(component_cells, key=lambda cell: cell[0]),
+                    max(component_cells, key=lambda cell: cell[0]),
+                    min(component_cells, key=lambda cell: cell[1]),
+                    max(component_cells, key=lambda cell: cell[1]),
+                    min(
+                        component_cells,
+                        key=lambda cell: (
+                            abs(cell[0] - min_y)
+                            + abs(cell[1] - min_x)
+                        ),
+                    ),
+                    min(
+                        component_cells,
+                        key=lambda cell: (
+                            abs(cell[0] - max_y)
+                            + abs(cell[1] - max_x)
+                        ),
+                    ),
+                    min(
+                        component_cells,
+                        key=lambda cell: (
+                            abs(cell[0] - min_y)
+                            + abs(cell[1] - max_x)
+                        ),
+                    ),
+                    min(
+                        component_cells,
+                        key=lambda cell: (
+                            abs(cell[0] - max_y)
+                            + abs(cell[1] - min_x)
+                        ),
+                    ),
+                }
+
+                # Bound the random search while retaining extreme candidates.
+                sampled_starts = rng.sample(
+                    component_cells,
+                    min(32, len(component_cells)),
+                )
+
+                starts_to_try = list(
+                    extreme_starts | set(sampled_starts)
+                )
+
+                for start in starts_to_try:
+                    goals = [
+                        cell
+                        for cell in component_cells
+                        if cell != start
+                        and cell_distance(start, cell) >= MIN_ROUTE_LENGTH
+                    ]
+
+                    if not goals:
+                        continue
+
+                    # Try the most distant goals first.
+                    goals.sort(
+                        key=lambda cell: cell_distance(start, cell),
+                        reverse=True,
+                    )
+
+                    # Limit goal evaluations to keep the search bounded.
+                    for goal in goals[:16]:
+                        route = plan(
+                            grid,
+                            xy(start),
+                            xy(goal),
+                            snap_dist=0.0,
+                        )
+
+                        if route is None:
+                            continue
+
+                        waypoints = simplify(grid, route)
+                        length = path_length(waypoints)
+
+                        # Keep the longest valid route found so far.
+                        if length > best_length:
+                            best_route = waypoints
+                            best_length = length
+
+            return best_route
+
+        finally:
+            # Always restore the original occupancy grid.
+            grid.occ[:] = original_occ
+
+            elapsed = time.perf_counter() - search_started
+            print(
+                f"Route search + simplification: {elapsed:.3f} s"
             )
 
-            target_pool = targets[:min(20, len(targets))]
-            first_goal = rng.choice(target_pool)
+    def make_three_routes():
+        # Preserve the existing fallback separation thresholds.
+        for separation_m in (3.0, 2.5, 2.0, 1.5):
+            routes = []
+            allowed = set(free)
 
-            # Try the randomized first choice, then other candidate goals.
-            goal_candidates = [first_goal] + [
-                cell for cell in target_pool
-                if cell != first_goal
-            ]
+            separation_cells = math.ceil(separation_m / GRID_STEP)
+            radius_sq = separation_cells ** 2
 
-            for goal in goal_candidates:
-                route = plan(grid, xy(start), xy(goal))
+            for _ in range(3):
+                waypoints = choose_long_path(allowed)
 
-                if route is not None and path_length(route) >= 15.0:
-                    picked = (start, goal, route)
+                if waypoints is None:
                     break
 
-            if picked is not None:
-                break
+                routes.append(waypoints)
+                occupied_cells = route_cells(waypoints)
 
-        if picked is None:
-            raise RuntimeError(
-                f"Could not plan route {route_no + 1}. Try another crop "
-                "or reduce the minimum route length."
-            )
+                # Reserve a buffer around the entire route before planning
+                # the next route. Do not weaken the existing checks.
+                allowed = {
+                    cell
+                    for cell in allowed
+                    if cell not in occupied_cells
+                    and all(
+                        (cell[0] - p[0]) ** 2
+                        + (cell[1] - p[1]) ** 2
+                        > radius_sq
+                        for p in occupied_cells
+                    )
+                }
 
-        start, goal, route = picked
-        routes.append(route)
-        endpoints.extend([start, goal])
+            if len(routes) == 3:
+                return routes, separation_m
+
+        return None, None
+
+    routes, route_separation = make_three_routes()
+
+    if routes is None:
+        raise RuntimeError(
+            "Could not find three sufficiently long, separated routes in this crop. "
+            "Try another crop rather than weakening collision checks."
+        )
+
+    # D7 routes contain world-coordinate waypoints, not grid-cell indices.
+    starts = [
+        [float(v) for v in route[0]]
+        for route in routes
+    ]
+
+    targets = [
+        [float(v) for v in route[-1]]
+        for route in routes
+    ]
+
+    spawns = {
+        f"drone_{i}": [*starts[i], ALTITUDE]
+        for i in range(3)
+    }
+
+    goals = {
+        f"drone_{i}": [*targets[i], ALTITUDE]
+        for i in range(3)
+    }
+
+    print(f"Planned route separation: at least {route_separation:.1f} m")
+
+    for i, route in enumerate(routes):
+        print(
+            f"Drone {i}: route length {path_length(route):.1f} m | "
+            f"{len(route)} waypoints | "
+            f"start {spawns[f'drone_{i}']} | "
+            f"goal {goals[f'drone_{i}']}"
+        )
 
     adapter = PyBulletAdapter(config, gui=False)
-    passed = 0
+
+    settled_steps = [0, 0, 0]
+    reached = [False, False, False]
+    waypoint_index = [1, 1, 1]
+    min_obstacle_gap = [float("inf")] * 3
+    min_drone_distance = float("inf")
+    collision = None
+
+    max_steps = max(5000, max(len(route) for route in routes) * 100)
+    steps_used = 0
 
     try:
-        for route_no, path in enumerate(routes, start=1):
-            # Retain the complete route for parking-clearance checks.
-            # Simplified waypoints are used for scripted flight control.
-            path_cells = set()
+        adapter.reset_world(spawns, goals, obstacles=layout)
 
-            for point in path:
-                cell = grid.to_cell(point)
-                if cell is not None:
-                    path_cells.add(cell)
+        # Validate all initial positions before moving.
+        initial_positions = adapter.get_positions()
 
-            waypoints = simplify(grid, path)
-
-            # Find two parking positions with adequate route clearance.
-            parking = []
-
-            for min_gap in (4.0, 3.0, 2.5):
-                pool = []
-
-                for cell in free - path_cells:
-                    gap = min(
-                        grid_distance(cell, p, STEP)
-                        for p in path_cells
-                    )
-
-                    if gap >= min_gap:
-                        pool.append((gap, cell))
-
-                pool.sort(reverse=True)
-                parking = []
-
-                for _, cell in pool:
-                    if all(
-                        grid_distance(cell, p, STEP) >= 2.5
-                        for p in parking
-                    ):
-                        parking.append(cell)
-
-                    if len(parking) == 2:
-                        break
-
-                if len(parking) == 2:
-                    break
-
-            if len(parking) != 2:
-                raise RuntimeError("Could not find safe parking positions.")
-
-            start_xy = list(path[0])
-            goal_xy = list(path[-1])
-
-            spawns = {
-                "drone_0": [*start_xy, Z],
-                "drone_1": [*xy(parking[0]), Z],
-                "drone_2": [*xy(parking[1]), Z],
-            }
-
-            goals = {
-                "drone_0": [*goal_xy, Z],
-                "drone_1": spawns["drone_1"].copy(),
-                "drone_2": spawns["drone_2"].copy(),
-            }
-
-            adapter.reset_world(spawns, goals, obstacles=layout)
-
-            index = 1
-            settled = 0
-            collision = None
-            min_gap = float("inf")
-            reached = False
-            max_steps = max(4000, len(path) * 100)
-
-            print(
-                f"\nRoute {route_no}: {path_length(path):.1f} m | "
-                f"{len(waypoints)} simplified waypoints"
+        for i, position in enumerate(initial_positions):
+            gap = float(
+                scenario_manager.distance_to_obstacles(layout, position)
             )
-            print(f"Start: {spawns['drone_0']}")
-            print(f"Goal:  {goals['drone_0']}")
 
-            for step_no in range(1, max_steps + 1):
-                positions = adapter.get_positions()
-                position = positions[0][:2]
+            if gap < scenario_manager.DRONE_RADIUS:
+                raise RuntimeError(
+                    f"Drone {i} starts in collision/too close to an obstacle: "
+                    f"{gap:.3f} m"
+                )
+        # Check initial drone-to-drone separation before movement.
+        collision_radius = float(
+            config["environment"].get("collision_radius", 0.2)
+        )
 
-                while index < len(waypoints):
-                    target = np.array(waypoints[index], dtype=float)
-                    delta = target - position
+        for i in range(len(initial_positions)):
+            for j in range(i + 1, len(initial_positions)):
+                separation = float(
+                    np.linalg.norm(
+                        initial_positions[i] - initial_positions[j]
+                    )
+                )
 
-                    if np.linalg.norm(delta) >= 0.12:
+                if separation < collision_radius:
+                    raise RuntimeError(
+                        f"Initial drone-to-drone collision: {i}/{j} "
+                        f"({separation:.3f} m)"
+                    )
+        for step_no in range(1, max_steps + 1):
+            steps_used = step_no
+            positions = adapter.get_positions()
+            actions = {}
+
+            # All three drones receive actions each simulation step.
+            for i, route in enumerate(routes):
+                if reached[i]:
+                    actions[f"drone_{i}"] = [0.0, 0.0, 0.0, 0.0]
+                    continue
+
+                position = positions[i][:2]
+
+                # Advance through waypoints that have already been reached.
+                while waypoint_index[i] < len(route):
+                    target_xy = np.asarray(
+                        route[waypoint_index[i]],
+                        dtype=float,
+                    )
+
+                    delta = target_xy - position
+
+                    if float(np.linalg.norm(delta)) >= WAYPOINT_RADIUS:
                         break
 
-                    index += 1
+                    waypoint_index[i] += 1
 
-                if index >= len(waypoints):
+                if waypoint_index[i] >= len(route):
                     velocity = np.zeros(2)
+
                 else:
-                    delta = (
-                        np.array(waypoints[index], dtype=float) - position
+                    target_xy = np.asarray(
+                        route[waypoint_index[i]],
+                        dtype=float,
                     )
+
+                    delta = target_xy - position
                     d = float(np.linalg.norm(delta))
 
                     velocity = (
-                        delta / d * min(SPEED, 1.5 * d)
+                        delta / d * min(MAX_SPEED, 1.5 * d)
                         if d > 1e-8
                         else np.zeros(2)
                     )
 
-                actions = {
-                    "drone_0": [
-                        float(velocity[0]),
-                        float(velocity[1]),
-                        0.0,
-                        0.0,
-                    ],
-                    "drone_1": [0.0, 0.0, 0.0, 0.0],
-                    "drone_2": [0.0, 0.0, 0.0, 0.0],
-                }
+                actions[f"drone_{i}"] = [
+                    float(velocity[0]),
+                    float(velocity[1]),
+                    0.0,
+                    0.0,
+                ]
 
-                adapter.apply_actions(actions)
-                adapter.step_simulation()
+            adapter.apply_actions(actions)
+            adapter.step_simulation()
 
-                positions = adapter.get_positions()
-                raw = adapter.get_raw_state()
+            positions = adapter.get_positions()
+            raw = adapter.get_raw_state()
 
-                # Check geometric obstacle clearance for every drone.
-                for i, pos in enumerate(positions):
-                    gap = float(
-                        scenario_manager.distance_to_obstacles(layout, pos)
+            # Check geometric obstacle clearance for every drone.
+            for i, position in enumerate(positions):
+                gap = float(
+                    scenario_manager.distance_to_obstacles(layout, position)
+                )
+
+                min_obstacle_gap[i] = min(min_obstacle_gap[i], gap)
+
+                if gap < scenario_manager.DRONE_RADIUS:
+                    collision = f"obstacle collision by drone_{i}"
+                    break
+
+            if collision:
+                break
+
+            # Check drone-to-drone separation.
+            for i in range(3):
+                for j in range(i + 1, 3):
+                    separation = float(
+                        np.linalg.norm(positions[i] - positions[j])
                     )
-                    min_gap = min(min_gap, gap)
 
-                    if gap < scenario_manager.DRONE_RADIUS:
-                        collision = f"obstacle, drone_{i}"
+                    min_drone_distance = min(
+                        min_drone_distance,
+                        separation,
+                    )
+
+                    threshold = float(
+                        config["environment"].get("collision_radius", 0.2)
+                    )
+
+                    if separation < threshold:
+                        collision = (
+                            f"drone-to-drone proximity violation: {i}/{j}"
+                        )
                         break
 
                 if collision:
                     break
 
-                # Check drone-to-drone separation.
-                for i in range(len(positions)):
-                    for j in range(i + 1, len(positions)):
-                        if np.linalg.norm(
-                            positions[i] - positions[j]
-                        ) < float(
-                            config["environment"].get("collision_radius", 0.2)
-                        ):
-                            collision = f"drone-drone, {i}/{j}"
-                            break
+            if collision:
+                break
 
-                    if collision:
-                        break
+            goal_threshold = float(
+                config["environment"]["goal_threshold"]
+            )
+            settle_speed = float(
+                config["environment"]["settle_speed"]
+            )
+            required_settle = int(
+                config["environment"]["settle_steps"]
+            )
 
-                if collision:
-                    break
+            for i in range(3):
+                if reached[i]:
+                    continue
 
-                dist_goal = float(
+                distance_to_goal = float(
                     np.linalg.norm(
-                        positions[0] - np.asarray(goals["drone_0"])
+                        positions[i] - np.asarray(goals[f"drone_{i}"])
                     )
                 )
+
                 speed = float(
-                    np.linalg.norm(raw["drone_0"]["velocity"])
+                    np.linalg.norm(raw[f"drone_{i}"]["velocity"])
                 )
 
-                if dist_goal < 0.5 and speed < 0.15:
-                    settled += 1
+                if (
+                    distance_to_goal < goal_threshold
+                    and speed < settle_speed
+                ):
+                    settled_steps[i] += 1
                 else:
-                    settled = 0
+                    settled_steps[i] = 0
 
-                if settled >= 31:
-                    reached = True
-                    break
+                if settled_steps[i] >= required_settle:
+                    reached[i] = True
 
-            final_positions = adapter.get_positions()
-            final_distance = float(
+            if all(reached):
+                break
+
+        positions = adapter.get_positions()
+
+        print(f"\nSimulation steps: {steps_used}")
+        print(
+            f"Minimum drone-to-drone distance: "
+            f"{min_drone_distance:.3f} m"
+        )
+        print(f"Collision detected: {collision or 'none'}")
+
+        for i in range(3):
+            distance_to_goal = float(
                 np.linalg.norm(
-                    final_positions[0] - np.asarray(goals["drone_0"])
+                    positions[i] - np.asarray(goals[f"drone_{i}"])
                 )
             )
 
-            ok = reached and collision is None
-            passed += int(ok)
+            ok = reached[i] and collision is None
 
-            print(f"Steps: {step_no}")
-            print(f"Final goal distance: {final_distance:.3f} m")
-            print(f"Minimum obstacle gap: {min_gap:.3f} m")
-            print(f"Collision: {collision or 'none detected'}")
-            print(f"Settled at goal: {reached}")
-            print(f"RESULT: {'PASS' if ok else 'FAIL/INCOMPLETE'}")
+            print(
+                f"Drone {i}: goal distance={distance_to_goal:.3f} m | "
+                f"min obstacle gap={min_obstacle_gap[i]:.3f} m | "
+                f"settled={reached[i]} | "
+                f"{'PASS' if ok else 'FAIL/INCOMPLETE'}"
+            )
 
-            if not ok:
-                print("Stopping after the first unsuccessful route.")
-                break
+        success = all(reached) and collision is None
+
+        print("\nRESULT: " + ("PASS" if success else "FAIL/INCOMPLETE"))
+
+        return 0 if success else 1
 
     finally:
         adapter.close()
         print("\nPyBullet connection closed.")
-
-    print(f"SUMMARY: {passed}/{len(routes)} routes passed.")
-    return 0 if passed == len(routes) else 1
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        print(
-            f"ERROR: {type(exc).__name__}: {exc}",
-            file=sys.stderr,
-        )
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
         raise SystemExit(1)

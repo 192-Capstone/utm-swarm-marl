@@ -20,6 +20,7 @@ CROP = Path(
 FULL = Path(
     "data/osm_city/bengaluru_ecity_phase1_rotated_v2_layout.yaml"
 )
+
 PAIRS = 20
 SEEDS = range(5)
 
@@ -30,7 +31,7 @@ def run_benchmark(name, grid, seed, grid_build_s):
         raise RuntimeError(f"{name}: not enough free cells")
 
     rng = np.random.RandomState(seed)
-    plan_times = []
+    route_times = []
     waypoint_counts = []
     successes = 0
 
@@ -46,26 +47,22 @@ def run_benchmark(name, grid, seed, grid_build_s):
         start = grid.to_world((int(a[0]), int(a[1])))
         goal = grid.to_world((int(b[0]), int(b[1])))
 
+        # Measure route planning and simplification together.
         t0 = time.perf_counter()
         path = plan(grid, start, goal, snap_dist=0.0)
-        elapsed = time.perf_counter() - t0
-        plan_times.append(elapsed)
 
         if path is not None:
             successes += 1
-
-            t0 = time.perf_counter()
             simplified = simplify(grid, path)
-            simplify_time = time.perf_counter() - t0
-
             waypoint_counts.append(len(simplified))
-        else:
-            simplify_time = 0.0
+
+        elapsed = time.perf_counter() - t0
+        route_times.append(elapsed)
 
         print(
             f"  Pair {i + 1:02}/{PAIRS}: "
             f"{'success' if path is not None else 'no route'}; "
-            f"plan={elapsed:.3f}s; simplify={simplify_time:.3f}s",
+            f"total={elapsed:.3f}s",
             flush=True,
         )
 
@@ -73,8 +70,8 @@ def run_benchmark(name, grid, seed, grid_build_s):
         "scenario": name,
         "seed": seed,
         "grid_s": grid_build_s,
-        "median_s": statistics.median(plan_times),
-        "max_s": max(plan_times),
+        "median_s": statistics.median(route_times),
+        "max_s": max(route_times),
         "success": successes,
         "avg_waypoints": (
             statistics.mean(waypoint_counts) if waypoint_counts else 0.0
