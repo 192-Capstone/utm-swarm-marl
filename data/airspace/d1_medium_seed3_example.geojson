@@ -1,0 +1,205 @@
+{
+ "type": "FeatureCollection",
+ "frame": "local_m",
+ "anchor": [
+  12.84968,
+  77.66498
+ ],
+ "description": "Made-up example scenario for testing, NOT real airspace restrictions.",
+ "map": "d1",
+ "city": "generate_city(np.random.RandomState(3), 'medium')",
+ "features": [
+  {
+   "type": "Feature",
+   "id": "d1_red_block",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       -8.598095,
+       0.471537
+      ],
+      [
+       -0.498867,
+       0.471537
+      ],
+      [
+       -0.498867,
+       7.938413
+      ],
+      [
+       -8.598095,
+       7.938413
+      ],
+      [
+       -8.598095,
+       0.471537
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "zone",
+    "name": "Central block (red)",
+    "restriction": "prohibited",
+    "reason": "made-up: e.g. a prison",
+    "lower_m": null,
+    "upper_m": null,
+    "active": [],
+    "authorised": []
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "d1_yellow_block",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       14.34433,
+       -21.262685
+      ],
+      [
+       21.719811,
+       -21.262685
+      ],
+      [
+       21.719811,
+       -13.85695
+      ],
+      [
+       14.34433,
+       -13.85695
+      ],
+      [
+       14.34433,
+       -21.262685
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "zone",
+    "name": "South-east block (yellow, 3-20 m)",
+    "restriction": "authorisation",
+    "reason": "made-up: e.g. a school; permission needed from 3 to 20 m, free below 3 m",
+    "lower_m": 3.0,
+    "upper_m": 20.0,
+    "active": [],
+    "authorised": []
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "d1_temp_avenue",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       2.883268,
+       -3.712764
+      ],
+      [
+       9.452098,
+       -3.712764
+      ],
+      [
+       9.452098,
+       0.471537
+      ],
+      [
+       2.883268,
+       0.471537
+      ],
+      [
+       2.883268,
+       -3.712764
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "zone",
+    "name": "Avenue closure 120-300 s",
+    "restriction": "prohibited",
+    "reason": "made-up: e.g. a parade",
+    "lower_m": null,
+    "upper_m": null,
+    "active": [
+     [
+      120.0,
+      300.0
+     ]
+    ],
+    "authorised": []
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "d1_vp_north",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     5.0,
+     10.299609
+    ]
+   },
+   "properties": {
+    "type": "vertiport",
+    "kind": "vertiport",
+    "name": "North vertiport"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "d1_hub_south",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     6.0,
+     -11.703705
+    ]
+   },
+   "properties": {
+    "type": "vertiport",
+    "kind": "hub",
+    "name": "South hub"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "d1_drop_west",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -16.0,
+     -1.620614
+    ]
+   },
+   "properties": {
+    "type": "vertiport",
+    "kind": "drop",
+    "name": "West drop point"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "d1_drop_corner",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -22.781196,
+     22.930751
+    ]
+   },
+   "properties": {
+    "type": "vertiport",
+    "kind": "drop",
+    "name": "North-west drop point"
+   }
+  }
+ ]
+}
