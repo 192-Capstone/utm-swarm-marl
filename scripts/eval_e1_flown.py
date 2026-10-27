@@ -13,7 +13,8 @@ schedule); crashed drones leave the world (crash_mode remove):
     e1      departure time and layer as E1 approved them
 Same flights, routes, policy and noise seeds in both. Scored: arrived, crashed, close encounters
 (pairs of airborne drones that ever came closer than 2.0 m and 1.4 m: E1's separation target
-and the policy's reaction distance), closest approach, and E1's delays.
+and the policy's reaction distance), closest approach, E1's delays, and how late each drone
+settled on its goal pad compared with the planned arrival (late_s; E1 holds the pad pad_after s).
 
 --zones FRAC adds temporary no-fly zones (D2, utm/airspace_zones.py): 10 m tiles covering about
 FRAC of the map, each closed for 20-40 s starting at a random time in the window. E1 plans around
@@ -65,7 +66,8 @@ def plans(sky, reqs):
         z0, zl = sky.s.start_z, sky.layer_z(fp.layer)
         naive = [(r[0][0], r[0][1], z0)] + [(x, y, zl) for x, y in r] + [(r[-1][0], r[-1][1], z0)]
         flights.append({'id': fp.id, 'start': fp.start, 'goal': fp.goal,
-                        'no_e1': (fp.t_earliest, naive), 'e1': (d.t_dep, d.waypoints), 'delay': d.delay})
+                        'no_e1': (fp.t_earliest, naive), 'e1': (d.t_dep, d.waypoints), 'delay': d.delay,
+                        'arrival': {'no_e1': fp.t_earliest + sky.profile(r, fp.layer)[1], 'e1': d.arrival}})
     return decisions, flights
 
 
@@ -114,10 +116,12 @@ def fly(cfg, args, layout, flights, mode, seed, sky=None, windows=None):
     close = {t: set() for t in NEAR}
     min_sep = np.inf
     entered, inside_steps = set(), 0
+    settled = np.full(n, np.nan)
     info = {}
     for step in range(cfg['environment']['max_steps']):
         obs, _, done, info = env.step(policy.act(obs, env, n))
         air = np.flatnonzero(~(env.waiting | env.landed | env.crashed))
+        settled[np.isnan(settled) & env.landed] = (step + 1) * dt
         if windows:
             t = (step + 1) * dt
             for i, (x, y, z) in zip(air, env.adapter.get_positions()[air]):
@@ -141,7 +145,9 @@ def fly(cfg, args, layout, flights, mode, seed, sky=None, windows=None):
     return {'flights': n, 'arrived': int(reached.sum()), 'crashed': int(env.crashed.sum()),
             'pairs_below_2.0': len(close[2.0]), 'pairs_below_1.4': len(close[1.4]),
             'min_separation_m': None if min_sep == np.inf else round(min_sep, 3),
-            'zone_entries': len(entered), 'zone_seconds': round(inside_steps * dt, 2)}
+            'zone_entries': len(entered), 'zone_seconds': round(inside_steps * dt, 2),
+            'late_s': [None if np.isnan(t) else round(float(t - f['arrival'][mode]), 2)
+                       for t, f in zip(settled, flights)]}
 
 
 def main():
@@ -203,6 +209,11 @@ def main():
           f"mean delay {np.mean([r['delay_mean_s'] for r in rows]):.1f} s, "
           f"rejected with a zone in the way {sum(r['rejected_by_zone'] for r in rows)}, "
           f"flown around zones {sum(r['around_zones'] for r in rows)}")
+    for m in ('no_e1', 'e1'):
+        late = np.array([x for r in rows for x in r[m]['late_s'] if x is not None])
+        if len(late):
+            print(f"settled vs planned arrival ({m}): median {np.median(late):+.1f} s, "
+                  f"p95 {np.percentile(late, 95):+.1f} s, p99 {np.percentile(late, 99):+.1f} s, max {late.max():+.1f} s")
     path = args.out or os.path.join('eval_results', 'e1_flown',
                                     f"{args.map}_{args.level}_f{args.flights}_w{args.window:g}"
                                     f"{f'_z{args.zones:g}' if args.zones else ''}.json")
