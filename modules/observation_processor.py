@@ -40,6 +40,7 @@ import yaml
 import os
 
 from modules.neighbour_source import TruthNeighbourSource
+from modules.neighbour_index import NeighbourIndex
 from envs import lidar as lidar_mod
 from training.networks.critic_network import critic_version, CRITIC_STATE_DIM
 
@@ -150,6 +151,11 @@ class ObservationProcessor:
         self.neighbor_pos_scale = float(obs_cfg.get('neighbor_pos_scale', 1.0))
         self.neighbor_vel_scale = float(obs_cfg.get('neighbor_vel_scale', 1.0))
         self.neighbour_source   = TruthNeighbourSource()
+        #   neighbor_index     : brute (default, every other drone) | grid | h3; the
+        #                        index only narrows the candidates, the picked
+        #                        neighbours are identical (modules/neighbour_index.py)
+        self.neighbour_index    = NeighbourIndex(obs_cfg.get('neighbor_index', 'brute'),
+                                                 self.sensing_radius, obs_cfg.get('h3_resolution'))
 
         # LiDAR uses a fixed scale instead of the running normalizer:
         # proximity = 1 - distance / range (0 = nothing seen, 1 = touching).
@@ -224,7 +230,9 @@ class ObservationProcessor:
             global_state    : (N, 17)     tensor — per-drone global state
         """
         if drone_ids is None:
-            drone_ids = sorted([k for k in raw_state.keys() if k != 'goals'])
+            # numeric order (drone_2 before drone_10): row i must be drone_i, which a plain
+            # text sort breaks from 11 drones on
+            drone_ids = sorted([k for k in raw_state.keys() if k != 'goals'], key=lambda k: (len(k), k))
 
         N = len(drone_ids)
 
@@ -390,8 +398,12 @@ class ObservationProcessor:
 
         known_pos, known_vel, known = self.neighbour_source.observe(positions, velocities)
 
+        # The truth source broadcasts the same positions to everyone, so one index
+        # over them serves every observer.
+        candidates = self.neighbour_index.candidates(known_pos[0])
+
         for i in range(N):
-            others = [j for j in range(N) if j != i and known[i, j]]
+            others = [j for j in candidates[i].tolist() if known[i, j]]
             if not others:
                 continue   # single drone, or nothing known about anyone
 
