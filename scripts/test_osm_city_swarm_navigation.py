@@ -14,6 +14,7 @@ from envs import scenario_manager
 from envs.route_planner import build_grid, plan, simplify, path_length
 from modules.grid_path_planner import connected_components
 
+
 CONFIG = ROOT / "configs/config_stage2_obstacles.yaml"
 LAYOUT = ROOT / "data/osm_city/bengaluru_ecity_phase1_rotated_v2_crop50_cand1_layout.yaml"
 
@@ -90,11 +91,11 @@ def main():
         return cells
 
     def choose_long_path(allowed):
-        """Find a sufficiently long D7 route within remaining free space."""
+        """Find the longest sufficiently long D7 route in remaining free space."""
         if len(allowed) < 50:
             return None
 
-        # Connected components avoid trying endpoints in disconnected areas.
+        # Connected components avoid planning between disconnected areas.
         grid_width = grid.occ.shape[1]
         components = connected_components(allowed, grid_width)
         components.sort(key=len, reverse=True)
@@ -105,6 +106,9 @@ def main():
         for cell in allowed:
             allowed_mask[cell] = True
 
+        best_route = None
+        best_length = MIN_ROUTE_LENGTH
+
         try:
             # Block cells outside the remaining available route space.
             grid.occ[:] = original_occ | ~allowed_mask
@@ -114,30 +118,73 @@ def main():
                     continue
 
                 component_cells = sorted(component)
-                starts_to_try = rng.sample(
+
+                # Include extreme cells to encourage map-spanning routes.
+                min_y = min(cell[0] for cell in component_cells)
+                max_y = max(cell[0] for cell in component_cells)
+                min_x = min(cell[1] for cell in component_cells)
+                max_x = max(cell[1] for cell in component_cells)
+
+                extreme_starts = {
+                    min(component_cells, key=lambda cell: cell[0]),
+                    max(component_cells, key=lambda cell: cell[0]),
+                    min(component_cells, key=lambda cell: cell[1]),
+                    max(component_cells, key=lambda cell: cell[1]),
+                    min(
+                        component_cells,
+                        key=lambda cell: (
+                            abs(cell[0] - min_y) + abs(cell[1] - min_x)
+                        ),
+                    ),
+                    min(
+                        component_cells,
+                        key=lambda cell: (
+                            abs(cell[0] - max_y) + abs(cell[1] - max_x)
+                        ),
+                    ),
+                    min(
+                        component_cells,
+                        key=lambda cell: (
+                            abs(cell[0] - min_y) + abs(cell[1] - max_x)
+                        ),
+                    ),
+                    min(
+                        component_cells,
+                        key=lambda cell: (
+                            abs(cell[0] - max_y) + abs(cell[1] - min_x)
+                        ),
+                    ),
+                }
+
+                # Combine map-boundary candidates with deterministic samples.
+                sampled_starts = rng.sample(
                     component_cells,
-                    min(64, len(component_cells)),
+                    min(40, len(component_cells)),
+                )
+
+                starts_to_try = list(
+                    extreme_starts | set(sampled_starts)
                 )
 
                 for start in starts_to_try:
                     goals = [
-                        cell for cell in component_cells
-                        if cell_distance(start, cell) >= MIN_ROUTE_LENGTH
+                        cell
+                        for cell in component_cells
+                        if cell != start
+                        and cell_distance(start, cell) >= MIN_ROUTE_LENGTH
                     ]
 
                     if not goals:
                         continue
 
+                    # Try the most distant goals first.
                     goals.sort(
                         key=lambda cell: cell_distance(start, cell),
                         reverse=True,
                     )
 
-                    # Search a wider selection of distant goals.
-                    goal_pool = goals[:min(32, len(goals))]
-                    rng.shuffle(goal_pool)
-
-                    for goal in goal_pool[:16]:
+                    # Test more goal candidates while keeping the search bounded.
+                    for goal in goals[:24]:
                         route = plan(
                             grid,
                             xy(start),
@@ -149,18 +196,20 @@ def main():
                             continue
 
                         waypoints = simplify(grid, route)
+                        length = path_length(waypoints)
 
-                        if path_length(waypoints) >= MIN_ROUTE_LENGTH:
-                            return waypoints
+                        if length > best_length:
+                            best_route = waypoints
+                            best_length = length
 
-            return None
+            return best_route
 
         finally:
             # Always restore the original occupancy grid.
             grid.occ[:] = original_occ
 
     def make_three_routes():
-        # Preserve the original fallback separation thresholds.
+        # Preserve the existing fallback separation thresholds.
         for separation_m in (3.0, 2.5, 2.0, 1.5):
             routes = []
             allowed = set(free)
@@ -180,7 +229,8 @@ def main():
                 # Reserve a buffer around the entire route before planning
                 # the next route.
                 allowed = {
-                    cell for cell in allowed
+                    cell
+                    for cell in allowed
                     if cell not in occupied_cells
                     and all(
                         (cell[0] - p[0]) ** 2
@@ -208,6 +258,7 @@ def main():
         [float(v) for v in route[0]]
         for route in routes
     ]
+
     targets = [
         [float(v) for v in route[-1]]
         for route in routes
@@ -217,6 +268,7 @@ def main():
         f"drone_{i}": [*starts[i], ALTITUDE]
         for i in range(3)
     }
+
     goals = {
         f"drone_{i}": [*targets[i], ALTITUDE]
         for i in range(3)
@@ -228,7 +280,8 @@ def main():
         print(
             f"Drone {i}: route length {path_length(route):.1f} m | "
             f"{len(route)} waypoints | "
-            f"start {spawns[f'drone_{i}']} | goal {goals[f'drone_{i}']}"
+            f"start {spawns[f'drone_{i}']} | "
+            f"goal {goals[f'drone_{i}']}"
         )
 
     adapter = PyBulletAdapter(config, gui=False)
@@ -279,6 +332,7 @@ def main():
                         route[waypoint_index[i]],
                         dtype=float,
                     )
+
                     delta = target_xy - position
 
                     if float(np.linalg.norm(delta)) >= WAYPOINT_RADIUS:
@@ -288,11 +342,13 @@ def main():
 
                 if waypoint_index[i] >= len(route):
                     velocity = np.zeros(2)
+
                 else:
                     target_xy = np.asarray(
                         route[waypoint_index[i]],
                         dtype=float,
                     )
+
                     delta = target_xy - position
                     d = float(np.linalg.norm(delta))
 
@@ -320,6 +376,7 @@ def main():
                 gap = float(
                     scenario_manager.distance_to_obstacles(layout, position)
                 )
+
                 min_obstacle_gap[i] = min(min_obstacle_gap[i], gap)
 
                 if gap < scenario_manager.DRONE_RADIUS:
@@ -335,10 +392,12 @@ def main():
                     separation = float(
                         np.linalg.norm(positions[i] - positions[j])
                     )
+
                     min_drone_distance = min(
                         min_drone_distance,
                         separation,
                     )
+
                     threshold = float(
                         config["environment"].get("collision_radius", 0.2)
                     )
@@ -355,9 +414,15 @@ def main():
             if collision:
                 break
 
-            goal_threshold = float(config["environment"]["goal_threshold"])
-            settle_speed = float(config["environment"]["settle_speed"])
-            required_settle = int(config["environment"]["settle_steps"])
+            goal_threshold = float(
+                config["environment"]["goal_threshold"]
+            )
+            settle_speed = float(
+                config["environment"]["settle_speed"]
+            )
+            required_settle = int(
+                config["environment"]["settle_steps"]
+            )
 
             for i in range(3):
                 if reached[i]:
@@ -368,11 +433,15 @@ def main():
                         positions[i] - np.asarray(goals[f"drone_{i}"])
                     )
                 )
+
                 speed = float(
                     np.linalg.norm(raw[f"drone_{i}"]["velocity"])
                 )
 
-                if distance_to_goal < goal_threshold and speed < settle_speed:
+                if (
+                    distance_to_goal < goal_threshold
+                    and speed < settle_speed
+                ):
                     settled_steps[i] += 1
                 else:
                     settled_steps[i] = 0
@@ -398,6 +467,7 @@ def main():
                     positions[i] - np.asarray(goals[f"drone_{i}"])
                 )
             )
+
             ok = reached[i] and collision is None
 
             print(
@@ -408,6 +478,7 @@ def main():
             )
 
         success = all(reached) and collision is None
+
         print("\nRESULT: " + ("PASS" if success else "FAIL/INCOMPLETE"))
 
         return 0 if success else 1

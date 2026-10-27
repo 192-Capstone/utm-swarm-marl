@@ -120,18 +120,6 @@ def _fill_block(rng, x0, x1, y0, y1, cfg, out):
                 if xb - xa > 0.8 and yb - ya > 0.8:
                     out.append(_box(xa, xb, ya, yb, h()))
 
-
-def occupancy(layout, size, res, inflate):
-    """Build a boolean occupancy grid using the shared route planner."""
-    W, H = size
-    grid = build_grid(
-        layout,
-        ((-W / 2, W / 2), (-H / 2, H / 2)),
-        res,
-        inflate,
-    )
-    return grid.occ, grid.xs, grid.ys
-
 def route_length(city, a, b):
     """Shortest path length in metres, or None if unreachable."""
     grid = city.get('grid')

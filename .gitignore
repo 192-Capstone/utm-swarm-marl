@@ -60,3 +60,6 @@ docs/pybullet_to_webots_transfer.md
 
 # Project virtual environment
 .venv/
+
+# Generated route preview images
+route_preview_*.png

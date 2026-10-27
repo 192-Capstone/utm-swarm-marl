@@ -84,9 +84,12 @@ def main():
         if not starts:
             starts = candidates
 
+        # Keep the longest route found, so the drone crosses the map rather
+        # than taking the first route that is just long enough.
         picked = None
+        best_length = 15.0
 
-        for start in rng.sample(starts, min(80, len(starts))):
+        for start in rng.sample(starts, min(30, len(starts))):
             targets = [
                 cell for cell in candidates
                 if grid_distance(start, cell, STEP) >= 15.0
@@ -110,24 +113,13 @@ def main():
                 reverse=True,
             )
 
-            target_pool = targets[:min(20, len(targets))]
-            first_goal = rng.choice(target_pool)
-
-            # Try the randomized first choice, then other candidate goals.
-            goal_candidates = [first_goal] + [
-                cell for cell in target_pool
-                if cell != first_goal
-            ]
-
-            for goal in goal_candidates:
+            # The most distant goals first.
+            for goal in targets[:min(10, len(targets))]:
                 route = plan(grid, xy(start), xy(goal))
 
-                if route is not None and path_length(route) >= 15.0:
+                if route is not None and path_length(route) > best_length:
                     picked = (start, goal, route)
-                    break
-
-            if picked is not None:
-                break
+                    best_length = path_length(route)
 
         if picked is None:
             raise RuntimeError(
