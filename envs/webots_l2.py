@@ -8,7 +8,7 @@ velocity-controlled body. Same interface as PyBulletAdapter / WebotsAdapter
 The drone (webots/worlds/swarm_l2.wbt) is a Crazyflie-equivalent: 50 g,
 gravity, four Propellers with the Crazyflie's thrust and torque constants.
 It is flown by Bitcraze's velocity controller pid_velocity_fixed_height
-(ported from Webots' crazyflie_py_wallfollowing/pid_controller.py, gains
+(envs/cf_velocity_pid.py, ported from Webots' crazyflie_py_wallfollowing/pid_controller.py, gains
 unchanged), run every basic step (4 ms):
     policy action [vx, vy, vz] (world frame)
       -> PID setpoint: vx, vy rotated into the body frame; vz moves the
@@ -19,6 +19,15 @@ estimator; the PID uses the IMU, gyro and GPS as Bitcraze's controller does.
 
 LiDAR: still the analytic scan of envs/webots_adapter.py (identical rules), so
 the only difference from Level 1 is the flight dynamics.
+
+Safe reset: Webots' Propeller motors keep their speed through resetPhysics and change speed at
+most spin_rate rad/s^2 (the world's maxTorque with unit rotor inertia: 30 for the official model,
+1000 for the equivalent; measured exact to 0.001 rad/s). A crashed drone that keeps getting climb
+commands ends with its motors near 600 rad/s and would shoot up at the next release. So the
+adapter tracks each rotor's speed from the commands it sends (every basic step), and reset_world
+holds the drone at least spinup_hold_s and until every rotor is within 2 rad/s of hover speed
+(at most 30 s, else it raises). Start check: a drone faster than 1 m/s within 5 control steps of
+release raises (no command can do that).
 """
 
 import math
@@ -26,56 +35,18 @@ import math
 import numpy as np
 
 from envs import lidar as lidar_mod
+from envs.cf_velocity_pid import VelocityPID, HOVER_RAD_S
 from envs.webots_adapter import (WebotsAdapter, scan_lidar, PILLAR_NODE, BOX_NODE,
                                  ROOT, _euler_from_matrix, _note_lag_ignored)
 import os
 
 L2_WORLD = os.path.join(ROOT, 'webots', 'worlds', 'swarm_l2.wbt')
 L2_REAL_WORLD = os.path.join(ROOT, 'webots', 'worlds', 'swarm_l2_real.wbt')   # official Crazyflie model
-HOVER_RAD_S = math.sqrt(0.05 * 9.81 / (4 * 4e-05))      # ~55.4 rad/s per motor at hover
-
-
-class VelocityPID:
-    """Bitcraze's pid_velocity_fixed_height_controller (Webots Crazyflie
-    example, MIT licence), same gains and structure, without numpy."""
-    G = {"kp_att_y": 1, "kd_att_y": 0.5, "kp_att_rp": 0.5, "kd_att_rp": 0.1,
-         "kp_vel_xy": 2, "kd_vel_xy": 0.5, "kp_z": 10, "ki_z": 5, "kd_z": 5}
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self, integrator=0.0):
-        self.past_vx_error = self.past_vy_error = self.past_alt_error = 0.0
-        self.past_pitch_error = self.past_roll_error = 0.0
-        self.altitude_integrator = integrator
-
-    @staticmethod
-    def _clip(x, lo, hi):
-        return lo if x < lo else hi if x > hi else x
-
-    def __call__(self, dt, vx_d, vy_d, yaw_rate_d, alt_d, roll, pitch, yaw_rate, alt, vx, vy):
-        g, c = self.G, self._clip
-        vx_e, vy_e = vx_d - vx, vy_d - vy
-        vx_der, vy_der = (vx_e - self.past_vx_error) / dt, (vy_e - self.past_vy_error) / dt
-        pitch_d = g["kp_vel_xy"] * c(vx_e, -1, 1) + g["kd_vel_xy"] * vx_der
-        roll_d = -g["kp_vel_xy"] * c(vy_e, -1, 1) - g["kd_vel_xy"] * vy_der
-        self.past_vx_error, self.past_vy_error = vx_e, vy_e
-        alt_e = alt_d - alt
-        alt_der = (alt_e - self.past_alt_error) / dt
-        self.altitude_integrator += alt_e * dt
-        alt_cmd = g["kp_z"] * alt_e + g["kd_z"] * alt_der + g["ki_z"] * c(self.altitude_integrator, -2, 2) + 48
-        self.past_alt_error = alt_e
-        pitch_e, roll_e = pitch_d - pitch, roll_d - roll
-        pitch_der, roll_der = (pitch_e - self.past_pitch_error) / dt, (roll_e - self.past_roll_error) / dt
-        roll_cmd = g["kp_att_rp"] * c(roll_e, -1, 1) + g["kd_att_rp"] * roll_der
-        pitch_cmd = -g["kp_att_rp"] * c(pitch_e, -1, 1) - g["kd_att_rp"] * pitch_der
-        yaw_cmd = g["kp_att_y"] * c(yaw_rate_d - yaw_rate, -1, 1)
-        self.past_pitch_error, self.past_roll_error = pitch_e, roll_e
-        m1 = alt_cmd - roll_cmd + pitch_cmd + yaw_cmd
-        m2 = alt_cmd - roll_cmd - pitch_cmd - yaw_cmd
-        m3 = alt_cmd + roll_cmd - pitch_cmd + yaw_cmd
-        m4 = alt_cmd + roll_cmd + pitch_cmd - yaw_cmd
-        return [c(m, 0, 600) for m in (m1, m2, m3, m4)]
+SPIN_RATE = {True: 30.0, False: 1000.0}   # rad/s^2: official model (real) / equivalent (worlds' maxTorque)
+HOVER_TOL = 2.0                           # rad/s: every rotor this close to HOVER_RAD_S before release
+MAX_HOLD_S = 30.0                         # longest spin-up hold before reset_world raises
+START_CHECK_STEPS = 5                     # control steps after release (0.16 s)
+START_SPEED_LIMIT = 1.0                   # m/s
 
 
 class WebotsL2Adapter(WebotsAdapter):
@@ -124,7 +95,13 @@ class WebotsL2Adapter(WebotsAdapter):
         self.pid = VelocityPID()
         self.cmd = np.zeros(3)
         self.z_des = 1.0
-        self.sup.step(self.basic_ms)
+        self.spin_rate = float(w.get('spin_rate', SPIN_RATE[self.real]))
+        self._rotor_target = np.zeros(4)   # |commanded| rotor speeds (rad/s)
+        self._rotor_est = np.zeros(4)      # estimated true rotor speeds: kept across resets, as Webots does
+        self.last_hold_s = None
+        self.episode = 0                   # reset_world calls so far (1 = first episode)
+        self._steps_since_release = START_CHECK_STEPS
+        self._step_basic()
         self._pos = np.array([self.node.getPosition()], dtype=np.float64)
         self._vel = np.zeros((1, 3))
         self._orn = np.zeros((1, 3))
@@ -133,6 +110,7 @@ class WebotsL2Adapter(WebotsAdapter):
 
     # ---------------------------------------------------------------- world
     def reset_world(self, spawn_positions: dict, goal_positions: dict, obstacles=None):
+        self.episode += 1
         start = [float(v) for v in spawn_positions['drone_0']]
         self._tr[0].setSFVec3f(start)
         self._rot[0].setSFRotation([0.0, 0.0, 1.0, 0.0])
@@ -150,16 +128,38 @@ class WebotsL2Adapter(WebotsAdapter):
         # hold the drone at the spawn while the rotors spin up to hover speed
         # (55 ms at our motors' 1000 rad/s^2, ~1.85 s for the official model), so the
         # episode starts in hover
-        for _ in range(max(1, int(round(self.spinup_hold_s / self.dt)))):
-            self.sup.step(self.basic_ms)
+        k_min, k_max = max(1, int(round(self.spinup_hold_s / self.dt))), int(round(MAX_HOLD_S / self.dt))
+        k = 0
+        while k < k_min or np.abs(self._rotor_est - HOVER_RAD_S).max() > HOVER_TOL:
+            if k >= k_max:
+                raise RuntimeError(f"webots_l2: rotors not at hover speed after {MAX_HOLD_S} s hold "
+                                   f"(estimate {self._rotor_est.round(1)} rad/s)")
+            self._step_basic()
+            k += 1
             self._tr[0].setSFVec3f(start)
             self._rot[0].setSFRotation([0.0, 0.0, 1.0, 0.0])
             self.node.setVelocity([0.0] * 6)
-        self.sup.step(self.basic_ms)
+        self.last_hold_s = k * self.dt
+        self._step_basic()
         self._prev_gps = np.array(self.gps.getValues())
+        self._steps_since_release = 0
         self._read_state()
 
+    def _step_basic(self):
+        """One basic step; the rotor estimate moves towards the command by at most spin_rate * dt."""
+        d = np.clip(self._rotor_target - self._rotor_est, -self.spin_rate * self.dt, self.spin_rate * self.dt)
+        self._rotor_est += d
+        return self.sup.step(self.basic_ms)
+
+    def _start_check(self):
+        speed = float(np.linalg.norm(self._vel[0]))
+        if speed > START_SPEED_LIMIT:
+            raise RuntimeError(f"webots_l2: episode {self.episode}: drone faster than {START_SPEED_LIMIT} m/s "
+                               f"({speed:.1f} m/s) within "
+                               f"{START_CHECK_STEPS} control steps of release; it started with leftover motor speed")
+
     def _set_motors(self, m):
+        self._rotor_target = np.abs(np.asarray(m, dtype=np.float64))
         # spin directions as in Bitcraze's controller: m1, m3 negative
         self.motors[0].setVelocity(-m[0]); self.motors[1].setVelocity(m[1])
         self.motors[2].setVelocity(-m[2]); self.motors[3].setVelocity(m[3])
@@ -209,10 +209,13 @@ class WebotsL2Adapter(WebotsAdapter):
             cy_b = -cmd[0] * sy + cmd[1] * cy
             m = self.pid(self.dt, cx_b, cy_b, 0.0, self.z_des, roll, pitch, yaw_rate, g[2], vx_b, vy_b)
             self._set_motors(m)
-            if self.sup.step(self.basic_ms) == -1:
+            if self._step_basic() == -1:
                 raise RuntimeError("Webots terminated")
             if self.trace is not None:
                 self._read_state()
                 self.trace.append((self.sup.getTime(), self._pos[0].copy(), self._vel[0].copy(),
                                    self._orn[0].copy(), self.cmd.copy(), self.z_des))
         self._read_state()
+        if self._steps_since_release < START_CHECK_STEPS:
+            self._start_check()
+            self._steps_since_release += 1
