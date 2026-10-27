@@ -258,6 +258,64 @@ def test_height_bands():
     assert {layer for _, layer in keys} == {1}
 
 
+def _points_outside(zone, d, rng, n):
+    """n points exactly d m outside a zone's edge (circle, or convex polygon: an edge point moved
+    out along that edge's normal)."""
+    if zone.circle is not None:
+        (cx, cy), r = zone.circle
+        a = rng.uniform(0, 2 * np.pi, n)
+        pts = np.column_stack([cx + (r + d) * np.cos(a), cy + (r + d) * np.sin(a)])
+    else:
+        poly = np.asarray(zone.polygon)
+        if np.sum(poly[:, 0] * np.roll(poly[:, 1], -1) - np.roll(poly[:, 0], -1) * poly[:, 1]) < 0:
+            poly = poly[::-1]                                   # counter-clockwise
+        edges = np.roll(poly, -1, axis=0) - poly
+        lengths = np.linalg.norm(edges, axis=1)
+        k = rng.choice(len(poly), n, p=lengths / lengths.sum())
+        t = rng.uniform(0, 1, n)[:, None]
+        normals = np.column_stack([edges[:, 1], -edges[:, 0]]) / lengths[:, None]
+        pts = poly[k] + t * edges[k] + d * normals[k]
+    assert np.allclose(zone.distance(pts), d, atol=1e-6)        # really d m from the zone
+    return pts
+
+
+@pytest.mark.parametrize('name', ['ecity_crop50', 'd1_medium_seed3'])
+def test_safety_buffer_around_example_zones(name):
+    """Docstring rule 2, with E1's defaults (radius 2.1 m, resolution 15): a drone 2.0 m outside a
+    zone's edge is always blocked (its cells_near shares a key cell), one 3.6 m outside never is."""
+    path, _, sky = _example_map(name)
+    zones, _, _ = load_zones(path, sky)
+    planner = StrategicPlanner([], ((-60.0, 60.0), (-60.0, 60.0)), Settings(), airspace=sky)
+    assert (planner.s.radius, sky.res) == (2.1, 15)
+    rng = np.random.RandomState(4)
+    for z in zones:
+        cells = zone_cells(z, sky)
+        for d, blocked in ((2.0, True), (3.6, False)):
+            for x, y in _points_outside(z, d, rng, 200):
+                hit = bool(cells.intersection(planner.cells_near(x, y)))
+                assert hit == blocked, (z.id, d, (x, y))
+
+
+def test_thin_strip_over_blocking_matches_docstring():
+    """Docstring rule 3: a 0.5 m x 10 m strip's key cells cover about 3.8x its area (3.3-4.1x by
+    position and angle); stays in 3.0-4.5x."""
+    c = SKY.cell(0.0, 0.0)
+    corners = np.asarray(SKY.boundary(c))
+    hex_area = 0.5 * abs(np.sum(corners[:, 0] * np.roll(corners[:, 1], -1)
+                                - np.roll(corners[:, 0], -1) * corners[:, 1]))
+    rng = np.random.RandomState(5)
+    ratios = []
+    for _ in range(8):
+        a = rng.uniform(0, np.pi)
+        centre = rng.uniform(-5, 5, 2)
+        u, v = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
+        strip = [tuple(centre + su * 5.0 * u + sv * 0.25 * v)
+                 for su, sv in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+        ratios.append(len(zone_cells(Zone('strip', 'Strip', polygon=strip), SKY)) * hex_area / 5.0)
+    assert all(3.0 <= r <= 4.5 for r in ratios), ratios
+    assert 3.3 <= float(np.median(ratios)) <= 4.2, ratios
+
+
 # ------------------------------------------------------------------ C. with E1
 def test_start_pad_inside_a_permanent_zone_is_rejected():
     sky = StrategicPlanner([], B)
