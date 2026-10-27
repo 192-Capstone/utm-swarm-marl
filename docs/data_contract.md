@@ -249,3 +249,115 @@ Applied progressively across curriculum stages to bridge the sim-to-real gap:
 ---
 
 _This document reflects finalized schema decisions as of Phase 2 Review 1. Pending items will be updated as implementation progresses._
+
+---
+
+## 9. Verified Runtime Interfaces (G3)
+
+This section records interfaces verified in the current repository. It distinguishes implemented runtime contracts from design targets and components whose integration has not been confirmed. Where this section differs from earlier design tables, use the implementation-specific details here when describing current runtime behavior.
+
+### 9.1 Simulator Adapter Contract
+
+Both `envs/pybullet_adapter.py` and `envs/webots_adapter.py` expose the following common methods:
+
+| Method | Input | Output / behavior |
+|---|---|---|
+| `reset_world(spawn_positions, goal_positions, obstacles=None)` | Spawn positions, goal positions, optional obstacles | Resets the simulator world |
+| `apply_actions(actions)` | Per-drone action vectors `[vx, vy, vz, yaw_rate]`; yaw rate may be optional | Applies drone controls |
+| `step_simulation()` | None | Advances the simulator |
+| `get_raw_state()` | None | Returns a dictionary of drone states and goals |
+| `get_positions()` | None | Returns an `(N, 3)` NumPy array of positions |
+| `close()` | None | Closes the adapter/simulator |
+
+The raw-state dictionary contains a `drone_i` entry for each drone, with `position`, `velocity`, `orientation`, and `lidar` fields. A `lidar_ring` field may also be present. The top-level `goals` entry maps drone identifiers to goal positions.
+
+Position and velocity vectors use three components. The adapters expose a common method interface, but simulator-specific behavior is not guaranteed to be identical. In particular, Webots has its own process/controller constraints, and its adapter does not apply the configured dynamics lag in the same way as PyBullet.
+
+### 9.2 Action Contract
+
+The current adapter control interface accepts per-drone velocity commands in the form:
+
+`[vx, vy, vz, yaw_rate]`
+
+The yaw-rate component may be optional in adapter handling. This describes the adapter interface; it does not establish that every training stage currently uses a different action dimensionality.
+
+The earlier curriculum table describes a staged 3D-to-4D action-space design. Treat that as a design target unless the active configuration and training code confirm the stage-specific behavior.
+
+### 9.3 Observation Processor Contract
+
+`modules/observation_processor.py` consumes the raw state dictionary returned by the simulator adapter and produces four tensors:
+
+| Output | Shape | Meaning |
+|---|---|---|
+| `local_fixed` | `(N, D)` | Per-drone local observation; `D` depends on the configured observation schema |
+| `neighbor_states` | `(N, K, 6)` | Relative position and relative velocity for up to `K` neighbors |
+| `neighbor_mask` | `(N, K)` | Boolean mask; `True` indicates a padded/empty neighbor slot |
+| `global_state` | `(N, C)` | Per-drone critic state; `C` depends on critic version |
+
+The implemented observation schemas are:
+
+| Schema | Local observation dimension | Additional content |
+|---|---:|---|
+| `v1` | 27 | Base local observation with running normalization; LiDAR proximity bypasses the normalizer |
+| `v2` | 42 | Fixed-scale base features, previous LiDAR proximity, and log goal distance |
+| `v3` | `42 + ring_rays` | Schema v2 features plus horizontal LiDAR-ring proximities |
+
+The base 27-feature layout consists of position (3), velocity (3), orientation (3), relative goal vector (3), goal distance (1), and 14 LiDAR proximities.
+
+Each neighbor contributes six values: relative position `(3)` and relative velocity `(3)`. Neighbors may be filtered by the configured sensing radius, sorted by distance, and padded to the configured maximum neighbor count.
+
+The critic state dimensions are:
+
+- Critic version 1: `(N, 17)`, comprising position, velocity, orientation, goal position, and five compressed LiDAR proximity values.
+- Critic version 2: `(N, 32)`, adding 15 features for relative goal information, goal distance, goal-radius status, settle progress, reached status, and eight LiDAR-ring sectors.
+
+These dimensions are implementation-dependent. The configured observation schema, ring-ray count, neighbor count, and critic version must be considered when validating a configuration or checkpoint.
+
+### 9.4 Swarm Environment Contract
+
+`envs/swarm_env.py` coordinates the simulator adapter, observation processor, reward engine, and episode manager.
+
+The training-facing interface is:
+
+- `reset()` returns an observation dictionary containing `local_fixed`, `neighbor_states`, `neighbor_mask`, and `global_state`.
+- `step(actions_dict)` returns `(obs_dict, rewards_dict, done, info)`.
+- `actions_dict` maps drone identifiers to action vectors.
+- `rewards_dict` maps drone identifiers to scalar rewards.
+- `done` is the episode termination flag.
+- `info` contains episode outcome and diagnostic information, including success/reason and per-drone metrics.
+
+`SwarmEnv` selects the simulator adapter through configuration or an injected adapter. The inspected code does not directly call the separate route-planner module.
+
+### 9.5 Route Planner Contract
+
+`envs/route_planner.py` provides a separate grid-based route-planning interface:
+
+- `build_grid(layout, bounds, res=0.25, inflate=0.5, min_height=0.0)` builds a planning grid.
+- `plan(grid, start_xy, goal_xy, snap_dist=1.0)` returns a path of world-coordinate points or `None` if planning fails.
+- `simplify(grid, points)` simplifies a path using line-of-sight checks.
+- `path_length(points)` calculates path length in metres.
+- `RouteFollower(waypoints, lookahead=4.5).target(pos)` selects a lookahead target from 3D waypoints.
+
+Grid planning uses the XY plane in metres; the route follower accepts 3D waypoints. The module is exercised by dedicated tests and scripts. Direct integration into `SwarmEnv` was not found during the inspected code search, so it should not be documented as part of the active training loop without further evidence.
+
+`modules/grid_path_planner.py` is a separate grid-connectivity and path-diagnostic utility. It should not be conflated with `envs/route_planner.py`.
+
+### 9.6 Deployment and Dashboard Status
+
+The inspected files `deployment/central_policy_server.py`, `deployment/client_node.py`, and `deployment/analytics_engine.py` are empty (zero bytes) in the current working tree. They do not currently establish implemented runtime contracts.
+
+The repository search performed for dashboard entry points did not identify a clear dashboard implementation. This is a search finding, not proof that no dashboard-related material exists anywhere in the repository.
+
+Deployment message formats, client/server APIs, analytics outputs, and dashboard data contracts remain unspecified until implemented and verified.
+
+### 9.7 Contract Validation Notes
+
+Before treating a contract as finalized:
+
+1. Confirm the active configuration values for observation schema, local observation dimension, neighbor count, LiDAR ring rays, and critic version.
+2. Check adapter behavior in both PyBullet and Webots when making simulator-parity claims.
+3. Distinguish interfaces implemented in code from curriculum targets and proposed deployment/dashboard interfaces.
+4. Update this section when runtime interfaces change, and keep the design tables above consistent with the verified implementation.
+
+
+_This section supplements the Phase 2 design contract with repository interfaces inspected during the G3 data-contract review._
