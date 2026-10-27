@@ -26,9 +26,12 @@ position [0:3] (ORCA-map only), the policy's neighbour slots (relative
 position and velocity; the drone's own velocity is added back to get the
 neighbour's), and the LiDAR ring [42:42+ring]. ORCA-map also reads env.layout.
 
-Obstacles in ORCA-map: each pillar / box contributes its closest point to the
-drone as a static circle (recomputed every step). For convex shapes this is a
-simpler stand-in for RVO2's polygon obstacles.
+Obstacles in ORCA-map: the exact outline of every pillar / box (rotated boxes
+included) is sampled every MAP_SPACING metres, and each outline point within
+obstacle_dist is a static circle of obstacle_radius, like a perfect 360-degree
+LiDAR with no occlusion or noise. (A single closest point per obstacle is not
+enough: ORCA then sees a large pillar as one small disc and steers just past
+that disc into the rest of the pillar.)
 
 Config (all optional; block 'orca'):
     orca:
@@ -51,6 +54,7 @@ import numpy as np
 from envs.scenario_manager import DRONE_RADIUS
 
 EPS = 1e-5
+MAP_SPACING = 0.15        # m between ORCA-map outline points (half of obstacle_radius)
 
 DEFAULTS = {
     'radius': 0.25,
@@ -212,6 +216,30 @@ def _as_numpy(x):
     return np.asarray(x)
 
 
+def outline_points(ob, spacing=MAP_SPACING):
+    """Points every `spacing` m along an obstacle's footprint outline (world xy): the circle of
+    a pillar, or the four edges of a box (with its optional yaw)."""
+    c = np.asarray(ob['center'], dtype=float)
+    if ob['type'] == 'pillar':
+        n = max(8, math.ceil(2.0 * math.pi * ob['radius'] / spacing))
+        a = 2.0 * math.pi * np.arange(n) / n
+        return c + ob['radius'] * np.stack([np.cos(a), np.sin(a)], axis=1)
+    hx, hy = ob['half']
+    corners = np.array([[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy]])
+    edges = []
+    for k in range(4):
+        a, b = corners[k], corners[(k + 1) % 4]
+        n = max(1, math.ceil(np.linalg.norm(b - a) / spacing))
+        t = np.arange(n)[:, None] / n                      # the next edge adds the end corner
+        edges.append(a + t * (b - a))
+    local = np.vstack(edges)
+    yaw = ob.get('yaw', 0.0)
+    if yaw:
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        local = local @ np.array([[cy, sy], [-sy, cy]])
+    return c + local
+
+
 class OrcaPolicy:
     """ORCA as a policy for eval_suite.py: act(obs, env, n_agents) -> actions."""
 
@@ -265,14 +293,17 @@ class OrcaPolicy:
         return np.stack([d * np.cos(a), d * np.sin(a)], axis=1)
 
     def _map_points(self, pos_i, layout):
-        """Closest point of every obstacle tall enough to matter, relative to the drone."""
-        from baselines.repulsion_controller import closest_point
+        """Outline points (every MAP_SPACING m) of every obstacle tall enough to matter and
+        within reach, relative to the drone."""
         pts = []
         for ob in layout:
             if pos_i[2] > ob['height'] + DRONE_RADIUS + self.obstacle_radius:
                 continue                                   # flying above it
-            pts.append(closest_point(ob, pos_i[:2]) - pos_i[:2])
-        return np.array(pts).reshape(-1, 2)
+            reach = ob['radius'] if ob['type'] == 'pillar' else math.hypot(*ob['half'])
+            if math.dist(ob['center'], pos_i[:2]) > reach + self.obstacle_dist:
+                continue                                   # nothing of it within obstacle_dist
+            pts.append(outline_points(ob) - pos_i[:2])
+        return np.vstack(pts) if pts else np.zeros((0, 2))
 
     def act(self, obs, env, n_agents):
         goal_vec, goal_dist, vel, pos, ring, nb_pos, nb_vel, empty = self._sense(obs, env)

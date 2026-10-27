@@ -18,6 +18,8 @@ The policy (real observation layout, scripted MockAdapter, no noise):
   G. Two drones head-on through SwarmEnv: they avoid each other using only
      the neighbour slots, and both settle at their goals.
   H. ORCA-map flies around a pillar (true shapes) without touching it.
+  I. ORCA-map, head-on at a big pillar and at a rotated wall: no contact.
+  J. The outline points lie on the obstacle surfaces, at most MAP_SPACING apart.
 
 Run with:
     python -m pytest tests/test_orca.py -s -v
@@ -34,8 +36,8 @@ import yaml
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 sys.path.insert(0, ROOT)
 
-from baselines.orca import OrcaPolicy, orca_line, orca_velocity
-from envs.scenario_manager import DRONE_RADIUS
+from baselines.orca import MAP_SPACING, OrcaPolicy, orca_line, orca_velocity, outline_points
+from envs.scenario_manager import DRONE_RADIUS, surface_distance
 from envs.swarm_env import SwarmEnv
 from tests.test_env_validation import MockAdapter
 
@@ -202,3 +204,33 @@ def test_orca_map_flies_around_a_pillar():
             break
     assert gap > DRONE_RADIUS, f"touched the pillar (gap {gap:.3f} m)"
     assert info['reason'] == 'success', info['reason']
+
+
+@pytest.mark.parametrize('ob', [
+    {'type': 'pillar', 'center': (0.0, 0.05), 'radius': 1.0, 'height': 8.0},
+    {'type': 'box', 'center': (0.0, 0.05), 'half': (0.3, 1.5), 'height': 8.0, 'yaw': 0.3},
+])
+def test_orca_map_head_on_at_a_big_obstacle(ob):
+    print_test_header('I', 'ORCA-map head-on', "a big pillar / rotated wall straight ahead: no contact")
+    cfg = config()
+    env = SwarmEnv(cfg, adapter=MockAdapter(1))
+    obs = env.start_episode({'drone_0': [-4.0, 0.0, 2.0]}, {'drone_0': [4.0, 0.0, 2.0]}, obstacles=[ob])
+    policy = OrcaPolicy(cfg, use_map=True)
+    gap, info = np.inf, {}
+    for _ in range(900):
+        obs, _, done, info = env.step(policy.act(obs, env, 1))
+        gap = min(gap, info['obstacle_distance'][0])
+        if done:
+            break
+    assert gap > DRONE_RADIUS, f"touched the obstacle (gap {gap:.3f} m)"
+    assert info['reason'] != 'collision', info['reason']
+
+
+def test_outline_points_on_the_surface():
+    print_test_header('J', 'outline points', "on the surface, at most MAP_SPACING apart")
+    for ob in ({'type': 'pillar', 'center': (1.0, -2.0), 'radius': 0.55, 'height': 8.0},
+               {'type': 'box', 'center': (3.0, 1.0), 'half': (2.0, 0.4), 'height': 8.0, 'yaw': 0.7}):
+        pts = outline_points(ob)
+        assert max(abs(surface_distance(ob, p)) for p in pts) < 1e-9
+        gaps = np.linalg.norm(np.diff(np.vstack([pts, pts[:1]]), axis=0), axis=1)
+        assert gaps.max() <= MAP_SPACING + 1e-9
