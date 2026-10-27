@@ -159,12 +159,14 @@ def astar(grid, start, goal):
 
 def segment_free(grid, a, b):
     """True when the straight segment a -> b (world xy) crosses only free cells.
-    Samples the segment every res/4."""
+    Samples the segment every res/4, all samples at once (same points and cells as Grid.to_cell)."""
     n = max(2, int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) / (grid.res / 4))) + 1)
-    for t in np.linspace(0.0, 1.0, n):
-        if not grid.free(grid.to_cell((a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])))):
-            return False
-    return True
+    t = np.linspace(0.0, 1.0, n)
+    ix = np.rint((a[0] + t * (b[0] - a[0]) - grid.xs[0]) / grid.res).astype(np.int64)
+    iy = np.rint((a[1] + t * (b[1] - a[1]) - grid.ys[0]) / grid.res).astype(np.int64)
+    ix = np.clip(ix, 0, len(grid.xs) - 1)
+    iy = np.clip(iy, 0, len(grid.ys) - 1)
+    return not grid.occ[iy, ix].any()
 
 
 def simplify(grid, points):

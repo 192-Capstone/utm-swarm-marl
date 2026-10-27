@@ -104,3 +104,17 @@ def test_follower_runs_ahead_never_back_and_ends_at_the_goal():
 def test_deterministic():
     g = build_grid([WALL], B, 0.25, 0.5)
     assert plan(g, (-5.0, 1.0), (5.0, -1.0)) == plan(g, (-5.0, 1.0), (5.0, -1.0))
+
+
+def test_segment_check_matches_point_by_point():
+    """segment_free checks all its samples at once; it must agree with checking each sample
+    point through Grid.to_cell, including segments that leave the grid (clamped)."""
+    layout = [WALL, {'type': 'pillar', 'center': (5.0, 5.0), 'radius': 1.0, 'height': 8.0},
+              {'type': 'box', 'center': (-5.0, -5.0), 'half': (2.0, 1.0), 'yaw': 0.6, 'height': 8.0}]
+    g = build_grid(layout, B, res=0.25, inflate=0.5)
+    rng = np.random.RandomState(0)
+    for _ in range(500):
+        a, b = rng.uniform(-11, 11, 2), rng.uniform(-11, 11, 2)
+        n = max(2, int(math.ceil(math.hypot(*(b - a)) / (g.res / 4))) + 1)
+        slow = all(g.free(g.to_cell(a + t * (b - a))) for t in np.linspace(0.0, 1.0, n))
+        assert segment_free(g, a, b) == slow
