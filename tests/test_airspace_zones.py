@@ -157,8 +157,13 @@ def test_crop_example_loads_into_e1_with_the_crop_airspace():
     layout = load_osm_layout(CROP_LAYOUT)
     planner = StrategicPlanner(layout, B, airspace=sky)
     apply_zones(planner, zones)
-    perm = set().union(*(zone_keys(z, sky, 2) for z in zones if z.permanent))
-    assert planner.blocked == perm and perm
+    red = set().union(*(zone_keys(z, sky, 2) for z in zones
+                        if z.permanent and z.restriction == 'prohibited'))
+    assert planner.blocked == red and red
+    for z in zones:                                     # permanent yellow zones: booked forever
+        if z.permanent and z.restriction == 'authorisation':
+            for key in zone_keys(z, sky, 2):
+                assert (-np.inf, np.inf, 'zone:' + z.id) in planner.ledger[key]
     temp = zones[[z.id for z in zones].index('ecity_temp_street')]
     for key in zone_keys(temp, sky, 2):
         assert (120.0, 300.0, 'zone:ecity_temp_street') in planner.ledger[key]
@@ -361,6 +366,38 @@ def test_conflict_ids_map_back_to_zone_names():
     assert ids == {'zone:tmp', 'blocked'}
     assert zone_names(ids | {'some_flight'}, zones) == ['Street closure', 'permanent no-fly zone']
     assert zones_hit(free.reservation, index, zones) == ['Hospital', 'Street closure']
+
+
+def _yellow(active=()):
+    return Zone('yel', 'Campus', 'authorisation', 'test', active=list(active), authorised=['ok'],
+                polygon=square(0, 0, 2))
+
+
+def test_authorised_flight_flies_through_a_permanent_yellow_zone():
+    sky = StrategicPlanner([], B)
+    apply_zones(sky, [_yellow()])
+    ok = sky.submit(FlightPlan('ok', (-15, 0), (15, 0)))
+    assert (ok.status, ok.delay) == ('approved', 0.0)
+    other = sky.submit(FlightPlan('other', (-15, 1), (15, 1)))
+    assert other.status == 'rejected' and other.blockers == ['zone:yel']
+    assert 'zone:yel' in other.reason
+
+
+def test_authorised_flight_is_not_delayed_by_a_temporary_yellow_zone():
+    sky = StrategicPlanner([], B)
+    apply_zones(sky, [_yellow(active=[[0.0, 20.0]])])
+    assert sky.submit(FlightPlan('ok', (-15, 0), (15, 0))).delay == 0.0
+    assert sky.submit(FlightPlan('other', (-15, 0), (15, 0), t_earliest=0.0)).delay > 0
+
+
+def test_rejection_names_the_zone_in_the_way():
+    zones = [Zone('perm', 'Hospital', polygon=square(0, 0, 2))]
+    sky = StrategicPlanner([], B)
+    apply_zones(sky, zones)
+    d = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+    assert d.status == 'rejected' and d.blockers == ['blocked']
+    clear = sky.submit(FlightPlan('B', (-15, 15), (15, 15)))
+    assert clear.status == 'approved' and clear.blockers == []
 
 
 def test_apply_zones_before_any_flight_only():

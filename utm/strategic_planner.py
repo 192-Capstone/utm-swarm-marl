@@ -95,6 +95,7 @@ class Decision:
     waypoints: list = field(default_factory=list)       # (x, y, z)
     reservation: dict = field(default_factory=dict)     # (cell, layer) -> [(t0, t1), ...]
     reason: str = ''
+    blockers: list = field(default_factory=list)        # 'blocked' / 'zone:<id>' that were in the way
 
 
 def _merge(intervals):
@@ -118,6 +119,7 @@ class StrategicPlanner:
                                         layer_height=self.s.layer_height)
         self.layout, self.bounds = list(layout), bounds
         self.blocked = set(blocked)
+        self.exempt = {}                  # flight id -> ledger owners it may share keys with (D2)
         self.ledger = {}                  # (cell, layer) -> [(t0, t1, flight id)]
         self.decisions = []
         self._grids = {}
@@ -216,15 +218,17 @@ class StrategicPlanner:
         return {k: _merge(v) for k, v in out.items()}
 
     # ------------------------------------------------------------- ledger
-    def conflicts(self, reservation):
-        """Flight ids (or 'blocked') sharing a key with an overlapping interval."""
+    def conflicts(self, reservation, fid=None):
+        """Flight ids (or 'blocked') sharing a key with an overlapping interval. Owners in
+        exempt[fid] don't count (a flight authorised into a zone)."""
         hit = set()
+        skip = self.exempt.get(fid, ())
         for key, ivs in reservation.items():
             if key in self.blocked:
                 hit.add('blocked')
-            for lo2, hi2, fid in self.ledger.get(key, ()):
-                if any(lo < hi2 and lo2 < hi for lo, hi in ivs):
-                    hit.add(fid)
+            for lo2, hi2, owner in self.ledger.get(key, ()):
+                if owner not in skip and any(lo < hi2 and lo2 < hi for lo, hi in ivs):
+                    hit.add(owner)
         return hit
 
     def _book(self, fid, reservation):
@@ -254,11 +258,14 @@ class StrategicPlanner:
                 cands.append((cost, float(delay), layer))
         cands.sort()
         start_cells, goal_cells = self.cells_near(*fp.start), self.cells_near(*fp.goal)
+        blockers = set()
         for cost, delay, layer in cands:
             r, total, rel = options[layer]
             t_dep = fp.t_earliest + delay
             res = self._absolute(rel, t_dep, start_cells, goal_cells, total)
-            if not self.conflicts(res):
+            hit = self.conflicts(res, fp.id)
+            blockers |= {h for h in hit if h == 'blocked' or str(h).startswith('zone:')}
+            if not hit:
                 self._book(fp.id, res)
                 zl = self.layer_z(layer)
                 wps = ([(r[0][0], r[0][1], s.start_z)] + [(x, y, zl) for x, y in r]
@@ -267,7 +274,10 @@ class StrategicPlanner:
                              wps, res)
                 self.decisions.append(d)
                 return d
-        d = Decision(fp.id, 'rejected', reason=f'no conflict-free option within {s.max_delay} s')
+        why = f'no conflict-free option within {s.max_delay} s'
+        if blockers:
+            why += ' (zones in the way: ' + ', '.join(sorted(blockers)) + ')'
+        d = Decision(fp.id, 'rejected', reason=why, blockers=sorted(blockers))
         self.decisions.append(d)
         return d
 
