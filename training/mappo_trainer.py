@@ -832,7 +832,7 @@ class MAPPOTrainer:
             self.best_eval_key = eval_key
             self.best_eval_info = {
                 'episode':       self.episode_count,
-                'success_rate':  eval_sr,
+                'success_rate':  float(eval_sr),
                 'mean_min_dist': float(np.mean(min_dists)),
                 'final_speed':   float(np.mean(final_speeds)),
             }
@@ -1049,7 +1049,7 @@ class MAPPOTrainer:
             'critic_optim':        self.optimizer.critic_optimizer.state_dict(),
             'episode_count':       self.episode_count,
             'curriculum_stage':    self.curriculum_stage,
-            'best_success_rate':   self.best_success_rate,
+            'best_success_rate':   float(self.best_success_rate),
             # log_std_floor/ceiling are plain attributes, not part of
             # actor's state_dict — save the ACTUAL values in effect at this
             # episode (not the config's eventual annealed targets) since a
@@ -1081,7 +1081,7 @@ class MAPPOTrainer:
         if len(self.success_history) >= 100:
             sr = np.mean(self.success_history[-100:])
             if sr > self.best_success_rate:
-                self.best_success_rate = sr
+                self.best_success_rate = float(sr)      # plain float: loadable with weights_only=True
                 best_path = self.config['logging']['best_checkpoint']
                 os.makedirs(os.path.dirname(best_path), exist_ok=True)
                 torch.save({'actor_state_dict': self.actor.state_dict()}, best_path)
@@ -1118,7 +1118,9 @@ class MAPPOTrainer:
 
     def load_checkpoint(self, path: str, restore_normalizer: bool = True):
         """Load a saved checkpoint to resume training."""
-        ckpt = torch.load(path, map_location=self.device)
+        # weights_only=False: our own checkpoints may hold numpy values (older
+        # best_success_rate, v1 normalizer arrays), which torch >= 2.6 rejects by default
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
         schema = self.config['observation'].get('schema', 'v1')
         if ckpt.get('observation_schema', 'v1') != schema:
             raise RuntimeError(f"checkpoint uses observation schema "
@@ -1151,7 +1153,7 @@ class MAPPOTrainer:
             group['lr'] = self.config['training']['critic_lr']
         self.episode_count    = ckpt['episode_count']
         self.curriculum_stage = ckpt['curriculum_stage']
-        self.best_success_rate= ckpt['best_success_rate']
+        self.best_success_rate= float(ckpt['best_success_rate'])
         print(f"Checkpoint loaded: {path} (episode {self.episode_count})")
         if self.obstacle_curriculum and 'obstacle_count' in ckpt:
             self._set_obstacle_count(ckpt['obstacle_count'])

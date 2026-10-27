@@ -123,7 +123,7 @@ def main():
     )
 
     actor = ActorNetwork(config).to(device)
-    ckpt = torch.load(args.checkpoint, map_location=device)
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     state_dict = ckpt['actor_state_dict'] if 'actor_state_dict' in ckpt else ckpt
     actor.load_state_dict(state_dict)
     actor.eval()

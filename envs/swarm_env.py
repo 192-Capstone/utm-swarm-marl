@@ -18,6 +18,8 @@ The env is simulator-agnostic: swap PyBulletAdapter for a WebotsAdapter that
 emits the same raw-state dict and nothing else here changes.
 """
 
+import hashlib
+
 import numpy as np
 import torch
 
@@ -73,14 +75,33 @@ class SwarmEnv:
                           for k in ('position', 'velocity', 'orientation', 'lidar')}
         self.noise_on = any(v > 0 for v in self.noise_std.values())
         self._noise_rng = np.random.default_rng(int(sn.get('seed', 0)))
+        # Optional (sensor_noise.per_episode_seed, default off): reseed the
+        # noise at the start of every episode from that episode's spawns and
+        # goals, so the same scenario always gets the same noise, whatever
+        # ran before it (paired comparisons stay in step). Off: one generator
+        # runs on across episodes, exactly as before.
+        self._noise_seed = int(sn.get('seed', 0))
+        self.noise_per_episode = bool(sn.get('per_episode_seed', False))
         self.lidar_range = lidar_config(config)['range']
 
-        self.adapter        = adapter or PyBulletAdapter(config, gui=gui)
+        # environment.simulator: pybullet (default) | webots | webots_l2
+        if adapter is None:
+            sim = config['environment'].get('simulator', 'pybullet')
+            if sim == 'webots':                  # Level 1: velocity-controlled bodies
+                from envs.webots_adapter import WebotsAdapter
+                adapter = WebotsAdapter(config, gui=gui)
+            elif sim == 'webots_l2':             # Level 2: quadrotor dynamics + velocity PID
+                from envs.webots_l2 import WebotsL2Adapter
+                adapter = WebotsL2Adapter(config, gui=gui)
+            else:
+                adapter = PyBulletAdapter(config, gui=gui)
+        self.adapter        = adapter
         self.obs_processor  = ObservationProcessor(config, self.device)
         self.reward_engine  = RewardEngine(config)
         self.episode_manager = EpisodeManager(config)
 
         self.goals        = None
+        self.episode_index = 0      # +1 at every start_episode(); lets wrappers notice a new episode
         self.prev_dist    = None
         self.prev_actions = None
 
@@ -214,6 +235,7 @@ class SwarmEnv:
         obstacles : 'auto' = generate a layout if obstacles are enabled,
                     or an explicit layout list ([] for an empty world)
         """
+        self.episode_index += 1
         rng = np.random if rng is None else rng
         if obstacles == 'auto':
             obstacles = (scenario_manager.generate_layout(rng, spawns, goals, self.obstacle_cfg)
@@ -222,6 +244,8 @@ class SwarmEnv:
         self.adapter.reset_world(spawns, goals, self.layout)
         self.goals = np.array([goals[f'drone_{i}'] for i in range(self.n_agents)],
                               dtype=np.float32)
+        if self.noise_per_episode:
+            self._noise_rng = np.random.default_rng(self._episode_noise_seed(spawns))
         self.episode_manager.reset()
 
         raw       = self.adapter.get_raw_state()
@@ -403,6 +427,15 @@ class SwarmEnv:
                     k: float(v.sum()) for k, v in rewards.items() if k != 'total'
                 }}
         return self._build_obs(raw), rewards_dict, bool(done), info
+
+    def _episode_noise_seed(self, spawns):
+        """Seed for one episode's sensor noise: the base seed plus a hash of
+        the spawns and goals (rounded to mm, like eval_suite's scenario_id)."""
+        sp = np.round(np.array([spawns[f'drone_{i}'] for i in range(self.n_agents)],
+                               dtype=np.float64), 3)
+        gl = np.round(self.goals.astype(np.float64), 3)
+        digest = hashlib.sha1(np.concatenate([sp.ravel(), gl.ravel()]).tobytes()).digest()
+        return [self._noise_seed, int.from_bytes(digest[:8], 'little')]
 
     def _noisy(self, raw):
         """Copy of raw with sensor noise added. Positions double as the

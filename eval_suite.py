@@ -57,27 +57,17 @@ from envs.swarm_env import SwarmEnv
 from baselines.repulsion_controller import RepulsionController, closest_point
 from envs.scenario_manager import DRONE_RADIUS
 from envs import scenarios
+from eval_stats import wilson
 from record_rollout import (setup_crossing_scenario, setup_swap_scenario,
                             setup_headon_scenario, disable_all_collision_physics,
                             _apply_scenario)
+from modules.goal_hold import GoalHoldPolicy, goal_hold_enabled
 
 SUITE_VERSION = "v1"
 SEP_THRESHOLDS = (0.2, 0.3, 0.4, 0.5)
 
 
 # ---------------------------------------------------------------- helpers ---
-def wilson(k, n, z=1.96):
-    """95% Wilson score interval for k successes out of n. Behaves sensibly
-    at k=0 and k=n, unlike the normal approximation."""
-    if n == 0:
-        return (float('nan'), float('nan'))
-    phat = k / n
-    denom = 1 + z * z / n
-    centre = (phat + z * z / (2 * n)) / denom
-    half = z * math.sqrt(phat * (1 - phat) / n + z * z / (4 * n * n)) / denom
-    return (max(0.0, centre - half), min(1.0, centre + half))
-
-
 def pct(values, q):
     v = [x for x in values if x is not None and not (isinstance(x, float) and math.isnan(x))]
     return float(np.percentile(v, q)) if v else float('nan')
@@ -156,7 +146,9 @@ class MappoPolicy:
         # obstacle-test differences show how much it relies on LiDAR.
         self.blind_lidar = blind_lidar
         self.actor = ActorNetwork(config).to(device)
-        self.ckpt = torch.load(ckpt_path, map_location=device)
+        # weights_only=False: our own checkpoints hold numpy scalars/arrays, which
+        # torch >= 2.6 rejects by default
+        self.ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         state = self.ckpt.get('actor_state_dict', self.ckpt)
         self.actor.load_state_dict(state)
         self.actor.eval()
@@ -782,6 +774,10 @@ def main():
                     help="ablation: MAPPO actor sees no other drones (all neighbour slots masked)")
     ap.add_argument("--blind-lidar", action="store_true",
                     help="ablation: MAPPO actor's LiDAR inputs read 'nothing seen'")
+    ap.add_argument("--simulator", choices=["pybullet", "webots", "webots_l2"], default="pybullet",
+                    help="simulator backend (webots: Level 1, envs/webots_adapter.py; webots_l2: Level 2 quadrotor, envs/webots_l2.py)")
+    ap.add_argument("--webots-real", action="store_true",
+                    help="Webots: realistic world; with webots_l2 the drone is Bitcraze's official Crazyflie model")
     ap.add_argument("--collision-physics", choices=["on", "off"], required=True,
                     help="off = policy-only safety (PyBullet contact response disabled); "
                          "on = system-level, also records PyBullet contact events")
@@ -823,6 +819,12 @@ def main():
     # between drones and obstacles (the adapter does that when building them),
     # otherwise PyBullet pushes a drone off a pillar before the crash check fires.
     config['environment']['collision_physics'] = args.collision_physics == "on"
+    if args.simulator != 'pybullet':
+        if args.collision_physics == 'on':
+            ap.error("--collision-physics on needs PyBullet (contact checks use its API)")
+        config['environment']['simulator'] = args.simulator
+        if args.webots_real:
+            config.setdefault('webots', {})['real'] = True
     if interaction:
         config['environment']['n_agents'] = 2
     elif obstacle_test:
@@ -836,6 +838,10 @@ def main():
             ap.error("--no-obstacles applies to the multi-drone scenarios")
         config.setdefault('obstacles', {})['enabled'] = False
     n_agents = config['environment']['n_agents']
+    # A1 part 3: goal-hold handover, only when the config's goal_hold block enables it
+    goal_hold = goal_hold_enabled(config)
+    if goal_hold:
+        policy_label += "-goalhold"
     max_steps = config['environment']['max_steps']
     dt = config['environment'].get('control_timestep', 0.032)
     physics_on = args.collision_physics == "on"
@@ -850,7 +856,9 @@ def main():
     tag = (f"{policy_label}_{args.scenario}_{dist_tag}_n{n_agents}_"
            f"phys{args.collision_physics}_s{'-'.join(map(str, args.seeds))}_e{args.episodes}"
            + (f"_T{max_steps}" if args.max_steps is not None else "")
-           + ("_noobs" if args.no_obstacles else ""))
+           + ("_noobs" if args.no_obstacles else "")
+           + (f"_{args.simulator}" if args.simulator != "pybullet" else "")
+           + ("_real" if args.webots_real else ""))
     out_dir = args.out_dir or os.path.join(args.results_root, tag)
     if os.path.exists(os.path.join(out_dir, "summary.json")) and not args.overwrite:
         ap.error(f"{out_dir} already has results. Pass --overwrite or choose --out-dir.")
@@ -872,6 +880,8 @@ def main():
         else:
             policy = PController(config, args.kp) if args.policy == 'pcontroller' else RepulsionController(config)
         ckpt_episode = None
+    if goal_hold:
+        policy = GoalHoldPolicy(policy, config)
     # clip_hits counts inputs pinned at the normalizer's limit; schema v2 has
     # no normalizer, so nothing can be clipped
     schema = env.obs_processor.schema
@@ -897,6 +907,7 @@ def main():
         'seeds': args.seeds, 'episodes_per_seed': args.episodes,
         'max_steps': max_steps, 'control_timestep': dt,
         'kp': args.kp if args.policy == 'pcontroller' else None,
+        'goal_hold': config.get('goal_hold') if goal_hold else None,
     }
 
     wb = None
@@ -968,6 +979,13 @@ def main():
         summary = summarize(episodes, agents, n_agents, physics_on)
     summary['config'] = run_cfg
     summary['wall_time_s'] = round(time.time() - t0, 1)
+    if goal_hold:
+        st = policy.stats
+        summary['goal_hold_stats'] = {
+            **st,
+            'holding_frac': st['holding_steps'] / max(st['drone_steps'], 1),
+            'guard_frac': st['guard_steps'] / max(st['drone_steps'], 1),
+        }
 
     for name, rows in (("episodes.csv", episodes), ("agents.csv", agents)):
         if not rows:

@@ -22,8 +22,11 @@ Usage (from the repo root):
     python scripts/render_videos.py --checkpoint <ckpt> --scenario headon --n-agents 8 --no-obstacles ...
 
 Scenarios: pillar, building, wide_building, long_wall (1 drone, 1 obstacle on
-its path, as in eval_suite.py) and headon, crossing, swap, flythrough
-(multi-drone; obstacles generated as in training unless --no-obstacles).
+its path, as in eval_suite.py), the held-out l_shape, gap, cluster, slalom
+(1 drone), and headon, crossing, swap, flythrough (multi-drone; obstacles
+generated as in training unless --no-obstacles).
+Pass the evaluation config with --config (e.g. config_stage2_round7_eval_goalhold.yaml);
+when it enables goal_hold, the policy is wrapped with goal-hold as in eval_suite.py.
 Needs ffmpeg on PATH.
 """
 import argparse
@@ -43,6 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import eval_suite as es                                    # noqa: E402
 from envs import scenarios                                 # noqa: E402
 from envs.swarm_env import SwarmEnv                        # noqa: E402
+from modules.goal_hold import GoalHoldPolicy, goal_hold_enabled   # noqa: E402
 
 COLOURS = [(0.12, 0.47, 0.71), (0.84, 0.15, 0.16), (0.17, 0.63, 0.17), (1.0, 0.5, 0.05),
            (0.58, 0.40, 0.74), (0.55, 0.34, 0.29), (0.89, 0.47, 0.76), (0.09, 0.75, 0.81)]
@@ -56,10 +60,14 @@ def fly(config, ckpt, scenario, seed, no_obstacles):
     env = SwarmEnv(config, device=torch.device('cpu'))
     es.disable_all_collision_physics(env, n)
     pol = es.MappoPolicy(config, ckpt, torch.device('cpu'), True)
+    if goal_hold_enabled(config):                 # as in eval_suite.main()
+        pol = GoalHoldPolicy(pol, config)
     rng = np.random.RandomState(seed)
     np.random.seed(seed)
     if scenario in es.OBSTACLE_TESTS:
         obs = es.setup_obstacle_test(env, rng, scenario)
+    elif scenario in es.HELDOUT_TESTS:
+        obs = es.setup_heldout_test(env, rng, scenario)
     else:
         spawns, goals = scenarios.GENERATORS[scenario](rng, n)
         obs = env.start_episode(spawns, goals, rng=rng, obstacles=[] if no_obstacles else 'auto')
@@ -257,7 +265,7 @@ def main():
     config['environment']['collision_physics'] = False
     if a.n_agents:
         config['environment']['n_agents'] = a.n_agents
-    if a.scenario in es.OBSTACLE_TESTS:                       # one drone, as in eval_suite.py
+    if a.scenario in es.OBSTACLE_TESTS + es.HELDOUT_TESTS:    # one drone, as in eval_suite.py
         config['environment']['n_agents'] = 1
     if a.no_obstacles:
         config.setdefault('obstacles', {})['enabled'] = False
@@ -274,7 +282,8 @@ def main():
         if n > 1 else None
     sub = (f"{a.scenario}, {n} drone{'s' if n > 1 else ''}, "
            f"{'no obstacles' if a.no_obstacles or not layout else f'{len(layout)} obstacle(s)'}, "
-           f"outcome: {reason}" + (f", closest drone-drone distance {sep:.2f} m" if sep is not None else "")
+           f"outcome: {reason}" + (", goal-hold on" if goal_hold_enabled(config) else "")
+           + (f", closest drone-drone distance {sep:.2f} m" if sep is not None else "")
            + f"   (seed {seed}, try {attempt + 1})")
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     render(layout, goals, pos, settled, a.out, a.title or a.scenario, sub, a.fps, a.frame_every)

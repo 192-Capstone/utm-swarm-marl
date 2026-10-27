@@ -317,6 +317,8 @@ def main():
     torch.save(policy, os.path.join(ROOT, args.out_dir, "bc_policy.pth"))
     resume = copy.copy(base)
     resume['actor_state_dict'] = state
+    if 'best_success_rate' in resume:                  # plain float: loadable with weights_only=True
+        resume['best_success_rate'] = float(resume['best_success_rate'])
     torch.save(resume, os.path.join(ROOT, args.out_dir, "bc_resume.pth"))
     print(f"saved {args.out_dir}/bc_policy.pth and bc_resume.pth  (total {time.time() - t0:.0f}s)")
 
