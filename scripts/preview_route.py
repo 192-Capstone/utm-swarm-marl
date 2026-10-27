@@ -163,7 +163,7 @@ def main():
     if args.map == "city":
         out = f"route_preview_city_{args.level}.png"
     else:
-        out = f"route_preview_{args.map}-new.png"
+        out = f"route_preview_{args.map}.png"
     fig.savefig(out, dpi=110, bbox_inches="tight")
     print("saved", out)
 
