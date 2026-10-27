@@ -52,7 +52,7 @@ def load_map(args):
         return layout, ((-25, 25), (-25, 25))
 
     x0, y0, x1, y1 = layout_bounds(layout)
-    return layout, ((x0 - 3, x1 + 3), (y0 - 3, y1 + 3))
+    return layout, ((x0, x1), (y0, y1))
 
 
 def draw_obstacle(ax, ob):
@@ -163,7 +163,7 @@ def main():
     if args.map == "city":
         out = f"route_preview_city_{args.level}.png"
     else:
-        out = f"route_preview_{args.map}.png"
+        out = f"route_preview_{args.map}-new.png"
     fig.savefig(out, dpi=110, bbox_inches="tight")
     print("saved", out)
 
