@@ -32,6 +32,17 @@ from envs import scenario_manager
 from envs.lidar import lidar_config
 
 
+# E1 flight profile for routes given with heights (SwarmEnv._update_carrots): the carrot stays
+# above the pad until the drone is within CLIMB_DONE_M of the cruise height (more than goal-hold's
+# 0.5 m zone, so the hold doesn't engage on the climb), and becomes the goal once the drone is
+# within LAND_RADIUS_M of it horizontally, so climb and landing stay over the pads, as E1 books
+# them. 1.2 m: the policy can stop ~1 m short of the carrot above the goal, and at 0.6 m such a
+# drone hovered beside the goal until it drifted close enough to descend (E1 holds the goal pad
+# within its 2.1 m radius, so a landing that starts 1.2 m off-centre stays inside).
+CLIMB_DONE_M = 0.6
+LAND_RADIUS_M = 1.2
+
+
 class SwarmEnv:
     def __init__(self, config, device=None, gui: bool = False, adapter=None):
         self.config   = config
@@ -66,6 +77,17 @@ class SwarmEnv:
         self.route_lookahead = float(rf.get('lookahead', 4.5))
         self.route_min_target = float(rf.get('min_target', 1.0))
         self.followers = None
+        # Scheduled departures (E1, opt-in; environment.schedule: {enabled}). With
+        # start_episode(..., departures={'drone_i': t_dep_s}) a drone is parked out of the world
+        # (adapter.park) until its departure time, then placed at its spawn; once it has settled
+        # at its goal it is parked again (landed). So a drone is only in the air during its own
+        # flight, as E1 books it. Use with crash_mode remove. Off: nothing changes.
+        self.schedule = bool((config['environment'].get('schedule') or {}).get('enabled', False))
+        self.control_dt = float(config['environment'].get('control_timestep', 0.032))
+        self.waiting = np.zeros(self.n_agents, dtype=bool)
+        self.landed = np.zeros(self.n_agents, dtype=bool)
+        self.departures = None
+        self._t_step = 0
         # Safety cost for constrained RL (MAPPO-Lagrangian), kept separate from
         # the reward: 1 per step a drone is closer than cost_distance to any
         # other drone, plus collision_cost on the step it crashes (a crash ends
@@ -248,7 +270,7 @@ class SwarmEnv:
             spawns, goals = scenarios.GENERATORS[scenario](np.random, self.n_agents)
         return self.start_episode(spawns, goals)
 
-    def start_episode(self, spawns, goals, rng=None, obstacles='auto', routes=None):
+    def start_episode(self, spawns, goals, rng=None, obstacles='auto', routes=None, departures=None):
         """Begin an episode with the given spawns and goals ({'drone_i': [x, y, z]}).
         reset() uses this, and so do the evaluation and analysis scripts that
         build their own scenarios, so nothing (obstacles included) is skipped.
@@ -256,12 +278,18 @@ class SwarmEnv:
         rng       : random generator for the obstacle layout (default np.random)
         obstacles : 'auto' = generate a layout if obstacles are enabled,
                     or an explicit layout list ([] for an empty world)
-        routes    : {'drone_i': [(x, y), ...]} simplified D7 routes from spawn to goal
-                    (needs environment.route_follow.enabled); drones without a route fly
+        routes    : {'drone_i': [(x, y), ...] or [(x, y, z), ...]} simplified D7 routes from
+                    spawn to goal (needs environment.route_follow.enabled); with (x, y) the
+                    height goes from spawn to goal along the route, with (x, y, z) it is given
+                    (E1: climb to the layer, cruise, descend); drones without a route fly
                     straight at their goal
+        departures: {'drone_i': t_dep_s} take-off times (needs environment.schedule.enabled);
+                    missing drones take off at t = 0
         """
         if routes is not None and not self.route_follow:
             raise ValueError("start_episode(routes=...) needs environment.route_follow.enabled")
+        if departures is not None and not self.schedule:
+            raise ValueError("start_episode(departures=...) needs environment.schedule.enabled")
         self.episode_index += 1
         rng = np.random if rng is None else rng
         if obstacles == 'auto':
@@ -274,18 +302,32 @@ class SwarmEnv:
         if self.noise_per_episode:
             self._noise_rng = np.random.default_rng(self._episode_noise_seed(spawns))
         self.episode_manager.reset()
+        self.crashed = np.zeros(self.n_agents, dtype=bool)
+        self.landed = np.zeros(self.n_agents, dtype=bool)
+        self._t_step = 0
+        self._spawns = np.array([spawns[f'drone_{i}'] for i in range(self.n_agents)], dtype=np.float32)
+        if departures:
+            self.departures = np.array([float(departures.get(f'drone_{i}', 0.0))
+                                        for i in range(self.n_agents)])
+            self.waiting = self.departures > 0.0
+            if self.waiting.any():
+                self.adapter.park(np.flatnonzero(self.waiting))
+        else:
+            self.departures = None
+            self.waiting = np.zeros(self.n_agents, dtype=bool)
         self.followers = self._make_followers(spawns, goals, routes) if routes else None
         self._update_carrots()
 
         raw       = self.adapter.get_raw_state()
         positions = self.adapter.get_positions()
+        if self.waiting.any():               # distances of waiting drones from their pads
+            positions = np.where(self.waiting[:, None], self._spawns, positions)
         self.prev_dist    = np.linalg.norm(positions - self.goals, axis=1)
         self.prev_actions = np.zeros((self.n_agents, 4), dtype=np.float32)
         self.drone_reached_goal = [False] * self.n_agents
         self.settle_counter = np.zeros(self.n_agents, dtype=np.int64)
         self.best_settle_counter = np.zeros(self.n_agents, dtype=np.int64)
         self.ever_entered_goal = [False] * self.n_agents
-        self.crashed = np.zeros(self.n_agents, dtype=bool)
 
         # Track closest approach to goal — diagnoses "almost succeeded" vs
         # "never made progress" for episodes that don't reach the goal
@@ -301,13 +343,20 @@ class SwarmEnv:
         from envs.route_planner import RouteFollower, build_grid
         followers = {}
         pts = []
+        self._cruise = {}                         # key -> cruise height (routes given with heights)
+        self._climbed = {}
         for key, route in routes.items():
             xy = np.asarray([p[:2] for p in route], dtype=float)
-            z0, z1 = float(spawns[key][2]), float(goals[key][2])
-            cum = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))])
-            frac = cum / cum[-1] if cum[-1] > 0 else np.zeros_like(cum)
-            followers[key] = RouteFollower(np.column_stack([xy, z0 + frac * (z1 - z0)]),
-                                           lookahead=self.route_lookahead)
+            if len(route[0]) >= 3:                # E1 layer profile: climb, cruise, land
+                self._cruise[key] = float(max(p[2] for p in route))
+                self._climbed[key] = False
+                z = np.full(len(xy), self._cruise[key])
+            else:
+                z0, z1 = float(spawns[key][2]), float(goals[key][2])
+                cum = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))])
+                frac = cum / cum[-1] if cum[-1] > 0 else np.zeros_like(cum)
+                z = z0 + frac * (z1 - z0)
+            followers[key] = RouteFollower(np.column_stack([xy, z]), lookahead=self.route_lookahead)
             pts.append(xy)
         pts = np.vstack(pts)
         for ob in self.layout:
@@ -326,15 +375,32 @@ class SwarmEnv:
         positions = self.adapter.get_positions()
         for key, f in self.followers.items():
             i = int(key.split('_')[1])
+            if self.waiting[i] or self.landed[i] or self.crashed[i]:
+                continue                          # parked: not flying
             carrot = f.visible_target(positions[i], self._los_grid, min_dist=self.route_min_target)
+            if key in self._cruise:               # E1 profile: vertical climb and landing at the pads
+                zc, goal = self._cruise[key], self.goals[i]
+                if not self._climbed[key] and positions[i][2] >= zc - CLIMB_DONE_M:
+                    self._climbed[key] = True
+                if not self._climbed[key]:
+                    carrot = np.array([f.w[0, 0], f.w[0, 1], zc])
+                elif np.hypot(*(positions[i][:2] - goal[:2])) < LAND_RADIUS_M:
+                    carrot = goal
             self.adapter.goals[key] = np.asarray(carrot, dtype=np.float32)
 
     def step(self, actions_dict):
         # 1. apply actions + advance the simulator
         self.adapter.apply_actions(actions_dict)
         self.adapter.step_simulation()
-        if self.crashed.any():                      # crash_mode remove: keep them parked
-            self.adapter.park(np.flatnonzero(self.crashed))
+        self._t_step += 1
+        if self.departures is not None:            # schedule: take off when it's time
+            go = self.waiting & (self.departures <= self._t_step * self.control_dt + 1e-9)
+            for i in np.flatnonzero(go):
+                self.adapter.place(i, self._spawns[i])
+            self.waiting &= ~go
+        parked = self.crashed | self.waiting | self.landed
+        if parked.any():                            # crashed / not departed / landed: off the map
+            self.adapter.park(np.flatnonzero(parked))
         self.episode_manager.step()
         self._update_carrots()                    # route following (D7): new carrots first
 
@@ -390,6 +456,8 @@ class SwarmEnv:
             if not self.drone_reached_goal[i] and self.settle_counter[i] >= self.settle_steps:
                 goal_just_reached[i] = True
                 self.drone_reached_goal[i] = True
+        if self.departures is not None:            # schedule: a drone that has settled lands
+            self.landed |= np.asarray(self.drone_reached_goal, dtype=bool)
 
         # Detect first-time goal entry
         goal_entry_just = [False] * self.n_agents

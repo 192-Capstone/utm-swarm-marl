@@ -64,7 +64,8 @@ class Settings:
     max_delay: float = 60.0           # s
     pad_mode: str = 'window'          # 'window' | 'episode' (see the module docstring)
     pad_before: float = 2.0           # s the start pad is held before take-off ('window')
-    pad_after: float = 2.0            # s the goal pad is held after landing ('window')
+    pad_after: float = 7.0            # s the goal pad is held after landing ('window'): the flown p99 of
+                                      # settling after the planned arrival (E1 v2 runs: p50 0.9, p95 4.6, p99 6.5 s)
     delay_step: float = 0.5           # s
     layer_penalty: float = 4.0        # s per layer away from the preferred one
     grid_res: float = 0.25            # m, route planner grid

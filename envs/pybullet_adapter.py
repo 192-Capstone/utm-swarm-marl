@@ -206,6 +206,15 @@ class PyBulletAdapter:
                 self._vel[i] = 0.0
                 self._queue[i] = [np.zeros(3, dtype=np.float32)] * len(self._queue[i])
 
+    def place(self, i, pos):
+        """Put drone i at pos, still (SwarmEnv schedule: a parked drone taking off from its pad)."""
+        p.resetBasePositionAndOrientation(self.drone_ids[i], [float(v) for v in pos], [0, 0, 0, 1],
+                                          physicsClientId=self.client)
+        p.resetBaseVelocity(self.drone_ids[i], [0, 0, 0], [0, 0, 0], physicsClientId=self.client)
+        if self.lag:
+            self._vel[i] = 0.0
+            self._queue[i] = [np.zeros(3, dtype=np.float32)] * len(self._queue[i])
+
     def step_simulation(self):
         for _ in range(self.action_repeat):
             p.stepSimulation(physicsClientId=self.client)
