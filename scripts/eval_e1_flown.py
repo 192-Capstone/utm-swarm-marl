@@ -168,6 +168,9 @@ def main():
     ap.add_argument('--flights', type=int, default=20)
     ap.add_argument('--window', type=float, default=60.0, help='requested departures spread over this many s')
     ap.add_argument('--seeds', type=int, nargs='+', default=[20, 21, 22])
+    ap.add_argument('--hold-engage', type=float, default=None,
+                    help='goal-hold engage distance (m) for these runs (config: 0.5); release = +0.2 m. '
+                         'E1 landings: drones can stall ~0.6 m from the goal, outside a 0.5 m zone')
     ap.add_argument('--zones', type=float, default=0.0,
                     help='fraction of the map under temporary no-fly zones (0 = none)')
     ap.add_argument('--out', default=None)
@@ -179,6 +182,9 @@ def main():
         cfg = yaml.safe_load(f)
     cfg.pop('scenario_mix', None)
     cfg['environment']['collision_physics'] = False
+    if args.hold_engage is not None:                        # this experiment only; config untouched
+        cfg.setdefault('goal_hold', {}).update(engage_dist=args.hold_engage,
+                                               release_dist=args.hold_engage + 0.2)
     cfg.setdefault('obstacles', {})['enabled'] = False      # the map layout is passed explicitly
 
     rows = []
