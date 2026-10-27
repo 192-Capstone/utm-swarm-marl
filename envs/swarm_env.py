@@ -84,7 +84,7 @@ class SwarmEnv:
         self.noise_per_episode = bool(sn.get('per_episode_seed', False))
         self.lidar_range = lidar_config(config)['range']
 
-        # environment.simulator: pybullet (default) | webots | webots_l2
+        # environment.simulator: pybullet (default) | webots | webots_l2 | webots_l2_multi
         if adapter is None:
             sim = config['environment'].get('simulator', 'pybullet')
             if sim == 'webots':                  # Level 1: velocity-controlled bodies
@@ -93,6 +93,9 @@ class SwarmEnv:
             elif sim == 'webots_l2':             # Level 2: quadrotor dynamics + velocity PID
                 from envs.webots_l2 import WebotsL2Adapter
                 adapter = WebotsL2Adapter(config, gui=gui)
+            elif sim == 'webots_l2_multi':       # Level 2, n drones: one onboard PID controller each
+                from envs.webots_l2_multi import WebotsL2MultiAdapter
+                adapter = WebotsL2MultiAdapter(config, gui=gui)
             else:
                 adapter = PyBulletAdapter(config, gui=gui)
         self.adapter        = adapter

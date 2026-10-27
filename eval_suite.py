@@ -65,6 +65,17 @@ from modules.goal_hold import GoalHoldPolicy, goal_hold_enabled
 
 SUITE_VERSION = "v1"
 SEP_THRESHOLDS = (0.2, 0.3, 0.4, 0.5)
+# Lost control: |roll| or |pitch| above 60 deg (the drone flipped or tumbled). Unlike
+# scripts/webots_part4_table.py lost(), the true speed is not used: diagonal commands (up to
+# 2.8 m/s) plus overshoot pass 3 m/s in controlled flight, and after a flip the simulated speed is
+# not physical. Only for adapters that report episode_stats() (Webots Level 2 multi); PyBullet
+# output is unchanged.
+LOST_TILT_DEG = 60.0
+
+
+def lost_control(stats, i):
+    """Did drone i lose control this episode? stats = adapter.episode_stats()."""
+    return max(stats['max_roll_deg'][i], stats['max_pitch_deg'][i]) > LOST_TILT_DEG
 
 
 # ---------------------------------------------------------------- helpers ---
@@ -638,6 +649,20 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
     }
     for t in SEP_THRESHOLDS:
         episode[f'sep_below_{t}'] = int(min_sep is not None and min_sep < t) if n_agents > 1 else ''
+    stats = env.adapter.episode_stats() if hasattr(env.adapter, 'episode_stats') else None
+    if stats is not None:
+        lost = [lost_control(stats, i) for i in range(n_agents)]
+        episode['lost_control'] = int(any(lost))
+        episode['lost_control_drones'] = int(sum(lost))
+        episode['max_tilt_deg'] = round(max(max(stats['max_roll_deg']), max(stats['max_pitch_deg'])), 2)
+        episode['max_true_speed'] = round(max(stats['max_speed']), 4)
+        if 'reimported' in stats:                # drones re-imported (fresh) before this episode
+            episode['reimported_drones'] = int(sum(stats['reimported']))
+        for i, a in enumerate(agents):
+            a['max_roll_deg'] = round(stats['max_roll_deg'][i], 2)
+            a['max_pitch_deg'] = round(stats['max_pitch_deg'][i], 2)
+            a['max_true_speed'] = round(stats['max_speed'][i], 4)
+            a['lost_control'] = int(lost[i])
     return episode, agents
 
 
@@ -696,6 +721,11 @@ def summarize(episodes, agents, n_agents, physics_on):
             k = sum(e['physical_contact'] for e in episodes)
             s['physical_contact_rate'] = k / n
             s['physical_contact_ci95'] = wilson(k, n)
+    if episodes and 'lost_control' in episodes[0]:
+        k = sum(e['lost_control'] for e in episodes)
+        s['lost_control_rate'] = k / n
+        s['lost_control_ci95'] = wilson(k, n)
+        s['lost_control_drone_rate'] = mean([a['lost_control'] for a in agents])
     return s
 
 
@@ -776,8 +806,9 @@ def main():
                     help="ablation: MAPPO actor sees no other drones (all neighbour slots masked)")
     ap.add_argument("--blind-lidar", action="store_true",
                     help="ablation: MAPPO actor's LiDAR inputs read 'nothing seen'")
-    ap.add_argument("--simulator", choices=["pybullet", "webots", "webots_l2"], default="pybullet",
-                    help="simulator backend (webots: Level 1, envs/webots_adapter.py; webots_l2: Level 2 quadrotor, envs/webots_l2.py)")
+    ap.add_argument("--simulator", choices=["pybullet", "webots", "webots_l2", "webots_l2_multi"], default="pybullet",
+                    help="simulator backend (webots: Level 1, envs/webots_adapter.py; webots_l2: Level 2 quadrotor, "
+                         "envs/webots_l2.py; webots_l2_multi: Level 2, n official Crazyflies, envs/webots_l2_multi.py)")
     ap.add_argument("--webots-real", action="store_true",
                     help="Webots: realistic world; with webots_l2 the drone is Bitcraze's official Crazyflie model")
     ap.add_argument("--collision-physics", choices=["on", "off"], required=True,
@@ -825,6 +856,8 @@ def main():
         if args.collision_physics == 'on':
             ap.error("--collision-physics on needs PyBullet (contact checks use its API)")
         config['environment']['simulator'] = args.simulator
+        if args.webots_real and args.simulator == 'webots_l2_multi':
+            ap.error("--webots-real: webots_l2_multi always flies the official Crazyflie")
         if args.webots_real:
             config.setdefault('webots', {})['real'] = True
     if interaction:
@@ -865,6 +898,9 @@ def main():
     if os.path.exists(os.path.join(out_dir, "summary.json")) and not args.overwrite:
         ap.error(f"{out_dir} already has results. Pass --overwrite or choose --out-dir.")
     os.makedirs(out_dir, exist_ok=True)
+    if args.simulator == 'webots_l2_multi':
+        # the Webots log (Webots + every drone controller) next to the results
+        config.setdefault('webots', {})['log'] = os.path.join(out_dir, 'webots.log')
 
     env = SwarmEnv(config, device=device)
     if not physics_on:

@@ -11,6 +11,7 @@ Examples (from the repo root):
 
 Every eval_suite.py job runs at below-normal priority (Windows priority class / nice 10), at most
 --jobs at a time. Tests that already have a summary.json are skipped, so a stopped run resumes.
+--simulator is passed to eval_suite.py (default pybullet).
 Results: <root>/<name>/<group>/<test folder>/summary.json, logs next to them.
 """
 import argparse
@@ -58,8 +59,11 @@ def summarise(root, name):
             rows.append((group, test, s))
     if not rows:
         return
+    # "lost" column (Webots Level 2 multi) only when the summaries have it: PyBullet tables unchanged
+    show_lost = any('lost_control_rate' in s for _, _, s in rows)
     print(f"\n{name}")
-    print(f"{'group':9s} {'test':44s} {'n':>4s} {'success':>8s} {'crash':>6s} {'obst':>5s} {'timeout':>8s} {'settle s':>9s} {'end v':>6s}")
+    print(f"{'group':9s} {'test':44s} {'n':>4s} {'success':>8s} {'crash':>6s} {'obst':>5s} {'timeout':>8s} {'settle s':>9s} {'end v':>6s}"
+          + (f" {'lost':>6s}" if show_lost else ""))
     for group in ('standard', 'crowd', 'heldout'):
         g = [(t, s) for gg, t, s in rows if gg == group]
         if not g:
@@ -68,12 +72,18 @@ def summarise(root, name):
             st = s.get('settle_time_s') or {}
             print(f"{group:9s} {t[:44]:44s} {s['episodes']:4d} {100 * s['success_rate']:7.1f}% "
                   f"{100 * crash(s):5.1f}% {100 * s.get('obstacle_collision_rate', 0.0):4.1f}% "
-                  f"{100 * s['timeout_rate']:7.1f}% {st.get('mean', float('nan')):9.2f} {s.get('final_speed_mean', float('nan')):6.3f}")
+                  f"{100 * s['timeout_rate']:7.1f}% {st.get('mean', float('nan')):9.2f} {s.get('final_speed_mean', float('nan')):6.3f}"
+                  + (f" {100 * s.get('lost_control_rate', float('nan')):5.1f}%" if show_lost else ""))
         n = sum(s['episodes'] for _, s in g)
         sr = sum(s['success_rate'] * s['episodes'] for _, s in g) / n
         cr = sum(crash(s) * s['episodes'] for _, s in g) / n
         to = sum(s['timeout_rate'] * s['episodes'] for _, s in g) / n
-        print(f"{group:9s} {'== ' + group + f' ({len(g)} tests)':44s} {n:4d} {100 * sr:7.1f}% {100 * cr:5.1f}%       {100 * to:7.1f}%")
+        lost = ""
+        if show_lost:
+            lr = sum(s.get('lost_control_rate', float('nan')) * s['episodes'] for _, s in g) / n
+            lost = f"{'':17s} {100 * lr:5.1f}%"      # under the per-test "lost" column
+        print(f"{group:9s} {'== ' + group + f' ({len(g)} tests)':44s} {n:4d} {100 * sr:7.1f}% {100 * cr:5.1f}%       {100 * to:7.1f}%"
+              + lost)
 
 
 def main():
@@ -88,6 +98,9 @@ def main():
     ap.add_argument('--seeds', type=int, nargs='+', default=[10, 11, 12, 13, 14])
     ap.add_argument('--episodes', type=int, default=20, help='episodes PER seed (default 20 -> 100 flights per test)')
     ap.add_argument('--jobs', type=int, default=2, help='evaluations running at the same time')
+    ap.add_argument('--simulator', default='pybullet',
+                    choices=['pybullet', 'webots', 'webots_l2', 'webots_l2_multi'],
+                    help='simulator backend, passed to eval_suite.py')
     ap.add_argument('--root', default='eval_results/suite17')
     ap.add_argument('--summary-only', action='store_true')
     args = ap.parse_args()
@@ -103,6 +116,8 @@ def main():
             cmd = [sys.executable, 'eval_suite.py', '--config', args.config, '--policy', args.policy,
                    '--scenario', test, '--seeds', *map(str, args.seeds), '--episodes', str(args.episodes),
                    '--collision-physics', 'off', '--results-root', out, *extra]
+            if args.simulator != 'pybullet':
+                cmd += ['--simulator', args.simulator]
             if args.checkpoint:
                 cmd += ['--checkpoint', args.checkpoint]
             todo.append((group, test, cmd, out))
