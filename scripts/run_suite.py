@@ -90,7 +90,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--name', required=True)
     ap.add_argument('--config', required=True)
-    ap.add_argument('--policy', default='mappo', choices=['mappo', 'repulsion', 'lidar_teacher', 'pcontroller'])
+    ap.add_argument('--policy', default='mappo',
+                    choices=['mappo', 'repulsion', 'lidar_teacher', 'pcontroller', 'orca', 'orca_map'])
     ap.add_argument('--checkpoint', default=None)
     ap.add_argument('--groups', nargs='+', default=['standard', 'crowd', 'heldout'])
     ap.add_argument('--tests', nargs='+', default=None, help='only these tests (e.g. pillar building)')

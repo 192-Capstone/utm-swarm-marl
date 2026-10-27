@@ -27,10 +27,9 @@ when a path exists on an occupancy grid (inflated by the drone radius plus a
 margin), so no episode is impossible.
 """
 
-from collections import deque
-
 import numpy as np
 
+from envs.route_planner import build_grid, plan, path_length
 from envs.scenario_manager import DRONE_RADIUS, surface_distance
 
 DIFFICULTY = {
@@ -121,54 +120,28 @@ def _fill_block(rng, x0, x1, y0, y1, cfg, out):
                 if xb - xa > 0.8 and yb - ya > 0.8:
                     out.append(_box(xa, xb, ya, yb, h()))
 
-
-def occupancy(layout, size, res, inflate):
-    """Boolean grid (ny, nx) over [-W/2, W/2] x [-H/2, H/2]: True where a drone centre would be
-    within `inflate` of a building. Returns (grid, x_coords, y_coords)."""
-    W, H = size
-    xs = np.arange(-W / 2 + res / 2, W / 2, res)
-    ys = np.arange(-H / 2 + res / 2, H / 2, res)
-    gx, gy = np.meshgrid(xs, ys)
-    occ = np.zeros(gx.shape, dtype=bool)
-    for ob in layout:
-        hx, hy = ob['half']
-        cx, cy = ob['center']
-        dx = np.maximum(np.abs(gx - cx) - hx, 0.0)
-        dy = np.maximum(np.abs(gy - cy) - hy, 0.0)
-        occ |= np.hypot(dx, dy) < inflate
-    return occ, xs, ys
-
-
 def route_length(city, a, b):
-    """Shortest 8-connected path length (m) between two points on the free grid; None if unreachable."""
-    occ, xs, ys, res = city['occ'], city['xs'], city['ys'], city['res']
-    ij = lambda p: (int(np.clip(round((p[1] - ys[0]) / res), 0, len(ys) - 1)),
-                    int(np.clip(round((p[0] - xs[0]) / res), 0, len(xs) - 1)))
-    s, g = ij(a), ij(b)
-    if occ[s] or occ[g]:
-        return None
-    dist = np.full(occ.shape, np.inf)
-    dist[s] = 0.0
-    q = deque([s])
-    steps = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
-             (-1, -1, 1.414), (-1, 1, 1.414), (1, -1, 1.414), (1, 1, 1.414)]
-    while q:                                   # BFS-style relaxation (small grids, cheap enough)
-        i, j = q.popleft()
-        if (i, j) == g:
-            break
-        for di, dj, w in steps:
-            ni, nj = i + di, j + dj
-            if 0 <= ni < occ.shape[0] and 0 <= nj < occ.shape[1] and not occ[ni, nj] \
-                    and dist[i, j] + w < dist[ni, nj]:
-                dist[ni, nj] = dist[i, j] + w
-                q.append((ni, nj))
-    return None if np.isinf(dist[g]) else float(dist[g] * res)
+    """Shortest path length in metres, or None if unreachable."""
+    grid = city.get('grid')
+    if grid is None:
+        # Support city dictionaries created before the shared grid was added.
+        W, H = city['size']
+        grid = build_grid(
+            city['layout'],
+            ((-W / 2, W / 2), (-H / 2, H / 2)),
+            city['res'],
+            DRONE_RADIUS + COMMON['route_margin'],
+        )
 
+    path = plan(grid, a, b, snap_dist=0.0)
+    return None if path is None else path_length(path)
 
 def generate_city(rng, level='medium', **overrides):
-    """A district: {'layout', 'streets_x', 'streets_y', 'blocks_x', 'blocks_y', 'size', 'level',
-    'occ', 'xs', 'ys', 'res'} (occ = cells a drone centre can't use, inflated by the drone
-    radius plus route_margin)."""
+    """Generate a city and its reusable shared-planner grid.
+
+    Retains the existing city dictionary keys and adds ``grid`` for route queries.
+    ``occ`` marks cells a drone centre cannot use, inflated by drone radius + margin.
+    """
     cfg = dict(COMMON, **DIFFICULTY[level], **overrides)
     W, H = cfg['size']
     bx, sx = _cuts(rng, W, cfg)
@@ -177,9 +150,27 @@ def generate_city(rng, level='medium', **overrides):
     for x0, x1 in bx:
         for y0, y1 in by:
             _fill_block(rng, x0, x1, y0, y1, cfg, layout)
-    occ, xs, ys = occupancy(layout, (W, H), cfg['grid_res'], DRONE_RADIUS + cfg['route_margin'])
-    return {'layout': layout, 'streets_x': sx, 'streets_y': sy, 'blocks_x': bx, 'blocks_y': by,
-            'size': (W, H), 'level': level, 'occ': occ, 'xs': xs, 'ys': ys, 'res': cfg['grid_res']}
+    grid = build_grid(
+        layout,
+        ((-W / 2, W / 2), (-H / 2, H / 2)),
+        cfg['grid_res'],
+        DRONE_RADIUS + cfg['route_margin'],
+    )
+    occ, xs, ys = grid.occ, grid.xs, grid.ys
+    return {
+        'layout': layout,
+        'streets_x': sx,
+        'streets_y': sy,
+        'blocks_x': bx,
+        'blocks_y': by,
+        'size': (W, H),
+        'level': level,
+        'occ': occ,
+        'xs': xs,
+        'ys': ys,
+        'res': cfg['grid_res'],
+        'grid': grid,
+    }
 
 
 def street_point(rng, city, clearance=1.0, edge=1.0, tries=200):
