@@ -10,9 +10,9 @@ D4 traffic demand (utm/demand.py):
   C. Routability: unroutable requests are dropped and counted, or kept with keep_unroutable.
   D. Operators follow their shares; same seed -> the same demand; save / load round trip.
   E. It feeds E1, and random_requests (the E1 preview's generator) still works from here.
-  F. The full E-City map (slow: runs only with RUN_SLOW=1).
+  F. The full E-City map.
 
-Run: python -m pytest tests/test_demand.py -q          (RUN_SLOW=1 adds the full map)
+Run: python -m pytest tests/test_demand.py -q
 """
 
 import json
@@ -219,7 +219,6 @@ def test_random_requests_still_works_for_the_preview():
 
 
 # ----------------------------------------------------------------------------- F. full map
-@pytest.mark.skipif(not os.environ.get('RUN_SLOW'), reason='slow: set RUN_SLOW=1')
 def test_full_ecity_map():
     from envs.osm_scenario import DEFAULT_LAYOUT_PATH, layout_bounds, load_osm_layout
     layout = load_osm_layout(DEFAULT_LAYOUT_PATH)
