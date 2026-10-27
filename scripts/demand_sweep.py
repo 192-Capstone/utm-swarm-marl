@@ -28,7 +28,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from preview_route import load_map  # noqa: E402
-from utm.demand import LEVELS, DemandSettings, generate_demand, save_demand  # noqa: E402
+from utm.demand import LEVELS, DemandSettings, Region, generate_demand, layer0_grid, save_demand  # noqa: E402
 from utm.strategic_planner import StrategicPlanner  # noqa: E402
 
 COLUMNS = ["map", "mode", "level", "seed", "requested", "dropped", "submitted", "approved_pct",
@@ -65,12 +65,13 @@ def main():
     for spec in args.maps:
         label, ns = parse_map(spec)
         layout, bounds = load_map(ns)
+        region = Region(layer0_grid(layout, bounds))        # once per map, reused for every run
         for mode in args.modes:
             for level in args.levels:
                 for seed in args.seeds:
                     t0 = time.time()
                     s = DemandSettings(rate=level, duration_s=args.duration, mode=mode, max_trip=args.max_trip)
-                    dem = generate_demand(layout, bounds, s, seed=seed)
+                    dem = generate_demand(layout, bounds, s, seed=seed, region=region)
                     if args.save_demand:
                         save_demand(os.path.join(out_dir, f"{args.name}_{label}_{mode}_{level:g}_s{seed}.json"), dem)
                     sky = StrategicPlanner(layout, bounds)

@@ -11,13 +11,23 @@ D4 traffic demand (utm/demand.py):
   D. Operators follow their shares; same seed -> the same demand; save / load round trip.
   E. It feeds E1, and random_requests (the E1 preview's generator) still works from here.
   F. The full E-City map.
+  G. Reference fingerprints: two fixed demands must not change (reproducibility across changes).
+  H. Edge cases and validation: bad settings raise a clear ValueError; rate 0, 1 s, a tiny free
+     region, exhausted max_tries and drops that don't fit work and show in the report.
+  I. E1 fit: generate -> save -> load -> submit to fresh E1 planners gives identical decisions.
+
+Statistics over many seeds: tests/test_demand_stats.py. Invariants over maps x modes x levels:
+tests/test_demand_invariants.py.
 
 Run: python -m pytest tests/test_demand.py -q
 """
 
+import hashlib
 import json
 import os
 import sys
+from dataclasses import asdict
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -27,12 +37,16 @@ pytest.importorskip('h3')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from envs.city_generator import generate_city                                      # noqa: E402
+from envs.osm_scenario import load_osm_layout                                      # noqa: E402
 from envs.route_planner import plan                                                # noqa: E402
 from utm.demand import (DemandSettings, Pad, Region, departure_times,  # noqa: E402
                         generate_demand, layer0_grid, load_demand, random_requests, save_demand)
+from utm.demand_checks import check_demand                                         # noqa: E402
 from utm.strategic_planner import FlightPlan, StrategicPlanner                     # noqa: E402
 
 B = ((-25.0, 25.0), (-25.0, 25.0))
+REPO = Path(__file__).resolve().parents[1]
+CROP = REPO / 'data/osm_city/bengaluru_ecity_phase1_rotated_v2_crop50_cand1_layout.yaml'
 
 
 def city(level='medium', seed=0):
@@ -220,8 +234,8 @@ def test_random_requests_still_works_for_the_preview():
 
 # ----------------------------------------------------------------------------- F. full map
 def test_full_ecity_map():
-    from envs.osm_scenario import DEFAULT_LAYOUT_PATH, layout_bounds, load_osm_layout
-    layout = load_osm_layout(DEFAULT_LAYOUT_PATH)
+    from envs.osm_scenario import DEFAULT_LAYOUT_PATH, layout_bounds
+    layout = load_osm_layout(REPO / DEFAULT_LAYOUT_PATH)          # works from any working directory
     x0, y0, x1, y1 = layout_bounds(layout)
     bounds = ((x0, x1), (y0, y1))
     s = DemandSettings(rate=5, duration_s=2.0, max_trip=60.0)
@@ -229,3 +243,109 @@ def test_full_ecity_map():
     assert d.report['districts'] > 100
     assert d.report['kept'] > 10 and d.report['no_valid_pair'] <= 2
     assert all(np.hypot(fp.goal[0] - fp.start[0], fp.goal[1] - fp.start[1]) <= 60.25 for fp in d.plans)
+
+
+# ----------------------------------------------------------------------------- G. fingerprints
+def fingerprint(d):
+    rows = [[p.id, list(p.start), list(p.goal), p.layer, p.t_earliest, p.operator] for p in d.plans]
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest()[:16]
+
+
+def test_reference_fingerprints():
+    """Exactly these flights for these inputs. If this fails, a change altered what the generator
+    draws (or numpy's RandomState did): every saved experiment's demand would change with it."""
+    layout, bounds = city('medium', 0)
+    a = generate_demand(layout, bounds, DemandSettings(rate=20), seed=1)
+    assert (len(a.plans), fingerprint(a)) == (38, '6973167f305e186e')
+    crop = load_osm_layout(CROP)
+    s = DemandSettings(rate=40, mode='hubs', peak=(60, 15, 3))
+    b = generate_demand(crop, B, s, seed=2)
+    assert (len(b.plans), fingerprint(b)) == (121, 'd100049e49eaaa9f')
+    # a prebuilt region (reused across calls by the scripts) gives the same demand
+    again = generate_demand(crop, B, s, seed=2, region=Region(layer0_grid(crop, B)))
+    assert fingerprint(again) == 'd100049e49eaaa9f'
+
+
+# ----------------------------------------------------------------------------- H. edge cases
+@pytest.mark.parametrize('kw, msg', [
+    (dict(rate=-1.0), 'rate'), (dict(rate=float('nan')), 'rate'), (dict(duration_s=-5.0), 'duration_s'),
+    (dict(min_trip=-1.0), 'min_trip'), (dict(min_trip=20.0, max_trip=10.0), 'max_trip'),
+    (dict(mode='grid'), 'mode'), (dict(pad_sep=-1.0), 'pad_sep'), (dict(pad_window_s=-1.0), 'pad_window_s'),
+    (dict(hub_share=1.5), 'hub_share'), (dict(max_tries=0), 'max_tries'),
+    (dict(mode='hubs', n_hubs=0), 'n_hubs'), (dict(mode='hubs', n_drops=0), 'n_drops'),
+    (dict(layers=()), 'layers'), (dict(layers=(-1,)), 'layers'), (dict(operators={'a': 0.0}), 'operators'),
+])
+def test_bad_settings_raise_a_clear_error(kw, msg):
+    with pytest.raises(ValueError, match=msg):
+        generate_demand([], B, DemandSettings(**kw))
+
+
+def test_random_mode_needs_two_given_pads():
+    for pads in ([], [(0.0, 0.0)]):
+        with pytest.raises(ValueError, match='at least 2 pads'):
+            generate_demand([], B, DemandSettings(), pads=pads)
+
+
+def test_rate_zero_and_short_durations_work():
+    region = Region(layer0_grid([], B))
+    for s in (DemandSettings(rate=0), DemandSettings(duration_s=0.0),
+              DemandSettings(rate=20, duration_s=1.0), DemandSettings(rate=0, mode='hubs')):
+        d = generate_demand([], B, s, seed=1, region=region)
+        assert check_demand(d, region) == []
+        assert all(0.0 <= fp.t_earliest < max(s.duration_s, 1e-9) for fp in d.plans)
+    assert generate_demand([], B, DemandSettings(rate=0), region=region).plans == []
+
+
+def test_drops_that_dont_fit_show_in_the_report():
+    region = Region(layer0_grid([], B))
+    d = generate_demand([], B, DemandSettings(rate=10, mode='hubs', n_drops=60, pad_sep=10.0),
+                        seed=1, region=region)
+    assert d.report['pads_requested'] == {'drop': 60, 'hub': 3}
+    assert 0 < d.report['pads_placed']['drop'] < 60
+    assert check_demand(d, region) == []
+
+
+def pocket():
+    """A 50 m map blocked everywhere except a 4 m x 4 m pocket in the middle (less after inflation)."""
+    box = lambda c, h: {'type': 'box', 'center': c, 'half': h, 'height': 10.0}       # noqa: E731
+    return [box((-13.5, 0.0), (11.5, 25.0)), box((13.5, 0.0), (11.5, 25.0)),
+            box((0.0, -13.5), (2.0, 11.5)), box((0.0, 13.5), (2.0, 11.5))]
+
+
+def test_tiny_region_and_exhausted_tries_show_in_the_report():
+    region = Region(layer0_grid(pocket(), B))
+    assert region.n_cells * region.grid.res ** 2 < 10.0          # about 3 m x 3 m left
+    d = generate_demand(pocket(), B, DemandSettings(rate=20, duration_s=60), seed=1, region=region)
+    assert d.report['requested'] > 0 and d.plans == []           # no 8 m trip fits in the pocket
+    assert d.report['no_valid_pair'] == d.report['requested']
+    # trips that rarely fit, one draw each: most requests run out of tries, and the counts add up
+    s = DemandSettings(rate=20, duration_s=300, min_trip=35.0, max_tries=1)    # ~25% of draws fit
+    d = generate_demand([], B, s, seed=1)
+    assert d.report['no_valid_pair'] > 0.5 * d.report['requested'] and d.report['kept'] > 0
+    assert check_demand(d, Region(layer0_grid([], B))) == []
+
+
+def test_a_map_with_no_free_cell_raises():
+    full = [{'type': 'box', 'center': (0.0, 0.0), 'half': (30.0, 30.0), 'height': 10.0}]
+    with pytest.raises(ValueError, match='no free cell'):
+        generate_demand(full, B, DemandSettings())
+
+
+# ----------------------------------------------------------------------------- I. E1 fit
+def test_save_load_submit_gives_identical_e1_decisions(tmp_path):
+    crop = load_osm_layout(CROP)
+
+    def decide(plans):
+        sky = StrategicPlanner(crop, B)
+        for fp in plans:
+            sky.submit(fp)
+        return [asdict(x) for x in sky.decisions]
+
+    for mode in ('random', 'hubs'):
+        d = generate_demand(crop, B, DemandSettings(rate=20, duration_s=30, mode=mode, layers=(0, 1)), seed=3)
+        save_demand(tmp_path / f'{mode}.json', d)
+        e = load_demand(tmp_path / f'{mode}.json')
+        assert e.plans == d.plans
+        first = decide(d.plans)
+        assert first == decide(e.plans) == decide(d.plans)
+        assert any(x['status'] == 'approved' for x in first)

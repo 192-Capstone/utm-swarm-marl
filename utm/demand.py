@@ -31,9 +31,15 @@ Origins / destinations (mode):
     'random' then picks two pads per flight, 'hubs' uses kind 'hub' as depots and the rest as
     drop points.
 
-Every request is checked for a D7 route on layer 0 (E1's own layer-0 map). Unroutable ones are
-dropped and counted (report['dropped_unroutable']), so E1's approval rate measures airspace
-capacity, not map connectivity; keep_unroutable=True keeps them (raw demand).
+Every request has a D7 route on layer 0 (E1's own layer-0 map). Pads drawn from the region
+(random free points, generated hubs) always have one, since the region is connected the way A*
+moves, so they skip the A* check. Given pads may not: each such request is checked with A*, and
+unroutable ones are dropped and counted (report['dropped_unroutable']), so E1's approval rate
+measures airspace capacity, not map connectivity; keep_unroutable=True keeps them (raw demand).
+
+Settings are validated (ValueError on a negative rate, min_trip > max_trip, ...). Anything that
+gives fewer flights or pads than asked shows in the report: no_valid_pair (no pair found within
+max_tries draws), dropped_unroutable, and pads_requested vs pads_placed (hubs mode).
 
 Each flight also gets an operator id (op0, op1, ... with configurable shares) for the fairness
 metrics (E7) and a preferred cruise layer.
@@ -221,28 +227,71 @@ def hub_pads(rng, region, n_hubs, n_drops, min_sep=3.0, candidates=400):
 
 
 # ----------------------------------------------------------------------------- generator
-def generate_demand(layout, bounds, settings=None, seed=0, pads=None, planner_settings=None):
-    """Demand for one map: E1 FlightPlans sorted by departure time, plus a report.
-    layout, bounds: as for StrategicPlanner. pads: optional list of (x, y[, kind]) / Pad.
-    planner_settings: E1 Settings whose layer-0 map is used for sampling and the route check."""
-    s = settings or DemandSettings()
+def validate(s, given_pads=False):
+    """ValueError with a clear message for settings that can't give sensible demand."""
     if s.mode not in ('random', 'hubs'):
         raise ValueError(f"mode must be 'random' or 'hubs', got {s.mode!r}")
+    if not s.rate >= 0:
+        raise ValueError(f"rate must be >= 0 flights / min / district, got {s.rate}")
+    if not s.duration_s >= 0:
+        raise ValueError(f"duration_s must be >= 0, got {s.duration_s}")
+    if not s.min_trip >= 0:
+        raise ValueError(f"min_trip must be >= 0, got {s.min_trip}")
+    if s.max_trip is not None and not s.max_trip >= s.min_trip:
+        raise ValueError(f"max_trip ({s.max_trip}) must be >= min_trip ({s.min_trip})")
+    if not s.pad_sep >= 0 or not s.pad_window_s >= 0:
+        raise ValueError(f"pad_sep and pad_window_s must be >= 0, got {s.pad_sep}, {s.pad_window_s}")
+    if not 0.0 <= s.hub_share <= 1.0:
+        raise ValueError(f"hub_share must be in [0, 1], got {s.hub_share}")
+    if int(s.max_tries) < 1:
+        raise ValueError(f"max_tries must be >= 1, got {s.max_tries}")
+    if s.mode == 'hubs' and not given_pads and (int(s.n_hubs) < 1 or int(s.n_drops) < 1):
+        raise ValueError(f"mode 'hubs' needs n_hubs >= 1 and n_drops >= 1, got {s.n_hubs}, {s.n_drops}")
+    if len(s.layers) == 0 or any(int(k) < 0 for k in s.layers):
+        raise ValueError(f"layers must be a non-empty list of layers >= 0, got {s.layers}")
+    if s.operators:
+        w = np.array([float(v) for v in s.operators.values()])
+        if (w < 0).any() or w.sum() <= 0:
+            raise ValueError("operators: shares must be >= 0 and not all 0")
+
+
+def _kinds(pads):
+    """Number of distinct pad positions of each kind ('' counts as 'pad')."""
+    seen = {}
+    for p in pads:
+        seen.setdefault(p.kind or 'pad', set()).add((p.x, p.y))
+    return {k: len(v) for k, v in sorted(seen.items())}
+
+
+def generate_demand(layout, bounds, settings=None, seed=0, pads=None, planner_settings=None,
+                    grid=None, region=None):
+    """Demand for one map: E1 FlightPlans sorted by departure time, plus a report.
+    layout, bounds: as for StrategicPlanner. pads: optional list of (x, y[, kind]) / Pad.
+    planner_settings: E1 Settings whose layer-0 map is used for sampling and the route check.
+    grid / region: the layer-0 grid / its Region, to reuse across calls on the same map (they
+    must come from this layout, bounds and planner_settings); built here when not given."""
+    s = settings or DemandSettings()
+    validate(s, given_pads=pads is not None)
     if s.operators:
         ops = list(s.operators)
         w = np.array([float(s.operators[k]) for k in ops])
-        if (w < 0).any() or w.sum() <= 0:
-            raise ValueError("operators: shares must be >= 0 and not all 0")
         w = w / w.sum()
     rng = np.random.RandomState(seed)
-    grid = layer0_grid(layout, bounds, planner_settings)
-    region = Region(grid)
+    if region is not None:
+        grid = region.grid
+    else:
+        grid = grid if grid is not None else layer0_grid(layout, bounds, planner_settings)
+        region = Region(grid)
+    source = 'given' if pads is not None else ('generated' if s.mode == 'hubs' else 'free')
     pads = _as_pads(pads) if pads is not None else (
         hub_pads(rng, region, s.n_hubs, s.n_drops, s.pad_sep) if s.mode == 'hubs' else [])
     hubs = [p for p in pads if p.kind == 'hub']
     others = [p for p in pads if p.kind != 'hub']
     if s.mode == 'hubs' and (not hubs or not others):
         raise ValueError("mode 'hubs' needs at least one pad of kind 'hub' and one other pad")
+    if s.mode == 'random' and source == 'given' and len(pads) < 2:
+        raise ValueError(f"mode 'random' with given pads needs at least 2 pads, got {len(pads)}")
+    check_route = source == 'given'             # region pads are always connected (see top)
 
     times = departure_times(rng, rate_per_min(s, bounds), s.duration_s, s.peak)
     plans, recent = [], []                      # recent: (t, start, goal) for pad_sep
@@ -282,7 +331,7 @@ def generate_demand(layout, bounds, settings=None, seed=0, pads=None, planner_se
         # drawn before the route check, so keep_unroutable doesn't change the other requests
         op = ops[rng.choice(len(ops), p=w)] if s.operators else ''
         layer = int(s.layers[rng.randint(len(s.layers))])
-        if plan(grid, a, b) is None:
+        if check_route and plan(grid, a, b) is None:
             dropped += 1
             if not s.keep_unroutable:
                 continue
@@ -302,6 +351,10 @@ def generate_demand(layout, bounds, settings=None, seed=0, pads=None, planner_se
         'kept': len(plans),
         'region_share': region.n_cells / max(region.free_cells, 1),
         'operators': dict(Counter(p.operator for p in plans)),
+        'pads_source': source,                  # 'free' (random points), 'generated' (hubs), 'given'
+        'pads_requested': ({'drop': int(s.n_drops), 'hub': int(s.n_hubs)} if source == 'generated'
+                           else _kinds(pads)),
+        'pads_placed': _kinds(pads),            # distinct positions; < requested when they didn't fit
     }
     return Demand(plans, pads, s, report, seed, tuple(tuple(map(float, b)) for b in bounds))
 
