@@ -1,0 +1,39 @@
+#VRML_SIM R2025a utf8
+
+
+WorldInfo {
+  info [ "UTM swarm, Level 1: velocity-controlled drones, analytic LiDAR (matches PyBullet)" ]
+  basicTimeStep 8
+  gravity 0
+  coordinateSystem "ENU"
+  contactProperties []
+}
+Viewpoint {
+  orientation -0.3 0.3 0.9 1.7
+  position 0 -30 25
+}
+Background {
+  skyColor [ 0.75 0.85 0.95 ]
+}
+DirectionalLight {
+  direction -0.5 -0.5 -1
+}
+DEF FLOOR Solid {
+  children [
+    Shape {
+      appearance PBRAppearance { baseColor 0.35 0.45 0.35 roughness 1 metalness 0 }
+      geometry Plane { size 100 100 }
+    }
+  ]
+  name "floor"
+  boundingObject Plane { size 100 100 }
+}
+DEF SUPERVISOR Robot {
+  name "swarm_supervisor"
+  controller "<extern>"
+  supervisor TRUE
+}
+DEF OBSTACLES Group {
+}
+DEF DRONES Group {
+}
