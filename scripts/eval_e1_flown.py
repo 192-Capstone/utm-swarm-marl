@@ -53,7 +53,7 @@ from preview_strategic import random_requests                      # noqa: E402
 from record_rollout import disable_all_collision_physics           # noqa: E402
 from utm.conformance import ConformanceMonitor                     # noqa: E402
 from utm.airspace_zones import apply_zones, random_block_zones, tile_blocks, zone_keys  # noqa: E402
-from utm.strategic_planner import StrategicPlanner                 # noqa: E402
+from utm.strategic_planner import Settings, StrategicPlanner       # noqa: E402
 
 NEAR = (2.0, 1.4)
 
@@ -168,6 +168,8 @@ def main():
     ap.add_argument('--flights', type=int, default=20)
     ap.add_argument('--window', type=float, default=60.0, help='requested departures spread over this many s')
     ap.add_argument('--seeds', type=int, nargs='+', default=[20, 21, 22])
+    ap.add_argument('--radius', type=float, default=None,
+                    help="E1's safety radius (m; default Settings: 2.1 = 1.0 half-separation + 1.1 drift)")
     ap.add_argument('--hold-engage', type=float, default=None,
                     help='goal-hold engage distance (m) for these runs (config: 0.5); release = +0.2 m. '
                          'E1 landings: drones can stall ~0.6 m from the goal, outside a 0.5 m zone')
@@ -191,7 +193,8 @@ def main():
     for seed in args.seeds:
         args.seed = seed
         layout, bounds = load_map(args)
-        sky = StrategicPlanner(layout, bounds)
+        settings = Settings() if args.radius is None else dataclasses.replace(Settings(), radius=args.radius)
+        sky = StrategicPlanner(layout, bounds, settings)
         zones = (temporary_zones(np.random.RandomState(1000 + seed), bounds, args.zones, args.window)
                  if args.zones else [])
         apply_zones(sky, zones)
