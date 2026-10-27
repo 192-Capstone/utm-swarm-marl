@@ -3,6 +3,8 @@
 This module centralises D3's occupancy-grid, connected-component and BFS logic
 so it can later be reused by the D1 procedural-city generator. It is a baseline
 geometric planner, not the learned MARL policy or a production city-scale router.
+
+For route finding use envs/route_planner.py (D7); this module keeps the connectivity diagnostics.
 """
 from __future__ import annotations
 
