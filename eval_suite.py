@@ -744,9 +744,11 @@ def print_summary(s, tag):
 def main():
     ap = argparse.ArgumentParser(description="Stage-1 evaluation suite v1 (evaluation only)")
     ap.add_argument("--config", required=True)
-    ap.add_argument("--policy", choices=["mappo", "pcontroller", "repulsion", "lidar_teacher"], default="mappo",
+    ap.add_argument("--policy", choices=["mappo", "pcontroller", "repulsion", "lidar_teacher",
+                                         "orca", "orca_map"], default="mappo",
                     help="repulsion = rule-based goal-seeking + push away from nearby drones "
-                         "(baselines/repulsion_controller.py)")
+                         "(baselines/repulsion_controller.py); orca / orca_map = ORCA baseline "
+                         "with LiDAR-ring / true obstacle shapes (baselines/orca.py)")
     ap.add_argument("--checkpoint", help="required for --policy mappo")
     ap.add_argument("--mode", choices=["deterministic", "stochastic"], default="deterministic")
     ap.add_argument("--kp", type=float, default=3.0, help="P-controller gain (baseline default)")
@@ -868,6 +870,7 @@ def main():
     if not physics_on:
         disable_all_collision_physics(env, n_agents)
 
+    orca_params = None
     if args.policy == "mappo":
         policy = MappoPolicy(config, args.checkpoint, device, args.mode == "deterministic",
                              blind_neighbors=args.blind_neighbors, blind_lidar=args.blind_lidar)
@@ -877,6 +880,10 @@ def main():
         if args.policy == 'lidar_teacher':           # the teacher's rules, obstacles seen only via the LiDAR ring
             from baselines.lidar_teacher import LidarTeacher
             policy = LidarTeacher(config)
+        elif args.policy in ('orca', 'orca_map'):      # B1 baseline: ORCA (LiDAR ring / true shapes)
+            from baselines.orca import OrcaPolicy, DEFAULTS as ORCA_DEFAULTS
+            policy = OrcaPolicy(config, use_map=args.policy == 'orca_map')
+            orca_params = {k: getattr(policy, k) for k in ORCA_DEFAULTS}
         else:
             policy = PController(config, args.kp) if args.policy == 'pcontroller' else RepulsionController(config)
         ckpt_episode = None
@@ -908,6 +915,7 @@ def main():
         'max_steps': max_steps, 'control_timestep': dt,
         'kp': args.kp if args.policy == 'pcontroller' else None,
         'goal_hold': config.get('goal_hold') if goal_hold else None,
+        'orca': orca_params,
     }
 
     wb = None
