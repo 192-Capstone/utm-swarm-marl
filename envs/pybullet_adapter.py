@@ -194,6 +194,18 @@ class PyBulletAdapter:
                                 angularVelocity=[0.0, 0.0, yaw_rate],
                                 physicsClientId=self.client)
 
+    def park(self, indices):
+        """Move these drones far out of the world and stop them (SwarmEnv crash_mode: remove).
+        Each gets its own spot 100 m apart, so parked drones are out of every sensor's range
+        and never touch each other."""
+        for i in indices:
+            p.resetBasePositionAndOrientation(self.drone_ids[i], [1e5 + 100.0 * i, 1e5, 50.0],
+                                              [0, 0, 0, 1], physicsClientId=self.client)
+            p.resetBaseVelocity(self.drone_ids[i], [0, 0, 0], [0, 0, 0], physicsClientId=self.client)
+            if self.lag:
+                self._vel[i] = 0.0
+                self._queue[i] = [np.zeros(3, dtype=np.float32)] * len(self._queue[i])
+
     def step_simulation(self):
         for _ in range(self.action_repeat):
             p.stepSimulation(physicsClientId=self.client)

@@ -47,6 +47,14 @@ class SwarmEnv:
         self.settle_speed     = config['environment'].get('settle_speed', 0.15)
         self.settle_steps     = config['environment'].get('settle_steps', 31)
         self.min_spawn_sep    = config.get('scenario_manager', {}).get('min_spawn_separation', 5.0)
+        # What a crash does (B5 scale test). 'end' (default): any crash ends the episode, as in
+        # every training and evaluation run so far. 'remove': the crashed drones are parked out
+        # of the world (adapter.park) and the rest keep flying; the episode ends when every
+        # drone has settled or crashed (reason 'collision' if any crashed) or at the timeout.
+        self.crash_mode = config['environment'].get('crash_mode', 'end')
+        if self.crash_mode not in ('end', 'remove'):
+            raise ValueError(f"environment.crash_mode must be 'end' or 'remove', got {self.crash_mode!r}")
+        self.crashed = np.zeros(self.n_agents, dtype=bool)
         # Safety cost for constrained RL (MAPPO-Lagrangian), kept separate from
         # the reward: 1 per step a drone is closer than cost_distance to any
         # other drone, plus collision_cost on the step it crashes (a crash ends
@@ -256,6 +264,7 @@ class SwarmEnv:
         self.settle_counter = np.zeros(self.n_agents, dtype=np.int64)
         self.best_settle_counter = np.zeros(self.n_agents, dtype=np.int64)
         self.ever_entered_goal = [False] * self.n_agents
+        self.crashed = np.zeros(self.n_agents, dtype=bool)
 
         # Track closest approach to goal — diagnoses "almost succeeded" vs
         # "never made progress" for episodes that don't reach the goal
@@ -269,6 +278,8 @@ class SwarmEnv:
         # 1. apply actions + advance the simulator
         self.adapter.apply_actions(actions_dict)
         self.adapter.step_simulation()
+        if self.crashed.any():                      # crash_mode remove: keep them parked
+            self.adapter.park(np.flatnonzero(self.crashed))
         self.episode_manager.step()
 
         # 2. read the new world state
@@ -292,6 +303,13 @@ class SwarmEnv:
         obstacle_gap = [scenario_manager.distance_to_obstacles(self.layout, positions[i])
                         for i in range(self.n_agents)]
         obstacle_collision = [g < scenario_manager.DRONE_RADIUS for g in obstacle_gap]
+        if self.crash_mode == 'remove':
+            new = (np.array(drone_collision) | np.array(obstacle_collision)) & ~self.crashed
+            if new.any():
+                # park them now, so no other drone sees or hits them from the next observation on
+                self.crashed |= new
+                self.adapter.park(np.flatnonzero(new))
+                raw = self.adapter.get_raw_state()
         cost = [float(bool(d) and min(d) < self.cost_distance)
                 + self.collision_cost * float(drone_collision[i])
                 + float(obstacle_gap[i] < self.obstacle_cost_distance)
@@ -359,9 +377,11 @@ class SwarmEnv:
         # settle_steps — see step 4 above), not on first contact. This is
         # what keeps a drone from "succeeding" by flying through the goal
         # at speed and drifting off afterward.
+        removing = self.crash_mode == 'remove'
         done, reason = self.episode_manager.check_done(
             positions.tolist(), self.goals.tolist(),
-            [a or b for a, b in zip(drone_collision, obstacle_collision)])
+            [False] * self.n_agents if removing
+            else [a or b for a, b in zip(drone_collision, obstacle_collision)])
         # EpisodeManager's own "success" path checks instantaneous position
         # only (no speed/settling) — it would let a swarm that happens to be
         # simultaneously inside every goal radius at full speed count as a
@@ -369,7 +389,12 @@ class SwarmEnv:
         # collision/timeout from it; success is decided by the settle latch.
         if done and reason == 'success':
             done, reason = False, None
-        if not done and all(self.drone_reached_goal):
+        if removing:
+            if not done and all(r or c for r, c in zip(self.drone_reached_goal, self.crashed)):
+                done, reason = True, 'collision' if self.crashed.any() else 'success'
+            elif done and self.crashed.any():
+                reason = 'collision'            # timed out after a crash: still a crash episode
+        elif not done and all(self.drone_reached_goal):
             done, reason = True, 'success'
         if done:
             self.episode_manager.record_episode_result(reason or 'timeout')
@@ -400,6 +425,7 @@ class SwarmEnv:
                 'drone_reached_goal':       list(self.drone_reached_goal),
                 'drone_collision':          list(drone_collision),
                 'obstacle_collision':       list(obstacle_collision),
+                'drone_crashed':            self.crashed.tolist(),   # crash_mode remove only
                 'obstacle_distance':        [float(g) for g in obstacle_gap],
                 'cost':                     cost,
                 'min_dist_to_goal':         float(self.min_dist_ever.mean()),
