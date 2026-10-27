@@ -17,7 +17,7 @@ and the policy's reaction distance), closest approach, and E1's delays.
 
 --zones FRAC adds temporary no-fly zones (D2, utm/airspace_zones.py): 10 m tiles covering about
 FRAC of the map, each closed for 20-40 s starting at a random time in the window. E1 plans around
-them; both conditions are also scored for zone violations (an airborne drone inside an active
+them (waiting or flying around, whichever is cheaper); both conditions are also scored for zone violations (an airborne drone inside an active
 zone's (H3 cell, layer) keys): flights that ever entered one, and drone-seconds spent inside.
 
     python scripts/eval_e1_flown.py --config configs/config_stage2_round7_eval_goalhold.yaml \
@@ -179,6 +179,7 @@ def main():
         decisions, flights = plans(sky, reqs)
         row = {'seed': seed, 'requested': len(reqs), 'approved': len(flights), 'zones': len(zones),
                'rejected_by_zone': sum(1 for d in decisions if d.blockers),
+               'around_zones': sum(1 for d in decisions if d.around_zones),
                'delay_mean_s': float(np.mean([f['delay'] for f in flights])) if flights else 0.0}
         for mode in ('no_e1', 'e1'):
             t0 = time.time()
@@ -200,7 +201,8 @@ def main():
               f"< 1.4 m {t['pairs_below_1.4']}, zone entries {t['zone_entries']} ({t['zone_seconds']:.1f} s)")
     print(f"E1: {sum(r['approved'] for r in rows)}/{sum(r['requested'] for r in rows)} approved, "
           f"mean delay {np.mean([r['delay_mean_s'] for r in rows]):.1f} s, "
-          f"rejected with a zone in the way {sum(r['rejected_by_zone'] for r in rows)}")
+          f"rejected with a zone in the way {sum(r['rejected_by_zone'] for r in rows)}, "
+          f"flown around zones {sum(r['around_zones'] for r in rows)}")
     path = args.out or os.path.join('eval_results', 'e1_flown',
                                     f"{args.map}_{args.level}_f{args.flights}_w{args.window:g}"
                                     f"{f'_z{args.zones:g}' if args.zones else ''}.json")

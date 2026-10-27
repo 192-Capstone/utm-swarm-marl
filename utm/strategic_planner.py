@@ -22,9 +22,12 @@ Flow for one plan (first come, first served):
               from t = 0 until departure and the goal pad open-ended, for a drone that hovers on
               its pad for the whole episode (blocks far more airspace: ~50% fewer approvals)
   4. check    against the ledger of approved flights and the blocked (cell, layer) keys
-  5. resolve  options (layer, delay) by cost = arrival delay vs the fastest plan
+  5. resolve  options (layer, route, delay) by cost = arrival delay vs the fastest plan
               + layer_penalty x layers changed; the cheapest conflict-free one is booked;
-              none within max_delay -> rejected
+              none within max_delay -> rejected. With no-fly zones (D2, apply_zones) each layer
+              has two routes: the direct one and one around every zone the flight may not enter
+              (masked on the route map exactly where the reservation would touch the zone), so
+              the cost decides between waiting for a temporary zone and flying around it
 
 A reservation is a set of keys (H3 cell, layer), each with time intervals (s). Two flights
 conflict when they share a key with overlapping intervals.
@@ -41,7 +44,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from envs.airspace import Airspace
-from envs.route_planner import build_grid, plan, simplify
+from envs.route_planner import Grid, build_grid, plan, simplify
 from envs.scenario_manager import DRONE_RADIUS
 
 INF = float('inf')
@@ -95,6 +98,7 @@ class Decision:
     waypoints: list = field(default_factory=list)       # (x, y, z)
     reservation: dict = field(default_factory=dict)     # (cell, layer) -> [(t0, t1), ...]
     reason: str = ''
+    around_zones: bool = False        # flies the route around the no-fly zones
     blockers: list = field(default_factory=list)        # 'blocked' / 'zone:<id>' that were in the way
 
 
@@ -120,6 +124,7 @@ class StrategicPlanner:
         self.layout, self.bounds = list(layout), bounds
         self.blocked = set(blocked)
         self.exempt = {}                  # flight id -> ledger owners it may share keys with (D2)
+        self.zone_keys = {}               # 'zone:<id>' -> its (cell, layer) keys, routed around (D2)
         self.ledger = {}                  # (cell, layer) -> [(t0, t1, flight id)]
         self.decisions = []
         self._grids = {}
@@ -144,9 +149,34 @@ class StrategicPlanner:
                                             min_height=lo)
         return self._grids[layer]
 
-    def route(self, start, goal, layer):
-        """Simplified D7 route (x, y) on the layer's map, or None."""
-        g = self._grid(layer)
+    def _zone_grid(self, layer, zones):
+        """The layer's map with the zones' cells added as obstacles: every grid point whose
+        reservation (cells_near) would reach one of their cells on this layer, plus one grid step
+        for the samples between grid points."""
+        cache = (layer, zones)
+        if cache not in self._grids:
+            g = self._grid(layer)
+            occ = g.occ.copy()
+            reach = self.s.radius + self._edge + g.res
+            cells = {c for z in zones for c, k in self.zone_keys[z] if k == layer}
+            for c in cells:
+                if c not in self._centres:
+                    self._centres[c] = self.sky.center(c)
+                cx, cy = self._centres[c]
+                ix0, ix1 = np.searchsorted(g.xs, cx - reach), np.searchsorted(g.xs, cx + reach, side='right')
+                iy0, iy1 = np.searchsorted(g.ys, cy - reach), np.searchsorted(g.ys, cy + reach, side='right')
+                if ix0 >= ix1 or iy0 >= iy1:
+                    continue
+                gx, gy = np.meshgrid(g.xs[ix0:ix1], g.ys[iy0:iy1])
+                occ[iy0:iy1, ix0:ix1] |= (gx - cx) ** 2 + (gy - cy) ** 2 <= reach * reach
+            self._grids[cache] = Grid(occ, g.xs, g.ys, g.res)
+        return self._grids[cache]
+
+    def route(self, start, goal, layer, avoid=frozenset()):
+        """Simplified D7 route (x, y) on the layer's map, or None. avoid: zone owners
+        ('zone:<id>', see zone_keys) to fly around."""
+        avoid = frozenset(z for z in avoid if any(k == layer for _, k in self.zone_keys[z]))
+        g = self._zone_grid(layer, avoid) if avoid else self._grid(layer)
         p = plan(g, start, goal)
         return None if p is None else simplify(g, p)
 
@@ -239,28 +269,31 @@ class StrategicPlanner:
     def submit(self, fp):
         s = self.s
         options = {}
+        avoid = frozenset(self.zone_keys) - self.exempt.get(fp.id, set())
         for layer in range(s.n_layers):
-            r = self.route(fp.start, fp.goal, layer)
-            if r is None:
-                continue
-            prof, total = self.profile(r, layer)
-            options[layer] = (r, total, self._relative_reservation(prof))
+            direct = self.route(fp.start, fp.goal, layer)
+            around = self.route(fp.start, fp.goal, layer, avoid) if avoid else None
+            for kind, r in ((0, direct), (1, around)):
+                if r is None or (kind == 1 and r == direct):
+                    continue
+                prof, total = self.profile(r, layer)
+                options[layer, kind] = (r, total, self._relative_reservation(prof))
         if not options:
             d = Decision(fp.id, 'rejected', reason='no route on any layer')
             self.decisions.append(d)
             return d
         fastest = min(fp.t_earliest + total for _, total, _ in options.values())
         cands = []
-        for layer, (_, total, _) in options.items():
+        for (layer, kind), (_, total, _) in options.items():
             for delay in np.arange(0.0, s.max_delay + 1e-9, s.delay_step):
                 arrival = fp.t_earliest + delay + total
                 cost = (arrival - fastest) + s.layer_penalty * abs(layer - fp.layer)
-                cands.append((cost, float(delay), layer))
+                cands.append((cost, float(delay), layer, kind))
         cands.sort()
         start_cells, goal_cells = self.cells_near(*fp.start), self.cells_near(*fp.goal)
         blockers = set()
-        for cost, delay, layer in cands:
-            r, total, rel = options[layer]
+        for cost, delay, layer, kind in cands:
+            r, total, rel = options[layer, kind]
             t_dep = fp.t_earliest + delay
             res = self._absolute(rel, t_dep, start_cells, goal_cells, total)
             hit = self.conflicts(res, fp.id)
@@ -271,7 +304,7 @@ class StrategicPlanner:
                 wps = ([(r[0][0], r[0][1], s.start_z)] + [(x, y, zl) for x, y in r]
                        + [(r[-1][0], r[-1][1], s.start_z)])
                 d = Decision(fp.id, 'approved', layer, t_dep, delay, t_dep + total, float(cost),
-                             wps, res)
+                             wps, res, around_zones=bool(kind))
                 self.decisions.append(d)
                 return d
         why = f'no conflict-free option within {s.max_delay} s'
