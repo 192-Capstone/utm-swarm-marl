@@ -31,8 +31,8 @@ picks between waiting and flying around by its cost.
 
 Rules and limits:
   1. Order: zones must be applied before any flight is submitted (apply_zones raises otherwise;
-     E1 is first come, first served). A zone that appears mid-flight is not handled (E4,
-     contingency, later).
+     E1 is first come, first served). A zone that appears mid-flight is handled by E4
+     (utm/contingency.py, ContingencyManager.add_zone).
   2. Safety buffer (intended): a zone's key cells reach up to one cell corner radius (~0.6 m) past
      its edge, and on top of that E1 reserves every cell whose centre is within radius + one cell
      edge (2.1 + 0.58 m) of the drone. Together, drones stay about 2.2-3.3 m from a zone boundary:
