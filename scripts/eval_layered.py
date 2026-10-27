@@ -9,14 +9,21 @@ The same flights (random routable requests, as in eval_e1_flown.py) are flown in
                e1       departure time and layer as E1 approved them
     pilot      learned  the policy as shipped (sees other drones: neighbour observations + LiDAR)
                blind    the same policy, blind to other drones (neighbour slots masked, LiDAR
-                        ignores drones): it still flies its route and avoids buildings
+                        ignores drones): it still flies its route and avoids buildings (caveat:
+                        all-masked neighbours never occurred in training, so it may fly worse
+                        in general, not only unaware of others)
+               simple   no learning: a proportional controller towards the route's carrot
+                        (the same carrot the policy follows), speed capped at the cruise speed;
+                        it sees nothing, other drones or buildings
 with the plan broken on purpose, the same way in all four (seeded):
     late       a share of flights takes off late (uniform in a range of seconds)
     slow       a share of flights flies slower (velocity command x factor)
     intruders  extra drones with no flight plan cross the area (E1 never hears of them)
 Scored: arrived, crashed, close pairs (< 2.0 / < 1.4 m), closest approach; with E1, E3's
-conformance alerts (utm/conformance.py) and, for each close pair, whether one of the two drones
-was already under an alert, and for how long (warning time).
+conformance alerts (utm/conformance.py) and, for each close pair, how long before it the first
+alert of either drone came, counting only alerts in the --horizon seconds before (warning time;
+an older alert is not a warning for it); and the other way round, the share
+of alerts followed by a close pass of that drone within --horizon seconds (alert precision).
 
     python scripts/eval_layered.py --config configs/config_stage2_round7_eval_goalhold.yaml \
         --checkpoint <ckpt> --map city --flights 20 --window 60 --seeds 20 21 22
@@ -48,6 +55,24 @@ from preview_strategic import random_requests                      # noqa: E402
 from record_rollout import disable_all_collision_physics           # noqa: E402
 from utm.conformance import ConformanceMonitor                     # noqa: E402
 from utm.strategic_planner import StrategicPlanner                 # noqa: E402
+
+
+class SimplePilot:
+    """Flies straight at the route's carrot (env.adapter.goals), no sensing, no learning."""
+
+    def __init__(self, kp=1.5, v_max=1.5):
+        self.kp, self.v_max = kp, v_max
+
+    def act(self, obs, env, n):
+        pos = env.adapter.get_positions()
+        out = {}
+        for i in range(n):
+            v = self.kp * (np.asarray(env.adapter.goals[f'drone_{i}'], dtype=float) - pos[i])
+            sp = float(np.linalg.norm(v))
+            if sp > self.v_max:
+                v *= self.v_max / sp
+            out[f'drone_{i}'] = [*v.tolist(), 0.0]
+        return out
 
 
 def disruptions(rng, flights, args):
@@ -86,10 +111,13 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed):
     cfg['environment']['max_steps'] = int((max(deps) + 3.0 * longest / factor.min() + 30.0) / dt)
     env = SwarmEnv(cfg, device=torch.device('cpu'))
     disable_all_collision_physics(env, n)
-    policy = es.MappoPolicy(cfg, args.checkpoint, torch.device('cpu'), True, blind_neighbors=(pilot == 'blind'))
-    policy.restore_normalizer(env)
-    if goal_hold_enabled(cfg):
-        policy = GoalHoldPolicy(policy, cfg)
+    if pilot == 'simple':
+        policy = SimplePilot(v_max=StrategicPlanner([], ((-1, 1), (-1, 1))).s.v_cruise)
+    else:
+        policy = es.MappoPolicy(cfg, args.checkpoint, torch.device('cpu'), True, blind_neighbors=(pilot == 'blind'))
+        policy.restore_normalizer(env)
+        if goal_hold_enabled(cfg):
+            policy = GoalHoldPolicy(policy, cfg)
     np.random.seed(seed)
     torch.manual_seed(seed)
     z0 = sky.s.start_z
@@ -135,10 +163,18 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed):
         warn = []
         for (a, b), t_close in close[1.4].items():
             first = [e['t'] for e in monitor.events
-                     if e['flight'] in (ids[a], ids[b]) and e['state'] != 'ok' and e['t'] <= t_close]
+                     if e['flight'] in (ids[a], ids[b]) and e['state'] != 'ok'
+                     and t_close - args.horizon <= e['t'] <= t_close]
             warn.append(None if not first else round(t_close - min(first), 2))
+        close_t = {}                                  # flight id -> times it was in a close pair
+        for (a, b), t_close in close[1.4].items():
+            close_t.setdefault(ids[a], []).append(t_close)
+            close_t.setdefault(ids[b], []).append(t_close)
+        alerts = [e for e in monitor.events if e['state'] != 'ok']
+        hit = [any(e['t'] <= tc <= e['t'] + args.horizon for tc in close_t.get(e['flight'], ())) for e in alerts]
         out['e3'] = {**monitor.summary(), 'events': monitor.events}
         out['close_pair_warning_s'] = warn
+        out['alerts_followed_by_close_pass'] = int(sum(hit))
     return out
 
 
@@ -157,7 +193,8 @@ def main():
     ap.add_argument('--slow', type=float, default=0.6, help='speed factor of slow drones')
     ap.add_argument('--intruders', type=int, default=2)
     ap.add_argument('--modes', nargs='+', default=['no_e1', 'e1'], choices=['no_e1', 'e1'])
-    ap.add_argument('--pilots', nargs='+', default=['blind', 'learned'], choices=['blind', 'learned'])
+    ap.add_argument('--pilots', nargs='+', default=['simple', 'blind', 'learned'], choices=['simple', 'blind', 'learned'])
+    ap.add_argument('--horizon', type=float, default=20.0, help='alert precision: close pass within this many s')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
     if any(10 <= s <= 19 for s in args.seeds):
@@ -205,7 +242,9 @@ def main():
             if mode == 'e1':
                 w = [v for x in R for v in x['close_pair_warning_s']]
                 seen = [v for v in w if v is not None]
-                line += (f"; E3 alerts {sum(x['e3']['alerts'] for x in R)}, close pairs warned before "
+                n_al = sum(x['e3']['alerts'] for x in R)
+                line += (f"; E3 alerts {n_al} ({sum(x['alerts_followed_by_close_pass'] for x in R)} followed by a "
+                         f"close pass within {args.horizon:g} s), close pairs alerted before "
                          f"{len(seen)}/{len(w)}" + (f" (median {np.median(seen):.1f} s ahead)" if seen else ''))
             print(line)
     path = args.out or os.path.join('eval_results', 'e1_layered',
