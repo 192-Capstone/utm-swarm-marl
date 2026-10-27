@@ -1,0 +1,182 @@
+{
+ "type": "FeatureCollection",
+ "frame": "wgs84",
+ "description": "Made-up example scenario for testing, NOT real airspace restrictions.",
+ "map": "ecity_crop50",
+ "layout": "data/osm_city/bengaluru_ecity_phase1_rotated_v2_crop50_cand1_layout.yaml",
+ "features": [
+  {
+   "type": "Feature",
+   "id": "ecity_red_block",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.664076025636,
+       12.851523607214
+      ],
+      [
+       77.664186717054,
+       12.851523607214
+      ],
+      [
+       77.664186717054,
+       12.851597351503
+      ],
+      [
+       77.664076025636,
+       12.851597351503
+      ],
+      [
+       77.664076025636,
+       12.851523607214
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "zone",
+    "name": "South-west block (red)",
+    "restriction": "prohibited",
+    "reason": "made-up: e.g. a power substation",
+    "lower_m": null,
+    "upper_m": null,
+    "active": [],
+    "authorised": []
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "ecity_yellow_ne",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.664481894167,
+     12.851910315069
+    ]
+   },
+   "properties": {
+    "type": "zone",
+    "name": "North-east campus (yellow)",
+    "restriction": "authorisation",
+    "reason": "made-up: e.g. a hospital, permission needed",
+    "lower_m": null,
+    "upper_m": 60.0,
+    "active": [],
+    "authorised": [],
+    "radius_m": 6.0
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "ecity_temp_street",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       77.664325081326,
+       12.851757430568
+      ],
+      [
+       77.664361978465,
+       12.851757430568
+      ],
+      [
+       77.664361978465,
+       12.851847362627
+      ],
+      [
+       77.664325081326,
+       12.851847362627
+      ],
+      [
+       77.664325081326,
+       12.851757430568
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "zone",
+    "name": "Main street closure 120-300 s",
+    "restriction": "prohibited",
+    "reason": "made-up: e.g. a crane lift across the street",
+    "lower_m": null,
+    "upper_m": null,
+    "active": [
+     [
+      120.0,
+      300.0
+     ]
+    ],
+    "authorised": []
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "ecity_vp_west",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.66414059563,
+     12.851802396598
+    ]
+   },
+   "properties": {
+    "type": "vertiport",
+    "kind": "vertiport",
+    "name": "West depot"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "ecity_hub_east",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.664491118452,
+     12.851802396598
+    ]
+   },
+   "properties": {
+    "type": "vertiport",
+    "kind": "hub",
+    "name": "East hub"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "ecity_drop_south",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.664278959902,
+     12.851622532479
+    ]
+   },
+   "properties": {
+    "type": "vertiport",
+    "kind": "drop",
+    "name": "South drop point"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "ecity_drop_north",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     77.664325081326,
+     12.851955281098
+    ]
+   },
+   "properties": {
+    "type": "vertiport",
+    "kind": "drop",
+    "name": "North drop point"
+   }
+  }
+ ]
+}
