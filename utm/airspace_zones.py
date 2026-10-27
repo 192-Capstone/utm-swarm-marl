@@ -18,9 +18,10 @@ red / yellow zones:
     active                       [[t0, t1], ...] sim-second windows; empty = permanent
     geometry                     polygon (local metres) or circle (centre + radius_m)
 
-Zone -> E1 keys: zone_keys() gives every (H3 cell, layer) the zone touches. Cells: every cell
-whose hexagon can overlap the zone (conservative, and never a cell that does not touch it; works
-for any simple polygon, convex or not). Layers: those whose height band overlaps the zone's band.
+Zone -> E1 keys: zone_keys() gives the (H3 cell, layer) keys of a zone. Cells: conservative:
+every cell that overlaps the zone, plus possibly a few that only come within a cell's corner radius
+of it (works for any simple polygon, convex or not). Layers: those whose height band overlaps the
+zone's band.
 
 Zone -> E1: permanent zones go into planner.blocked, temporary zones are booked in the planner's
 ledger as flight 'zone:<id>' over their windows, so E1 delays a flight until the zone ends exactly
@@ -38,7 +39,6 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import h3
 import numpy as np
 import yaml
 
@@ -286,9 +286,11 @@ def map_airspace(name, settings=None):
 
 # ------------------------------------------------------------------ zones -> keys
 def zone_cells(zone, airspace):
-    """H3 cells (airspace resolution) whose hexagon can overlap the zone: cell centre within the
-    cell's corner radius of the zone. Candidates come from B5's cells_in_polygon(cover=True) on the
-    zone's convex hull (exact for convex shapes) plus one ring, so none is missed."""
+    """H3 cells (airspace resolution) for a zone, conservative: every cell that overlaps the zone,
+    plus possibly a few that only come within a cell's corner radius of it. Rule: keep a cell when
+    its centre is within its corner radius of the zone. Candidates come from B5's
+    cells_in_polygon(cover=True) on the zone's convex hull (exact for convex shapes) plus one ring,
+    so no overlapping cell is missed."""
     hull = convex_hull(zone.outline())
     cand = airspace.cells_in_polygon(hull, cover=True)
     cand.add(airspace.cell(*np.mean(hull, axis=0)))
