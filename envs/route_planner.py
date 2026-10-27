@@ -240,3 +240,25 @@ class RouteFollower:
         if s >= self.total:
             return self.w[-1].copy()
         return self.point_at(s)
+
+    def visible_target(self, pos, grid, min_dist=1.0, step=0.25):
+        """target(), pulled back along the route until the straight line from the drone to it is
+        free on `grid` (the carrot behind a corner would steer the drone into the building), but
+        never closer than min_dist to the drone (a goal that close would look like arrival).
+        If nothing between the two is visible, the first point along the route at least min_dist
+        away (in a straight line)."""
+        pos = np.asarray(pos, dtype=float)
+        far = self.target(pos)
+        s_far = self.total if np.allclose(far, self.w[-1]) else self.progress + self.lookahead
+        s = s_far
+        while s > self.progress:
+            p = self.point_at(s)
+            if np.hypot(*(p[:2] - pos[:2])) < min_dist:
+                break
+            if segment_free(grid, pos[:2], p[:2]):
+                return p
+            s -= step
+        s = self.progress + min_dist                    # straight-line distance, also at a bend
+        while s < self.total and np.hypot(*(self.point_at(s)[:2] - pos[:2])) < min_dist:
+            s += step
+        return self.point_at(min(s, self.total))

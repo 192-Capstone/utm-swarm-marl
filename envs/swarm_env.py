@@ -55,6 +55,17 @@ class SwarmEnv:
         if self.crash_mode not in ('end', 'remove'):
             raise ValueError(f"environment.crash_mode must be 'end' or 'remove', got {self.crash_mode!r}")
         self.crashed = np.zeros(self.n_agents, dtype=bool)
+        # Route following (D7, opt-in; environment.route_follow: {enabled, lookahead, min_target}).
+        # With start_episode(..., routes=...), every step the policy's goal (the adapter's goal:
+        # observation and LiDAR heading) is a carrot `lookahead` m ahead along the drone's route,
+        # pulled back to stay in line of sight but never closer than min_target m (envs/
+        # route_planner.py RouteFollower.visible_target). Success, settling, rewards and crashes
+        # still use the real goal. Off: nothing changes.
+        rf = config['environment'].get('route_follow') or {}
+        self.route_follow = bool(rf.get('enabled', False))
+        self.route_lookahead = float(rf.get('lookahead', 4.5))
+        self.route_min_target = float(rf.get('min_target', 1.0))
+        self.followers = None
         # Safety cost for constrained RL (MAPPO-Lagrangian), kept separate from
         # the reward: 1 per step a drone is closer than cost_distance to any
         # other drone, plus collision_cost on the step it crashes (a crash ends
@@ -237,7 +248,7 @@ class SwarmEnv:
             spawns, goals = scenarios.GENERATORS[scenario](np.random, self.n_agents)
         return self.start_episode(spawns, goals)
 
-    def start_episode(self, spawns, goals, rng=None, obstacles='auto'):
+    def start_episode(self, spawns, goals, rng=None, obstacles='auto', routes=None):
         """Begin an episode with the given spawns and goals ({'drone_i': [x, y, z]}).
         reset() uses this, and so do the evaluation and analysis scripts that
         build their own scenarios, so nothing (obstacles included) is skipped.
@@ -245,7 +256,12 @@ class SwarmEnv:
         rng       : random generator for the obstacle layout (default np.random)
         obstacles : 'auto' = generate a layout if obstacles are enabled,
                     or an explicit layout list ([] for an empty world)
+        routes    : {'drone_i': [(x, y), ...]} simplified D7 routes from spawn to goal
+                    (needs environment.route_follow.enabled); drones without a route fly
+                    straight at their goal
         """
+        if routes is not None and not self.route_follow:
+            raise ValueError("start_episode(routes=...) needs environment.route_follow.enabled")
         self.episode_index += 1
         rng = np.random if rng is None else rng
         if obstacles == 'auto':
@@ -258,6 +274,8 @@ class SwarmEnv:
         if self.noise_per_episode:
             self._noise_rng = np.random.default_rng(self._episode_noise_seed(spawns))
         self.episode_manager.reset()
+        self.followers = self._make_followers(spawns, goals, routes) if routes else None
+        self._update_carrots()
 
         raw       = self.adapter.get_raw_state()
         positions = self.adapter.get_positions()
@@ -277,6 +295,40 @@ class SwarmEnv:
         self.obs_processor.reset_history()
         return self._build_obs(raw)
 
+    def _make_followers(self, spawns, goals, routes):
+        """A RouteFollower per routed drone (3D waypoints: height interpolated from spawn to goal
+        along the route) and the line-of-sight grid for this layout."""
+        from envs.route_planner import RouteFollower, build_grid
+        followers = {}
+        pts = []
+        for key, route in routes.items():
+            xy = np.asarray([p[:2] for p in route], dtype=float)
+            z0, z1 = float(spawns[key][2]), float(goals[key][2])
+            cum = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))])
+            frac = cum / cum[-1] if cum[-1] > 0 else np.zeros_like(cum)
+            followers[key] = RouteFollower(np.column_stack([xy, z0 + frac * (z1 - z0)]),
+                                           lookahead=self.route_lookahead)
+            pts.append(xy)
+        pts = np.vstack(pts)
+        for ob in self.layout:
+            pts = np.vstack([pts, np.asarray(ob['center'], dtype=float)[None, :2]])
+        lo, hi = pts.min(axis=0) - 10.0, pts.max(axis=0) + 10.0
+        # line of sight = not hidden behind a building: walls grown by the drone's own radius only
+        # (the planner's extra 0.35 m margin is for choosing routes, not for seeing)
+        self._los_grid = build_grid(self.layout, ((lo[0], hi[0]), (lo[1], hi[1])), 0.25,
+                                    scenario_manager.DRONE_RADIUS)
+        return followers
+
+    def _update_carrots(self):
+        """Point each routed drone's adapter goal (observation + LiDAR heading) at its carrot."""
+        if not self.followers:
+            return
+        positions = self.adapter.get_positions()
+        for key, f in self.followers.items():
+            i = int(key.split('_')[1])
+            carrot = f.visible_target(positions[i], self._los_grid, min_dist=self.route_min_target)
+            self.adapter.goals[key] = np.asarray(carrot, dtype=np.float32)
+
     def step(self, actions_dict):
         # 1. apply actions + advance the simulator
         self.adapter.apply_actions(actions_dict)
@@ -284,6 +336,7 @@ class SwarmEnv:
         if self.crashed.any():                      # crash_mode remove: keep them parked
             self.adapter.park(np.flatnonzero(self.crashed))
         self.episode_manager.step()
+        self._update_carrots()                    # route following (D7): new carrots first
 
         # 2. read the new world state
         raw       = self.adapter.get_raw_state()
