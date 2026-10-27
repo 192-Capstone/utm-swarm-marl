@@ -1,0 +1,45 @@
+#VRML_SIM R2025a utf8
+# UTM swarm, Level 2, several drones: swarm_l2_real.wbt with the drone part changed. A bodiless
+# Supervisor (envs/webots_l2_multi.py, <extern>) imports n official Crazyflies into DRONES at
+# runtime, each with controller "cf_velocity" (webots/controllers/cf_velocity: Bitcraze's velocity
+# PID onboard, commands via customData). Same real sky, grass and buildings (visual only, no
+# bounding objects: LiDAR and crash checks stay analytic). Assets are fetched by Webots from
+# cyberbotics/webots R2025a.
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/Floor.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Grass.proto"
+IMPORTABLE EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/bitcraze/crazyflie/protos/Crazyflie.proto"
+IMPORTABLE EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/buildings/protos/SimpleBuilding.proto"
+
+WorldInfo {
+  info [ "UTM swarm Level 2, several drones: official Crazyflies, one velocity PID controller each, gravity" ]
+  basicTimeStep 4
+  coordinateSystem "ENU"
+}
+DEF VIEW Viewpoint {
+  orientation -0.3 0.3 0.9 1.7
+  position 0 -12 8
+}
+TexturedBackground {
+  texture "noon_cloudy_countryside"
+}
+TexturedBackgroundLight {
+  texture "noon_cloudy_countryside"
+}
+Floor {
+  size 120 120
+  tileSize 4 4
+  appearance Grass {
+  }
+}
+DEF OBSTACLES Group {
+}
+DEF SUPERVISOR Robot {
+  name "swarm_supervisor"
+  controller "<extern>"
+  supervisor TRUE
+}
+DEF DRONES Group {
+}
