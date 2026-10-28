@@ -11,7 +11,10 @@ The supervisor writes one command per control step into this robot's customData
     ""                      idle: motors off
     "<ep> H vx vy vz"       held at the spawn during spin-up: motors at hover speed, no PID
     "<ep> F vx vy vz"       flying: velocity command (m/s, world frame), yaw rate 0
-A new episode number resets the PID with the hover pre-load. A malformed command
+Every change to F (after H, idle or a new episode number) is a fresh start: the PID is reset
+with the hover pre-load and the altitude setpoint and previous GPS are taken from the drone's
+position (envs/cf_velocity_pid.py ControllerState), so a parked drone placed on its pad (H, then
+F) starts like a drone released at the episode start. A malformed command
 is an error: it is printed to stderr, the motors are switched off and the
 controller exits with code 1.
 """
@@ -25,7 +28,7 @@ sys.path.insert(0, ROOT)
 
 from controller import Robot                                            # noqa: E402
 from envs.cf_velocity_pid import (VelocityPID, HOVER_RAD_S, HOVER_INTEGRATOR,   # noqa: E402
-                                  parse_command)
+                                  ControllerState, parse_command)
 
 
 def set_motors(motors, m):
@@ -49,8 +52,7 @@ def main():
     gyro = robot.getDevice('gyro'); gyro.enable(basic_ms)
     pid = VelocityPID()                                                 # L2 81
 
-    ep = None              # episode the PID was last reset for
-    flying_ep = None       # episode whose first F step has been done
+    state = ControllerState()
     z_des = 0.0
     prev_gps = [0.0, 0.0, 0.0]
 
@@ -62,24 +64,20 @@ def main():
             set_motors(motors, [0.0] * 4)
             sys.exit(1)
 
-        if cmd is None:                                                 # idle: motors off
+        act = state.update(cmd)
+        if act == 'idle':                                               # motors off
             set_motors(motors, [0.0] * 4)
             continue
-        new_ep, mode, (vx, vy, vz) = cmd
-
-        if new_ep != ep:                                                # L2 102: once per episode
-            pid.reset(integrator=HOVER_INTEGRATOR)
-            ep = new_ep
-
-        if mode == 'H':                                                 # L2 106: hover speed, no PID
+        if act == 'hold':                                               # L2 106: hover speed, no PID
             set_motors(motors, [HOVER_RAD_S] * 4)
             continue
+        _, _, (vx, vy, vz) = cmd
 
-        if flying_ep != ep:                                             # first F step of this episode
+        if act == 'arm':                                                # first F after H / idle / new episode
+            pid.reset(integrator=HOVER_INTEGRATOR)                      # L2 102
             g = gps.getValues()
-            z_des = g[2]                                                # L2 105 (= spawn z: the drone was pinned)
+            z_des = g[2]                                                # L2 105 (= pad z: the drone was pinned)
             prev_gps = list(g)                                          # L2 116
-            flying_ep = ep
 
         # ---- one basic step of WebotsL2Adapter.step_simulation, L2 146-168 ----
         roll, pitch, yaw = imu.getRollPitchYaw()                        # L2 146
