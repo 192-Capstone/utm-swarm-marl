@@ -14,6 +14,11 @@ once per control step:
                   PID not run)
               F = flying (the PID runs every basic step)
     ""  (empty) = idle, motors off
+
+ControllerState decides what the controller does with each command. Every change from H
+(or idle) to F is a fresh start (arm): PID reset with the hover pre-load, altitude setpoint and
+previous GPS from the drone's position now. This covers the episode start (H during spin-up,
+then F) and a parked drone placed on its pad (SwarmEnv schedule: H while parked, then F).
 """
 
 import math
@@ -68,6 +73,35 @@ class VelocityPID:
 
 # integrator pre-load that starts the PID at hover (as WebotsL2Adapter.reset_world)
 HOVER_INTEGRATOR = (HOVER_RAD_S - 48.0) / VelocityPID.G["ki_z"]
+
+
+class ControllerState:
+    """What one drone's controller does with each parsed command (parse_command's result):
+        'idle'  motors off (empty command)
+        'hold'  motors at hover speed, PID not run (H)
+        'arm'   first F after H, idle or a new episode: reset the PID with the hover pre-load,
+                take the altitude setpoint and previous GPS from the drone's position, then fly
+        'fly'   run the PID (F)"""
+
+    def __init__(self):
+        self.ep = None          # episode of the last command
+        self.flying = False     # armed and flying since then
+
+    def update(self, cmd):
+        if cmd is None:
+            self.flying = False
+            return 'idle'
+        ep, mode, _ = cmd
+        if ep != self.ep:
+            self.ep = ep
+            self.flying = False
+        if mode == 'H':
+            self.flying = False
+            return 'hold'
+        if not self.flying:
+            self.flying = True
+            return 'arm'
+        return 'fly'
 
 
 def format_command(ep, mode, v):
