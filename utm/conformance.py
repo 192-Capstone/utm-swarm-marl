@@ -27,6 +27,13 @@ someone" (under disruptions only ~1 in 8 off-plan alerts was followed by a close
            radius of where it actually is, at some time in the next `risk_horizon` s (10 s):
            a conflict is possible ('other' names it)
     low    off plan, but nobody else is booked around it soon
+With risk='intent' (E2) the risk comes from where the drones are going instead of the bookings:
+check() also gets every airborne drone's predicted path (utm/intent.py: its shared intent, or its
+last position and velocity) and an alert is high if it is an intrusion, or the drone's path comes
+within the safety radius of another drone's path horizontally and within `vertical_sep` (1 m,
+half a layer) vertically, as E1 separates drones, or enters a no-fly zone, in the next
+`risk_horizon` s. A drone that is late with nobody heading its way is then low; two drones on
+different layers crossing one above the other are not a conflict.
 A change of risk with the same state (low -> high as a late drone nears traffic) is an event
 too. Every confirmed change is an event {t, flight, state, risk, key, other}; the dashboard
 (Module 4) shows people the high-risk ones, and E4 (contingency) reacts to all of them.
@@ -34,14 +41,21 @@ too. Every confirmed change is an event {t, flight, state, risk, key, other}; th
 
 import numpy as np
 
+from utm.intent import VERTICAL_SEP, first_conflict
+
 STATES = ('ok', 'late', 'early', 'off_route', 'intrusion', 'overstay', 'unknown')
 
 
 class ConformanceMonitor:
-    def __init__(self, planner, debounce=1.0, risk_horizon=10.0):
+    def __init__(self, planner, debounce=1.0, risk_horizon=10.0, risk='booking', vertical_sep=VERTICAL_SEP):
+        if risk not in ('booking', 'intent'):
+            raise ValueError("risk must be 'booking' or 'intent'")
         self.p = planner
         self.debounce = float(debounce)
         self.risk_horizon = float(risk_horizon)
+        self.risk_mode = risk
+        self.vertical_sep = float(vertical_sep)   # m: risk='intent' conflict height (half a layer gap)
+        self.paths = {}                   # flight -> predicted path (risk='intent'), from check()
         self.plans = {d.id: d for d in planner.decisions if d.status == 'approved'}
         self.state = {}                   # flight -> confirmed state
         self.risk = {}                    # flight -> confirmed risk ('high' / 'low'; '' when ok)
@@ -82,6 +96,8 @@ class ConformanceMonitor:
             return '', None
         if state == 'intrusion':
             return 'high', other
+        if self.risk_mode == 'intent' and fid in self.paths:
+            return self._assess_intent(fid, t)
         layer = self.p.layer_of(float(pos[2]))
         skip = set(self.p.exempt.get(fid, ())) | {fid}
         until = t + self.risk_horizon
@@ -94,8 +110,31 @@ class ConformanceMonitor:
                     return 'high', owner
         return 'low', None
 
-    def check(self, t, positions):
-        """positions: {flight id: (x, y, z)} of the airborne drones. Returns the new events."""
+    def _assess_intent(self, fid, t):
+        """E2 risk: another drone's predicted path within the safety radius of this one's horizontally
+        and within vertical_sep vertically, or this one's path through an active no-fly zone, in
+        [t, t + risk_horizon]."""
+        times, path = self.paths[fid]
+        keep = times <= t + self.risk_horizon + 1e-9
+        skip = set(self.p.exempt.get(fid, ()))
+        for other, theirs in self.paths.items():
+            if other != fid and first_conflict((times[keep], path[keep]), (theirs[0][keep], theirs[1][keep]),
+                                               self.p.s.radius, self.vertical_sep) is not None:
+                return 'high', other
+        for tk, q in zip(times[keep], path[keep]):
+            key = self.key_of(q)
+            if key in self.p.blocked:
+                return 'high', 'blocked'
+            for lo, hi, owner in self.p.ledger.get(key, ()):
+                if str(owner).startswith('zone:') and owner not in skip and lo <= tk < hi:
+                    return 'high', owner
+        return 'low', None
+
+    def check(self, t, positions, paths=None):
+        """positions: {flight id: (x, y, z)} of the airborne drones; paths (risk='intent'): {flight
+        id: (times, positions)} predicted from now on, on one time grid. Returns the new events."""
+        if paths is not None:
+            self.paths = paths
         new = []
         for fid, pos in positions.items():
             s, key, other = self.classify(fid, pos, t)
