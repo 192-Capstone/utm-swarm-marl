@@ -22,10 +22,14 @@ changes the bookings so that everyone is safe again. The rules (agreed with the 
 
 Re-planning an airborne drone books a new plan from its current position (StrategicPlanner.
 replan): the first `grace` s are not checked (they are already happening; the onboard policy
-handles them); if its goal can't be reached it returns to its start pad. A flight still on the
-ground is filed again instead, and cancelled (its booking released, it never takes off) if that
-fails. If no new plan fits an airborne drone, it keeps its old booking: it is never left without
-one. A flight is re-planned at most once every `cooldown` s.
+handles them); if its goal can't be reached it returns to its start pad. If no new plan fits
+an airborne drone, it keeps its old booking: it is never left without one. A flight still on the
+ground is filed again instead, waiting up to `refile_wait` s (longer than a new request may: a
+temporary zone or an intruder passes, and the busy sky leaves few slots); for a temporary zone
+with a known end, until the zone ends and `refile_wait` s more, but never more than `max_wait` s
+(the operator's limit: past it the trip is not worth flying). It is cancelled (its booking
+released, it never takes off) only if that fails. A flight is re-planned at most once every
+`cooldown` s.
 
     e4 = ContingencyManager(planner, monitor)
     actions = e4.step(t, positions)            # positions: {flight id: (x, y, z)} of airborne drones
@@ -46,9 +50,11 @@ PERSISTENT = ('late', 'off_route')            # re-planned only when E3 rates th
 
 
 class ContingencyManager:
-    def __init__(self, planner, monitor=None, persist=3.0, grace=2.0, cooldown=5.0, intruder_horizon=10.0):
+    def __init__(self, planner, monitor=None, persist=3.0, grace=2.0, cooldown=5.0, intruder_horizon=10.0,
+                 refile_wait=180.0, max_wait=1800.0):
         self.p, self.mon = planner, monitor
         self.persist, self.grace, self.cooldown, self.horizon = persist, grace, cooldown, intruder_horizon
+        self.refile_wait, self.max_wait = refile_wait, max_wait
         self.last = {}                    # flight id -> time of its last re-plan
         self.actions = []
 
@@ -56,7 +62,7 @@ class ContingencyManager:
     def _airborne(self, fid, t, positions):
         return fid in positions
 
-    def _replan(self, fid, t, positions, why):
+    def _replan(self, fid, t, positions, why, wait=None):
         if t - self.last.get(fid, -1e9) < self.cooldown:
             return None
         if self._airborne(fid, t, positions):
@@ -70,7 +76,7 @@ class ContingencyManager:
             p = self.p.plans[fid]
             self.p.release(fid, -float('inf'))
             d = self.p._submit(FlightPlan(p.id, p.start, p.goal, p.layer, max(p.t_earliest, t), p.priority,
-                                          p.operator))
+                                          p.operator), max_delay=self.refile_wait if wait is None else wait)
             if d.status != 'approved':                 # can't fly safely any more: cancel it
                 self.p.current.pop(fid, None)
                 why += ' -> cancelled'
@@ -172,11 +178,15 @@ class ContingencyManager:
         if zone.restriction == 'authorisation':
             for fid in zone.authorised:
                 self.p.exempt.setdefault(fid, set()).add(owner)
+        wait = None                                 # temporary zone: a grounded flight may wait it out
+        if not zone.permanent and windows:
+            end = max(hi for _, hi in windows)
+            wait = min(self.max_wait, max(self.refile_wait, end - t + self.refile_wait))
         out = []
         for fid in self._future_clashes(owner, t):
             if owner in self.p.exempt.get(fid, ()):
                 continue
-            a = self._replan(fid, t, positions, f'zone {zone.id}')
+            a = self._replan(fid, t, positions, f'zone {zone.id}', wait)
             if a:
                 out.append(a)
         return out

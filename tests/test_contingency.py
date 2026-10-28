@@ -197,6 +197,33 @@ def test_ground_flight_that_cannot_fly_is_cancelled_and_landed_ones_are_left_alo
     assert e4.add_zone(later, done.arrival + 20.0, {}) == []
 
 
+def test_ground_flight_waits_out_a_temporary_zone_instead_of_being_cancelled():
+    """A zone over W's goal for 135 s: W can't land before it ends without waiting more than the
+    60 s a new request may wait; a re-filed flight waits the zone out: delayed, not cancelled."""
+    zone = Zone('z', 'Closure', polygon=[(12, -3), (18, -3), (18, 3), (12, 3)], active=[[5.0, 140.0]])
+    sky = StrategicPlanner([], B)
+    sky.submit(FlightPlan('W', (-15, 0), (15, 0), t_earliest=30.0))
+    acts = ContingencyManager(sky).add_zone(zone, 5.0, {})
+    assert [x['why'] for x in acts] == ['zone z']
+    d = acts[0]['decision']
+    assert d.status == 'approved' and d.t_dep - 30.0 > 60.0 and d.arrival > 140.0
+
+
+def test_ground_flight_waits_until_a_long_zone_ends_up_to_the_operator_limit():
+    """A zone over W's goal for 10 minutes, longer than refile_wait: W waits until it ends, unless
+    that is past max_wait (then it is cancelled)."""
+    zone = Zone('z', 'Closure', polygon=[(12, -3), (18, -3), (18, 3), (12, 3)], active=[[5.0, 605.0]])
+    acts = {}
+    for limit in (1800.0, 300.0):
+        sky = StrategicPlanner([], B)
+        sky.submit(FlightPlan('W', (-15, 0), (15, 0), t_earliest=30.0))
+        acts[limit] = ContingencyManager(sky, max_wait=limit).add_zone(zone, 5.0, {})
+    assert [x['why'] for x in acts[300.0]] == ['zone z -> cancelled']
+    assert [x['why'] for x in acts[1800.0]] == ['zone z']
+    d = acts[1800.0][0]['decision']
+    assert d.status == 'approved' and d.arrival > 605.0
+
+
 # ------------------------------------------------------------------ D. intruder
 def test_flight_about_to_meet_an_intruder_is_replanned():
     sky = StrategicPlanner([], B)
@@ -238,6 +265,7 @@ def test_late_into_traffic_is_replanned_once_high_risk_for_long_enough():
     mine = [x for x in acts if x['flight'] == 'A' and x['why'] == 'late']
     assert high and mine
     assert mine[0]['t'] >= late[0]['t'] + 3.0 and mine[0]['t'] >= high[0]
+
 
 
 def test_cooldown_limits_replans():
