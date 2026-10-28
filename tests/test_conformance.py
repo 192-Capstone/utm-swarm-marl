@@ -102,6 +102,37 @@ def test_unplanned_drone_is_unknown():
     assert [e['state'] for e in events] == ['unknown']
 
 
+def test_late_with_nobody_around_is_low_risk():
+    sky = StrategicPlanner([], B)
+    d = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+    events = fly(ConformanceMonitor(sky), 'A', track(sky, d, shift=6.0))
+    assert events and all(e['risk'] == 'low' for e in events if e['state'] == 'late')
+
+
+def test_late_into_someone_elses_air_escalates_to_high_risk():
+    """A is 6 s late; B was planned to cross A's route after A had passed. While A is far from
+    the crossing its alert is low risk; nearing B's booked air it becomes high, naming B."""
+    sky = StrategicPlanner([], B)
+    a = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+    sky.submit(FlightPlan('B', (0, -15), (0, 15)))          # E1 delays B behind A at the crossing
+    events = [e for e in fly(ConformanceMonitor(sky), 'A', track(sky, a, shift=6.0)) if e['state'] == 'late']
+    risks = [e['risk'] for e in events]
+    assert risks[0] == 'low' and 'high' in risks
+    assert [e['other'] for e in events if e['risk'] == 'high'][0] == 'B'
+
+
+def test_intrusion_is_always_high_risk():
+    sky = StrategicPlanner([], B)
+    a = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+    sky.submit(FlightPlan('B', (-15, 12), (15, 12)))
+    mon = ConformanceMonitor(sky)
+    for t, pos in track(sky, a):
+        mon.check(t, {'B': pos})
+    hits = [e for e in mon.events if e['state'] == 'intrusion']
+    assert hits and all(e['risk'] == 'high' for e in hits)
+    assert mon.summary()['high_risk'] >= len(hits)
+
+
 def test_a_short_blip_is_ignored():
     sky = StrategicPlanner([], B)
     d = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))

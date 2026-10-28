@@ -19,8 +19,17 @@ Each airborne drone is in one state, from its current key (H3 cell, layer) and t
     overstay    still airborne over its goal pad after the pad booking ended
     unknown     an airborne drone without an approved plan (intruder)
 A state counts only after it has lasted `debounce` seconds (1 s): a single noisy sample raises
-no alarm. Every confirmed change is an event {t, flight, state, key, other}; the list is what the
-dashboard (Module 4) shows and what E4 (contingency) will react to.
+no alarm.
+
+Each alert also gets a risk level, because "off its plan" is not the same as "about to meet
+someone" (under disruptions only ~1 in 8 off-plan alerts was followed by a close pass):
+    high   intrusion; or another flight (or a zone) has air booked within the drone's safety
+           radius of where it actually is, at some time in the next `risk_horizon` s (10 s):
+           a conflict is possible ('other' names it)
+    low    off plan, but nobody else is booked around it soon
+A change of risk with the same state (low -> high as a late drone nears traffic) is an event
+too. Every confirmed change is an event {t, flight, state, risk, key, other}; the dashboard
+(Module 4) shows people the high-risk ones, and E4 (contingency) reacts to all of them.
 """
 
 import numpy as np
@@ -29,12 +38,14 @@ STATES = ('ok', 'late', 'early', 'off_route', 'intrusion', 'overstay', 'unknown'
 
 
 class ConformanceMonitor:
-    def __init__(self, planner, debounce=1.0):
+    def __init__(self, planner, debounce=1.0, risk_horizon=10.0):
         self.p = planner
         self.debounce = float(debounce)
+        self.risk_horizon = float(risk_horizon)
         self.plans = {d.id: d for d in planner.decisions if d.status == 'approved'}
         self.state = {}                   # flight -> confirmed state
-        self._pending = {}                # flight -> (state, since t, key, other)
+        self.risk = {}                    # flight -> confirmed risk ('high' / 'low'; '' when ok)
+        self._pending = {}                # flight -> (state, risk, since t, key, other)
         self.events = []
 
     def key_of(self, pos):
@@ -63,23 +74,45 @@ class ConformanceMonitor:
             return 'overstay', key, None
         return ('early' if t < min(lo for lo, _ in ivs) else 'late'), key, None
 
+    def assess(self, fid, pos, t, state, other):
+        """(risk, other) of an alert: 'high' if it is an intrusion, or if air within the safety
+        radius of the drone's actual position is booked by another flight or a zone during
+        [t, t + risk_horizon]; else 'low'."""
+        if state == 'ok':
+            return '', None
+        if state == 'intrusion':
+            return 'high', other
+        layer = self.p.layer_of(float(pos[2]))
+        skip = set(self.p.exempt.get(fid, ())) | {fid}
+        until = t + self.risk_horizon
+        for c in self.p.cells_near(float(pos[0]), float(pos[1])):
+            key = (c, layer)
+            if key in self.p.blocked:
+                return 'high', 'blocked'
+            for lo, hi, owner in self.p.ledger.get(key, ()):
+                if owner not in skip and lo < until and t < hi:
+                    return 'high', owner
+        return 'low', None
+
     def check(self, t, positions):
         """positions: {flight id: (x, y, z)} of the airborne drones. Returns the new events."""
         new = []
         for fid, pos in positions.items():
             s, key, other = self.classify(fid, pos, t)
-            cur = self.state.get(fid, 'ok')
-            if s == cur:
+            r, why = self.assess(fid, pos, t, s, other)
+            other = other if other is not None else why
+            cur = (self.state.get(fid, 'ok'), self.risk.get(fid, ''))
+            if (s, r) == cur:
                 self._pending.pop(fid, None)
                 continue
             pend = self._pending.get(fid)
-            if pend is None or pend[0] != s:
-                self._pending[fid] = (s, t, key, other)
+            if pend is None or pend[:2] != (s, r):
+                self._pending[fid] = (s, r, t, key, other)
                 pend = self._pending[fid]
-            if t - pend[1] >= self.debounce:
-                self.state[fid] = s
+            if t - pend[2] >= self.debounce:
+                self.state[fid], self.risk[fid] = s, r
                 self._pending.pop(fid, None)
-                ev = {'t': float(pend[1]), 'flight': fid, 'state': s, 'key': key, 'other': other}
+                ev = {'t': float(pend[2]), 'flight': fid, 'state': s, 'risk': r, 'key': key, 'other': pend[4]}
                 self.events.append(ev)
                 new.append(ev)
         return new
@@ -87,5 +120,6 @@ class ConformanceMonitor:
     def summary(self):
         alerts = [e for e in self.events if e['state'] != 'ok']
         return {'alerts': len(alerts),
+                'high_risk': sum(e['risk'] == 'high' for e in alerts),
                 'by_state': {s: sum(e['state'] == s for e in alerts) for s in STATES if s != 'ok'},
                 'flights_alerted': len({e['flight'] for e in alerts})}
