@@ -51,9 +51,9 @@ Rules and limits:
      reach a zone cell).
   5. Not covered: corridors (fixed lanes that flights must follow) are part of D2's scope but not
      implemented; future work.
-  6. Vertiports are defined here (Vertiport.pad() gives D4's pad format), but D4's demand
-     generator does not read them; it draws its own pads. Zone-aware pad sampling in D4 is
-     planned, not done.
+  6. Vertiports are defined here (Vertiport.pad() gives D4's pad format). D4 draws its own pads
+     unless they are passed in (generate_demand(..., pads=[v.pad() for v in ports])); loading
+     vertiports automatically and zone-aware pad sampling are planned.
 
 GeoJSON (RFC 7946) FeatureCollection, with two extra top-level members:
     "frame": "wgs84" (default; coordinates [lng, lat]) or "local_m" (coordinates [x, y] metres)
