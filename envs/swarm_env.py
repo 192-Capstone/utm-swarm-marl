@@ -86,6 +86,7 @@ class SwarmEnv:
         self.control_dt = float(config['environment'].get('control_timestep', 0.032))
         self.waiting = np.zeros(self.n_agents, dtype=bool)
         self.landed = np.zeros(self.n_agents, dtype=bool)
+        self.cancelled = np.zeros(self.n_agents, dtype=bool)     # E4: flight called off on its pad
         self.departures = None
         self._t_step = 0
         # Safety cost for constrained RL (MAPPO-Lagrangian), kept separate from
@@ -304,6 +305,7 @@ class SwarmEnv:
         self.episode_manager.reset()
         self.crashed = np.zeros(self.n_agents, dtype=bool)
         self.landed = np.zeros(self.n_agents, dtype=bool)
+        self.cancelled = np.zeros(self.n_agents, dtype=bool)
         self._t_step = 0
         self._spawns = np.array([spawns[f'drone_{i}'] for i in range(self.n_agents)], dtype=np.float32)
         if departures:
@@ -348,7 +350,8 @@ class SwarmEnv:
         for key, route in routes.items():
             xy = np.asarray([p[:2] for p in route], dtype=float)
             if len(route[0]) >= 3:                # E1 layer profile: climb, cruise, land
-                self._cruise[key] = float(max(p[2] for p in route))
+                # cruise height = the middle waypoints' (a re-planned route may start higher, E4)
+                self._cruise[key] = float(route[1][2] if len(route) > 2 else max(p[2] for p in route))
                 self._climbed[key] = False
                 z = np.full(len(xy), self._cruise[key])
             else:
@@ -367,6 +370,30 @@ class SwarmEnv:
         self._los_grid = build_grid(self.layout, ((lo[0], hi[0]), (lo[1], hi[1])), 0.25,
                                     scenario_manager.DRONE_RADIUS)
         return followers
+
+    def set_route(self, i, route, departure=None):
+        """Give drone i a new route (3D waypoints, E1 profile) mid-episode (E4 re-planning): a
+        flying drone starts following it from its first waypoint (its current position); a drone
+        still waiting on its pad also gets the new departure time. The route's end becomes the
+        drone's goal (a re-plan may send it back to its start pad)."""
+        from envs.route_planner import RouteFollower
+        key = f'drone_{i}'
+        xy = np.asarray([p[:2] for p in route], dtype=float)
+        self._cruise[key] = float(route[1][2] if len(route) > 2 else max(p[2] for p in route))
+        self._climbed[key] = False
+        self.followers[key] = RouteFollower(np.column_stack([xy, np.full(len(xy), self._cruise[key])]),
+                                            lookahead=self.route_lookahead)
+        self.goals[i, :2] = xy[-1]
+        if departure is not None and self.departures is not None and self.waiting[i]:
+            self.departures[i] = float(departure)
+
+    def cancel(self, i):
+        """Call off drone i's flight while it is still waiting on its pad (E4): it never takes off,
+        and the episode doesn't wait for it (it does not count as arrived)."""
+        if self.departures is None or not self.waiting[i]:
+            raise ValueError(f'drone_{i} is not waiting on its pad')
+        self.departures[i] = np.inf
+        self.cancelled[i] = True
 
     def _update_carrots(self):
         """Point each routed drone's adapter goal (observation + LiDAR heading) at its carrot."""
@@ -514,7 +541,7 @@ class SwarmEnv:
         if done and reason == 'success':
             done, reason = False, None
         if removing:
-            if not done and all(r or c for r, c in zip(self.drone_reached_goal, self.crashed)):
+            if not done and all(r or c or x for r, c, x in zip(self.drone_reached_goal, self.crashed, self.cancelled)):
                 done, reason = True, 'collision' if self.crashed.any() else 'success'
             elif done and self.crashed.any():
                 reason = 'collision'            # timed out after a crash: still a crash episode
