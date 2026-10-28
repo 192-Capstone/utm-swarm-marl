@@ -18,11 +18,22 @@ number E1's safety radius should cover.
         --checkpoint <ckpt> --map city --level medium --drones 4 --seeds 20 --episodes 5
 
 Seeds 10-19 are refused (reserved for test runs). Collision physics off (as the suite).
+
+C5 (PyBullet vs Webots):
+    --simulator pybullet (default) | webots_l2_multi (envs/webots_l2_multi.py; Webots log next
+                to the output, <out>.<mode>.webots.log)
+    --modes     which modes to fly (default: direct route)
+Each mode runs in its OWN subprocess (one Webots connection per Python process; the episodes are
+drawn again there from the same seeds). Besides the summary (<out>), the per-flight rows go to
+<out stem>.<mode>.rows.json (seed, episode, drone, scenario_id, outcome, cross-track numbers;
+Webots: max tilt and true speed), for scripts/c5_compare.py.
 """
 
 import argparse
+import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -53,6 +64,13 @@ def cross_track(xy, route):
         t = 0.0 if L2 < 1e-12 else float(np.clip((xy - a) @ ab / L2, 0.0, 1.0))
         best = min(best, float(np.linalg.norm(a + t * ab - xy)))
     return best
+
+
+def scenario_id(spawns, goals):
+    """Hash of an episode's spawns and goals (rounded to mm), to check the pairing afterwards."""
+    keys = sorted(spawns, key=lambda k: int(k.split('_')[1]))
+    a = np.round(np.array([spawns[k] for k in keys] + [goals[k] for k in keys], dtype=np.float64), 3)
+    return hashlib.sha1(a.tobytes()).hexdigest()[:12]
 
 
 def make_episode(rng, args):
@@ -99,6 +117,7 @@ def run(cfg, args, episodes, use_routes):
     max_steps = cfg['environment']['max_steps']
     rows = []
     for ep in episodes:
+        sid = scenario_id(ep['spawns'], ep['goals'])
         obs = env.start_episode(ep['spawns'], ep['goals'], obstacles=ep['layout'],
                                 routes=ep['routes'] if use_routes else None)
         routes = {k: np.asarray(v, dtype=float) for k, v in ep['routes'].items()}
@@ -113,6 +132,7 @@ def run(cfg, args, episodes, use_routes):
                 break
         pos = env.adapter.get_positions()
         crashed_ep = info.get('reason') == 'collision'
+        st = env.adapter.episode_stats() if hasattr(env.adapter, 'episode_stats') else None
         for i, k in enumerate(routes):
             settled = bool(info['drone_reached_goal'][i])
             hit = bool(info.get('drone_collision', [False] * args.drones)[i]
@@ -122,7 +142,11 @@ def run(cfg, args, episodes, use_routes):
                          'crashed': hit, 'episode_crash': crashed_ep,
                          'stuck': (not settled) and (not crashed_ep) and dist > 1.0, 'final_dist': dist,
                          'xt_med': float(np.median(xt[k])), 'xt_p95': float(np.percentile(xt[k], 95)),
-                         'xt_max': float(np.max(xt[k])), 'xt_all': xt[k]})
+                         'xt_max': float(np.max(xt[k])), 'xt_all': xt[k], 'scenario_id': sid,
+                         'reason': info.get('reason')})
+            if st is not None:                     # Webots: lost-control numbers (eval_suite.lost_control)
+                rows[-1].update(max_tilt_deg=max(st['max_roll_deg'][i], st['max_pitch_deg'][i]),
+                                max_true_speed=st['max_speed'][i])
     env.close()
     return rows
 
@@ -139,6 +163,29 @@ def summary(rows):
                               'p99': float(np.percentile(xt, 99)), 'max': float(xt.max())}}
 
 
+def draw_episodes(args):
+    episodes = []
+    for seed in args.seeds:
+        rng = np.random.RandomState(seed)
+        for ep in range(args.episodes):
+            layout, spawns, goals, routes = make_episode(rng, args)
+            episodes.append({'seed': seed, 'episode': ep, 'layout': layout, 'spawns': spawns,
+                             'goals': goals, 'routes': routes})
+    return episodes
+
+
+def run_mode_subprocess(mode, rows_path):
+    """Fly one mode in a fresh Python process (this script, same arguments, --worker-mode);
+    returns its rows."""
+    cmd = [sys.executable, os.path.abspath(__file__), *sys.argv[1:],
+           '--worker-mode', mode, '--worker-out', rows_path]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"{mode} worker failed:\n{(p.stderr or p.stdout)[-3000:]}")
+    with open(rows_path) as f:
+        return json.load(f)['rows']
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--config', required=True)
@@ -150,39 +197,56 @@ def main():
     ap.add_argument('--episodes', type=int, default=20, help='episodes PER seed')
     ap.add_argument('--max-steps', type=int, default=1500)
     ap.add_argument('--out', default=None)
+    ap.add_argument('--simulator', choices=['pybullet', 'webots_l2_multi'], default='pybullet')
+    ap.add_argument('--modes', nargs='+', choices=['direct', 'route'], default=['direct', 'route'])
+    ap.add_argument('--worker-mode', default=None, help=argparse.SUPPRESS)
+    ap.add_argument('--worker-out', default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
     if any(10 <= s <= 19 for s in args.seeds):
         ap.error('seeds 10-19 are reserved for test runs')
+    worker = (args.worker_mode, args.worker_out)
+    del args.worker_mode, args.worker_out
+    path = args.out or os.path.join('eval_results', 'city_routes',
+                                    f"{args.map}_{args.level}_n{args.drones}"
+                                    f"{'' if args.simulator == 'pybullet' else '_' + args.simulator}.json")
 
     with open(args.config, encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
     cfg.pop('scenario_mix', None)
     cfg['environment'].update(n_agents=args.drones, collision_physics=False, max_steps=args.max_steps)
     cfg.setdefault('obstacles', {})['enabled'] = False      # the city layout is passed explicitly
+    stem = os.path.splitext(path)[0]
 
-    episodes = []
-    for seed in args.seeds:
-        rng = np.random.RandomState(seed)
-        for ep in range(args.episodes):
-            layout, spawns, goals, routes = make_episode(rng, args)
-            episodes.append({'seed': seed, 'episode': ep, 'layout': layout, 'spawns': spawns,
-                             'goals': goals, 'routes': routes})
-
-    out = {'args': vars(args)}
-    for mode, use in (('direct', False), ('route', True)):
-        t0 = time.time()
+    if worker[0]:                                           # one mode, in this (fresh) process
+        mode = worker[0]
+        if args.simulator != 'pybullet':
+            cfg['environment']['simulator'] = args.simulator
+            cfg['webots'] = {'log': os.path.abspath(f'{stem}.{mode}.webots.log')}
+        episodes = draw_episodes(args)
         np.random.seed(args.seeds[0]); torch.manual_seed(args.seeds[0])
-        rows = run(cfg, args, episodes, use)
+        rows = run(cfg, args, episodes, mode == 'route')
+        with open(worker[1], 'w') as f:
+            json.dump({'args': vars(args), 'mode': mode, 'rows': rows}, f)
+        return
+
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    out = {'args': vars(args)}
+    for mode in ('direct', 'route'):
+        if mode not in args.modes:
+            continue
+        t0 = time.time()
+        rows_path = f'{stem}.{mode}.rows.json'
+        rows = run_mode_subprocess(mode, rows_path)
         s = summary(rows)
+        with open(rows_path, 'w') as f:                     # keep the rows, without the per-step track
+            json.dump({'args': vars(args), 'mode': mode,
+                       'rows': [{k: v for k, v in r.items() if k != 'xt_all'} for r in rows]}, f, indent=1)
         out[mode] = s
         xt = s['cross_track_m']
         print(f"{mode:6s} {args.map}/{args.level} {args.drones} drones, {s['flights']} flights: "
               f"settled {s['settled_pct']:5.1f}%  crashed {s['crashed_pct']:4.1f}%  stuck {s['stuck_pct']:4.1f}%  "
               f"| cross-track median {xt['median']:.2f} m, p95 {xt['p95']:.2f}, p99 {xt['p99']:.2f}, "
               f"max {xt['max']:.2f}  ({time.time() - t0:.0f} s)", flush=True)
-    path = args.out or os.path.join('eval_results', 'city_routes',
-                                    f"{args.map}_{args.level}_n{args.drones}.json")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
         json.dump(out, f, indent=2)
     print(f"wrote {path}")

@@ -27,13 +27,25 @@ zone's (H3 cell, layer) keys): flights that ever entered one, and drone-seconds 
         --checkpoint <ckpt> --map city --level medium --flights 20 --window 60 --seeds 20 21
 
 Seeds 10-19 are refused (reserved for test runs).
+
+C5 (PyBullet vs Webots):
+    --simulator pybullet (default) | webots_l2_multi (envs/webots_l2_multi.py; Webots log next
+                to the output, <out stem>.s<seed>.<mode>.webots.log)
+Each (seed, condition) is flown in its OWN subprocess (one Webots connection per Python process,
+and the number of drones changes from trial to trial); the trial (map, zones, requests, E1's
+plan) is drawn again there from the same seed and checked against this process's (digest).
+Besides the summary (<out>), per-flight rows go to <out stem>.rows.json (seed, condition, flight
+id, arrived, crashed, zone entered, in a close pass below 2.0 / 1.4 m, late_s; Webots: max tilt
+and true speed), for scripts/c5_compare.py.
 """
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 
@@ -93,6 +105,22 @@ def zone_windows(sky, zones):
     return out
 
 
+def per_flight(flights, mode, reached, crashed, entered, close, settled, stats=None):
+    """One row per flight of a condition: its own outcome, for the paired (per-flight) tests.
+    close: {threshold: set of (i, j) pairs}; settled: settle time (s) or nan, per drone."""
+    rows = []
+    for i, f in enumerate(flights):
+        r = {'id': f['id'], 't_dep': float(f[mode][0]), 'arrived': bool(reached[i]), 'crashed': bool(crashed[i]),
+             'zone_entered': i in entered,
+             **{f'close_{t}': any(i in pr for pr in close[t]) for t in NEAR},
+             'late_s': None if np.isnan(settled[i]) else round(float(settled[i] - f['arrival'][mode]), 2)}
+        if stats is not None:
+            r.update(max_tilt_deg=max(stats['max_roll_deg'][i], stats['max_pitch_deg'][i]),
+                     max_true_speed=stats['max_speed'][i])
+        rows.append(r)
+    return rows
+
+
 def fly(cfg, args, layout, flights, mode, seed, sky=None, windows=None):
     n = len(flights)
     cfg = json.loads(json.dumps(cfg))
@@ -148,6 +176,7 @@ def fly(cfg, args, layout, flights, mode, seed, sky=None, windows=None):
                     close[t].add((int(air[iu[0][k]]), int(air[iu[1][k]])))
         if done:
             break
+    stats = env.adapter.episode_stats() if hasattr(env.adapter, 'episode_stats') else None
     env.close()
     reached = np.asarray(info.get('drone_reached_goal', [False] * n), dtype=bool)
     return {'flights': n, 'arrived': int(reached.sum()), 'crashed': int(env.crashed.sum()),
@@ -156,7 +185,39 @@ def fly(cfg, args, layout, flights, mode, seed, sky=None, windows=None):
             'zone_entries': len(entered), 'zone_seconds': round(inside_steps * dt, 2),
             'e3': None if monitor is None else {**monitor.summary(), 'events': monitor.events},
             'late_s': [None if np.isnan(t) else round(float(t - f['arrival'][mode]), 2)
-                       for t, f in zip(settled, flights)]}
+                       for t, f in zip(settled, flights)],
+            '_flights': per_flight(flights, mode, reached, env.crashed, entered, close, settled, stats)}
+
+
+def trial(args, seed):
+    """Everything E1 decides for one seed: layout, planner, zones and their windows, requests,
+    decisions, approved flights. Deterministic in (args, seed)."""
+    args.seed = seed
+    layout, bounds = load_map(args)
+    settings = Settings() if args.radius is None else dataclasses.replace(Settings(), radius=args.radius)
+    sky = StrategicPlanner(layout, bounds, settings)
+    zones = (temporary_zones(np.random.RandomState(1000 + seed), bounds, args.zones, args.window)
+             if args.zones else [])
+    apply_zones(sky, zones)
+    windows = zone_windows(sky, zones)
+    reqs = random_requests(np.random.RandomState(seed), sky, args.flights, window=args.window)
+    decisions, flights = plans(sky, reqs)
+    return layout, sky, zones, windows, reqs, decisions, flights
+
+
+def flights_digest(flights):
+    return hashlib.sha1(repr(flights).encode()).hexdigest()[:16]
+
+
+def fly_subprocess(seed, mode, out_path):
+    """Fly one (seed, condition) in a fresh Python process (this script, same arguments)."""
+    cmd = [sys.executable, os.path.abspath(__file__), *sys.argv[1:],
+           '--worker-seed', str(seed), '--worker-mode', mode, '--worker-out', out_path]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"seed {seed} {mode} worker failed:\n{(p.stderr or p.stdout)[-3000:]}")
+    with open(out_path) as f:
+        return json.load(f)
 
 
 def main():
@@ -176,9 +237,22 @@ def main():
     ap.add_argument('--zones', type=float, default=0.0,
                     help='fraction of the map under temporary no-fly zones (0 = none)')
     ap.add_argument('--out', default=None)
+    ap.add_argument('--simulator', choices=['pybullet', 'webots_l2_multi'], default='pybullet')
+    ap.add_argument('--worker-seed', type=int, default=None, help=argparse.SUPPRESS)
+    ap.add_argument('--worker-mode', default=None, help=argparse.SUPPRESS)
+    ap.add_argument('--worker-out', default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
     if any(10 <= s <= 19 for s in args.seeds):
         ap.error('seeds 10-19 are reserved for test runs')
+    worker = (args.worker_seed, args.worker_mode, args.worker_out)
+    del args.worker_seed, args.worker_mode, args.worker_out
+    if worker[0] is not None and 10 <= worker[0] <= 19:
+        ap.error('seeds 10-19 are reserved for test runs')
+    path = args.out or os.path.join('eval_results', 'e1_flown',
+                                    f"{args.map}_{args.level}_f{args.flights}_w{args.window:g}"
+                                    f"{f'_z{args.zones:g}' if args.zones else ''}"
+                                    f"{'' if args.simulator == 'pybullet' else '_' + args.simulator}.json")
+    stem = os.path.splitext(path)[0]
 
     with open(args.config, encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
@@ -189,26 +263,33 @@ def main():
                                                release_dist=args.hold_engage + 0.2)
     cfg.setdefault('obstacles', {})['enabled'] = False      # the map layout is passed explicitly
 
-    rows = []
+    if worker[0] is not None:                               # one (seed, condition), in this fresh process
+        seed, mode = worker[0], worker[1]
+        if args.simulator != 'pybullet':
+            cfg['environment']['simulator'] = args.simulator
+            cfg['webots'] = {'log': os.path.abspath(f'{stem}.s{seed}.{mode}.webots.log')}
+        layout, sky, zones, windows, reqs, decisions, flights = trial(args, seed)
+        r = fly(cfg, args, layout, flights, mode, seed, sky, windows)
+        with open(worker[2], 'w') as f:
+            json.dump({'digest': flights_digest(flights), 'result': r}, f)
+        return
+
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    rows, flight_rows = [], []
     for seed in args.seeds:
-        args.seed = seed
-        layout, bounds = load_map(args)
-        settings = Settings() if args.radius is None else dataclasses.replace(Settings(), radius=args.radius)
-        sky = StrategicPlanner(layout, bounds, settings)
-        zones = (temporary_zones(np.random.RandomState(1000 + seed), bounds, args.zones, args.window)
-                 if args.zones else [])
-        apply_zones(sky, zones)
-        windows = zone_windows(sky, zones)
-        reqs = random_requests(np.random.RandomState(seed), sky, args.flights, window=args.window)
-        decisions, flights = plans(sky, reqs)
+        layout, sky, zones, windows, reqs, decisions, flights = trial(args, seed)
         row = {'seed': seed, 'requested': len(reqs), 'approved': len(flights), 'zones': len(zones),
                'rejected_by_zone': sum(1 for d in decisions if d.blockers),
                'around_zones': sum(1 for d in decisions if d.around_zones),
                'delay_mean_s': float(np.mean([f['delay'] for f in flights])) if flights else 0.0}
         for mode in ('no_e1', 'e1'):
             t0 = time.time()
-            row[mode] = fly(cfg, args, layout, flights, mode, seed, sky, windows)
-            r = row[mode]
+            w = fly_subprocess(seed, mode, f'{stem}.s{seed}.{mode}.worker.json')
+            if w['digest'] != flights_digest(flights):
+                raise RuntimeError(f"seed {seed} {mode}: the worker drew a different E1 plan")
+            r = w['result']
+            flight_rows += [{'seed': seed, 'mode': mode, **fr} for fr in r.pop('_flights')]
+            row[mode] = r
             print(f"seed {seed} {mode:5s}: {r['flights']} flights, arrived {r['arrived']}, crashed {r['crashed']}, "
                   f"pairs < 2.0 m {r['pairs_below_2.0']}, < 1.4 m {r['pairs_below_1.4']}, "
                   f"closest {r['min_separation_m']} m, zone entries {r['zone_entries']} "
@@ -237,12 +318,10 @@ def main():
         if len(late):
             print(f"settled vs planned arrival ({m}): median {np.median(late):+.1f} s, "
                   f"p95 {np.percentile(late, 95):+.1f} s, p99 {np.percentile(late, 99):+.1f} s, max {late.max():+.1f} s")
-    path = args.out or os.path.join('eval_results', 'e1_flown',
-                                    f"{args.map}_{args.level}_f{args.flights}_w{args.window:g}"
-                                    f"{f'_z{args.zones:g}' if args.zones else ''}.json")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
         json.dump({'args': vars(args), 'trials': rows, 'total': tot}, f, indent=2)
+    with open(f'{stem}.rows.json', 'w') as f:
+        json.dump({'args': vars(args), 'rows': flight_rows}, f, indent=1)
     print(f"wrote {path}")
 
 
