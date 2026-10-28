@@ -21,8 +21,10 @@ with the plan broken on purpose, the same way in all four (seeded):
     late       a share of flights takes off late (uniform in a range of seconds)
     slow       a share of flights flies slower (velocity command x factor)
     intruders  extra drones with no flight plan cross the area (E1 never hears of them)
-    zone       with --zone-at T, a no-fly zone appears at T where it cuts the most planned
-               routes (permanent from T); every condition is scored for drones inside it
+    zone       with --zone-at T, a 6 x 6 m no-fly zone appears at T: where it cuts the most
+               planned routes (--zone-place busiest, the worst case) or on a random tile that
+               cuts at least one (random); permanent from T, or active for --zone-for s only;
+               every condition is scored for drones inside it while it is active
 Scored: arrived, crashed, close pairs (< 2.0 / < 1.4 m), closest approach; with E1, E3's
 conformance alerts (utm/conformance.py) and, for each close pair, how long before it the first
 alert of either drone came, counting only alerts in the --horizon seconds before (warning time;
@@ -100,16 +102,21 @@ def intruders(rng, sky, n, window):
     return out
 
 
-def busiest_tile(sky, flights, bounds, size=6.0):
-    """The size x size m tile whose zone keys the most approved flights have booked."""
-    best = None
+def place_zone(sky, flights, bounds, place='busiest', rng=None, active=None, size=6.0):
+    """A size x size m mid-flight zone: the tile whose zone keys the most approved flights have
+    booked (busiest), or a random tile among those at least one has booked (random). active:
+    [[t0, t1]] for a temporary zone, None for permanent. Returns (zone, flights it cuts)."""
+    tiles = []
     for x0, x1, y0, y1 in tile_blocks(bounds, size):
-        z = Zone('midflight', 'Mid-flight closure', polygon=[(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+        z = Zone('midflight', 'Mid-flight closure', polygon=[(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
+                 active=active or [])
         keys = zone_keys(z, sky.sky, sky.s.n_layers)
         n = sum(1 for f in flights if any(k in keys for k in sky.current[f['id']].reservation))
-        if best is None or n > best[0]:
-            best = (n, z)
-    return best[1]
+        tiles.append((n, z))
+    if place == 'busiest':
+        return max(tiles, key=lambda x: x[0])[::-1]
+    cut = [x for x in tiles if x[0] > 0]
+    return cut[rng.randint(len(cut))][::-1]
 
 
 def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, zone=None):
@@ -184,7 +191,7 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
                     env.set_route(i, d.waypoints, departure=d.t_dep)
                 elif a['why'].endswith('-> cancelled') and env.waiting[i]:
                     env.cancel(i)
-            if zone_on:
+            if zone_on and (zone.permanent or t < zone.active[0][1]):
                 for i in air:
                     if (sky.sky.cell(pos[i][0], pos[i][1]), sky.layer_of(pos[i][2])) in zkeys:
                         entered.add(ids[i])
@@ -252,7 +259,10 @@ def main():
     ap.add_argument('--intruders', type=int, default=2)
     ap.add_argument('--modes', nargs='+', default=['no_e1', 'e1'], choices=['no_e1', 'e1', 'e4'])
     ap.add_argument('--zone-at', type=float, default=None,
-                    help='a no-fly zone appears at this time (s), where it cuts the most routes')
+                    help='a no-fly zone appears at this time (s)')
+    ap.add_argument('--zone-place', choices=['busiest', 'random'], default='busiest',
+                    help='where: the tile that cuts the most routes, or a random tile that cuts one')
+    ap.add_argument('--zone-for', type=float, default=None, help='zone active this many s (default: permanent)')
     ap.add_argument('--pilots', nargs='+', default=['simple', 'blind', 'learned'], choices=['simple', 'blind', 'learned'])
     ap.add_argument('--horizon', type=float, default=20.0, help='alert precision: close pass within this many s')
     ap.add_argument('--out', default=None)
@@ -276,9 +286,13 @@ def main():
         rng = np.random.RandomState(5000 + seed)
         late, slow = disruptions(rng, flights, args)
         extra = intruders(rng, sky, args.intruders, args.window)
-        zone = busiest_tile(sky, flights, sky.bounds) if args.zone_at is not None else None
+        zone, cut = None, 0
+        if args.zone_at is not None:
+            active = None if args.zone_for is None else [[args.zone_at, args.zone_at + args.zone_for]]
+            zone, cut = place_zone(sky, flights, sky.bounds, args.zone_place,
+                                   np.random.RandomState(7000 + seed), active)
         row = {'seed': seed, 'approved': len(flights), 'late': sum(x > 0 for x in late),
-               'slow': sum(x < 1 for x in slow), 'intruders': len(extra)}
+               'slow': sum(x < 1 for x in slow), 'intruders': len(extra), 'zone_cuts': cut}
         for mode in args.modes:
             for pilot in args.pilots:
                 t0 = time.time()
