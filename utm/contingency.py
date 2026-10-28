@@ -103,10 +103,11 @@ class ContingencyManager:
         return sorted(out)
 
     # ------------------------------------------------------------------ alerts
-    def step(self, t, positions):
-        """Run E3 on the positions (if a monitor is attached) and react to its alerts."""
+    def step(self, t, positions, paths=None):
+        """Run E3 on the positions (if a monitor is attached; paths: the predicted paths for its
+        risk='intent', E2) and react to its alerts."""
         if self.mon is not None:
-            self.mon.check(t, positions)
+            self.mon.check(t, positions, paths)
         out = []
         for fid, pos in positions.items():
             if fid not in self.p.plans:             # unknown: an intruder

@@ -29,7 +29,14 @@ Scored: arrived, crashed, close pairs (< 2.0 / < 1.4 m), closest approach; with 
 conformance alerts (utm/conformance.py) and, for each close pair, how long before it the first
 alert of either drone came, counting only alerts in the --horizon seconds before (warning time;
 an older alert is not a warning for it); and the other way round, the share
-of alerts followed by a close pass of that drone within --horizon seconds (alert precision).
+of alerts followed by a close pass of that drone within --horizon seconds (alert precision); the
+same two for the high-risk alerts only (what E4 acts on).
+
+E2 (intent): --risk intent rates E3's alerts by where the drones are going (each drone shares its
+planned next 10 s along its route, utm/intent.py) instead of by the bookings; --telemetry N D L
+makes the UTM see the drones only through their reports (utm/telemetry.py: GPS noise N m, delay
+D s, loss L) instead of their true positions. Arrived / crashed / close pairs / zone entries are
+always scored on the true positions.
 
     python scripts/eval_layered.py --config configs/config_stage2_round7_eval_goalhold.yaml \
         --checkpoint <ckpt> --map city --flights 20 --window 60 --seeds 20 21 22
@@ -55,7 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import eval_suite as es                                           # noqa: E402
 from eval_e1_flown import NEAR, plans                              # noqa: E402
-from envs.swarm_env import SwarmEnv                                # noqa: E402
+from envs.swarm_env import LAND_RADIUS_M, SwarmEnv                 # noqa: E402
 from modules.goal_hold import GoalHoldPolicy, goal_hold_enabled    # noqa: E402
 from preview_route import load_map                                 # noqa: E402
 from preview_strategic import random_requests                      # noqa: E402
@@ -63,7 +70,9 @@ from record_rollout import disable_all_collision_physics           # noqa: E402
 from utm.airspace_zones import Zone, tile_blocks, zone_keys        # noqa: E402
 from utm.conformance import ConformanceMonitor                     # noqa: E402
 from utm.contingency import ContingencyManager                     # noqa: E402
+from utm.intent import predicted_path, route_intent                # noqa: E402
 from utm.strategic_planner import StrategicPlanner                 # noqa: E402
+from utm.telemetry import TelemetryModel                           # noqa: E402
 
 
 class SimplePilot:
@@ -153,7 +162,11 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
                             obstacles=layout, routes=dict(zip(key, routes)), departures=dict(zip(key, deps)))
     ids = [f['id'] for f in flights] + [x['id'] for x in extra]
     sky = copy.deepcopy(sky)                      # E4 changes bookings: each run starts fresh
-    monitor = ConformanceMonitor(sky) if mode in ('e1', 'e4') else None
+    monitor = ConformanceMonitor(sky, risk=args.risk) if mode in ('e1', 'e4') else None
+    tm = None                                     # E2: the UTM hears reports, not the truth
+    if monitor is not None and (args.telemetry is not None or args.risk == 'intent'):
+        tm = TelemetryModel(*(args.telemetry or (0.0, 0.0, 0.0)), seed=9000 + seed)
+    prev = {}                                     # drone -> true position a report period ago
     e4 = ContingencyManager(sky, monitor) if mode == 'e4' else None
     zkeys = set(zone_keys(zone, sky.sky, sky.s.n_layers)) if zone is not None else set()
     zone_on, entered, inside_s, replans = False, set(), 0.0, []
@@ -171,16 +184,32 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
         air = np.flatnonzero(~(env.waiting | env.landed | env.crashed))
         pos = env.adapter.get_positions()
         if (step + 1) % every == 0:
-            here = {ids[i]: pos[i] for i in air}
+            here, paths = {ids[i]: pos[i] for i in air}, None
+            if tm is not None:
+                states = {}
+                for i in air:
+                    vel = (pos[i] - prev[i]) / (every * dt) if i in prev else np.zeros(3)
+                    f = env.followers.get(key[i]) if env.followers and i < n_f else None
+                    cruising = (f is not None and env._climbed.get(key[i], False) and not env._landing[i]
+                                and np.hypot(*(pos[i][:2] - env.goals[i][:2])) >= LAND_RADIUS_M)
+                    states[ids[i]] = (pos[i], vel, route_intent(f, pos[i], np.hypot(*vel[:2]), t) if cruising else [])
+                tm.send(t, states)
+                tm.receive(t)
+                for fid in [x for x in tm.latest if x not in here]:
+                    tm.forget(fid)                # landed or crashed: stops reporting
+                here = {fid: r.pos for fid, r in tm.latest.items()}
+                if args.risk == 'intent':
+                    paths = {fid: predicted_path(r, t) for fid, r in tm.latest.items()}
+            prev = {i: pos[i].copy() for i in air}
             acts_e4 = []
             if zone is not None and not zone_on and t >= args.zone_at:
                 zone_on = True
                 if e4 is not None:
                     acts_e4 += e4.add_zone(zone, t, here)
             if e4 is not None:
-                acts_e4 += e4.step(t, here)
+                acts_e4 += e4.step(t, here, paths)
             elif monitor is not None:
-                monitor.check(t, here)
+                monitor.check(t, here, paths)
             for a in acts_e4:
                 d = a['decision']
                 replans.append({'t': a['t'], 'flight': a['flight'], 'why': a['why'], 'status': d.status, 'reason': d.reason})
@@ -221,12 +250,14 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
            'returned': len(home),
            'replans': replans}
     if monitor is not None:
-        warn, detail = [], []
+        warn, warn_high, detail = [], [], []
         for (a, b), t_close in close[1.4].items():
-            first = [e['t'] for e in monitor.events
-                     if e['flight'] in (ids[a], ids[b]) and e['state'] != 'ok'
-                     and t_close - args.horizon <= e['t'] <= t_close]
+            before = [e for e in monitor.events if e['flight'] in (ids[a], ids[b]) and e['state'] != 'ok'
+                      and t_close - args.horizon <= e['t'] <= t_close]
+            first = [e['t'] for e in before]
+            high = [e['t'] for e in before if e['risk'] == 'high']
             warn.append(None if not first else round(t_close - min(first), 2))
+            warn_high.append(None if not high else round(t_close - min(high), 2))
             recent = [y for y in replans if y['flight'] in (ids[a], ids[b]) and t_close - 10.0 <= y['t'] <= t_close]
             detail.append({'a': ids[a], 'b': ids[b], 't': round(t_close, 2), 'warning_s': warn[-1],
                            'replanned_within_10s': recent})
@@ -236,6 +267,11 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
             close_t.setdefault(ids[b], []).append(t_close)
         alerts = [e for e in monitor.events if e['state'] != 'ok']
         hit = [any(e['t'] <= tc <= e['t'] + args.horizon for tc in close_t.get(e['flight'], ())) for e in alerts]
+        out['high_alerts'] = sum(e['risk'] == 'high' for e in alerts)
+        out['high_alerts_followed'] = int(sum(h for e, h in zip(alerts, hit) if e['risk'] == 'high'))
+        out['close_pair_high_warning_s'] = warn_high
+        if tm is not None:
+            out['telemetry'] = {'sent': tm.sent, 'lost': tm.lost}
         out['e3'] = {**monitor.summary(), 'events': monitor.events}
         out['close_pair_warning_s'] = warn
         out['close_pairs'] = detail
@@ -262,6 +298,9 @@ def main():
                     help='a no-fly zone appears at this time (s)')
     ap.add_argument('--zone-place', choices=['busiest', 'random'], default='busiest',
                     help='where: the tile that cuts the most routes, or a random tile that cuts one')
+    ap.add_argument('--risk', choices=['booking', 'intent'], default='booking', help="E3's risk rule (intent: E2)")
+    ap.add_argument('--telemetry', type=float, nargs=3, default=None, metavar=('NOISE_M', 'DELAY_S', 'LOSS'),
+                    help='the UTM hears the drones through reports (default: true positions)')
     ap.add_argument('--zone-for', type=float, default=None, help='zone active this many s (default: permanent)')
     ap.add_argument('--pilots', nargs='+', default=['simple', 'blind', 'learned'], choices=['simple', 'blind', 'learned'])
     ap.add_argument('--horizon', type=float, default=20.0, help='alert precision: close pass within this many s')
@@ -330,6 +369,10 @@ def main():
                 line += (f"; E3 alerts {n_al} ({sum(x['alerts_followed_by_close_pass'] for x in R)} followed by a "
                          f"close pass within {args.horizon:g} s), close pairs alerted before "
                          f"{len(seen)}/{len(w)}" + (f" (median {np.median(seen):.1f} s ahead)" if seen else ''))
+                wh = [v for x in R for v in x['close_pair_high_warning_s'] if v is not None]
+                line += (f"; high-risk alerts {sum(x['high_alerts'] for x in R)} "
+                         f"({sum(x['high_alerts_followed'] for x in R)} followed by a close pass), close pairs with a "
+                         f"high-risk alert before {len(wh)}/{len(w)}" + (f" (median {np.median(wh):.1f} s)" if wh else ''))
             print(line)
     path = args.out or os.path.join('eval_results', 'e1_layered',
                                     f"{args.map}_{args.level}_f{args.flights}_w{args.window:g}.json")
