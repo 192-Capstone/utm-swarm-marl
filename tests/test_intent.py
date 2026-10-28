@@ -128,3 +128,18 @@ def test_booking_risk_is_still_the_default():
     assert ConformanceMonitor(_sky()).risk_mode == 'booking'
     with pytest.raises(ValueError):
         ConformanceMonitor(_sky(), risk='guess')
+
+
+def test_utm_drops_a_drone_only_when_its_reports_stop():
+    """#37 review (1.7): the UTM forgets a drone once it has been silent for LINK_TIMEOUT_S, never
+    from the simulator's truth (a landed, crashed or comms-lost drone just goes quiet)."""
+    from utm.telemetry import LINK_TIMEOUT_S, TelemetryModel, silent
+    tm = TelemetryModel()
+    for t in range(0, 6):                                  # f1 reports every second; f2 stops after t = 2
+        tm.send(t, {'f1': ((0, 0, 2), (0, 0, 0), [])} if t > 2 else
+                {'f1': ((0, 0, 2), (0, 0, 0), []), 'f2': ((5, 0, 2), (0, 0, 0), [])})
+        tm.receive(t)
+    assert silent(tm.latest, 5) == []                              # f2 quiet for 3 s: not yet
+    assert silent(tm.latest, 2 + LINK_TIMEOUT_S + 0.5) == ['f2']
+    tm.forget('f2')
+    assert set(tm.latest) == {'f1'}
