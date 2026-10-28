@@ -213,3 +213,88 @@ def test_rotor_estimate_ramps_at_spin_rate(rate, start, target):
 def test_episode_stats_reports_reimported_drones():
     ad = _adapter(n=3); ad._reset_stats(); ad._reimported_now = [2]
     assert ad.episode_stats()['reimported'] == [False, False, True]
+
+
+# ---------------------------------------------------------------- schedule: park / place
+class _Field:
+    def __init__(self):
+        self.value = None
+
+    def setSFVec3f(self, v):
+        self.value = list(v)
+
+    def setSFRotation(self, v):
+        self.value = list(v)
+
+    def setSFString(self, v):
+        self.value = v
+
+
+class _Node:
+    def __init__(self):
+        self.velocity = None
+
+    def setVelocity(self, v):
+        self.velocity = list(v)
+
+
+def _scheduled(n=2):
+    ad = _adapter(n=n)
+    ad.v_max = 2.0
+    ad.nodes = [_Node() for _ in range(n)]
+    ad._tr, ad._rot, ad._cd = ([_Field() for _ in range(n)] for _ in range(3))
+    ad._parked = np.zeros(n, dtype=bool)
+    ad._token = np.full(n, ad.ep * 1000)
+    ad._since = np.full(n, 99)
+    return ad
+
+
+def _fly(ad, v=(0.5, 0.0, 0.2)):
+    ad.apply_actions({f'drone_{i}': [*v, 0.0] for i in range(ad.n_agents)})
+
+
+def test_parked_drone_is_held_far_away_and_gets_no_flight_commands():
+    ad = _scheduled()
+    ad.park([1])
+    assert ad._tr[1].value[0] > 100 and ad.nodes[1].velocity == [0.0] * 6
+    _fly(ad)
+    assert cf.parse_command(ad._cd[1].value)[1] == 'H'            # still on hold
+    assert cf.parse_command(ad._cd[0].value)[1] == 'F'            # the other one flies
+    assert ad._cmd[1].tolist() == [0.0, 0.0, 0.0]
+
+
+def test_place_starts_the_controller_afresh_on_the_pad():
+    """A new token: the controller resets its PID and takes its altitude setpoint and previous
+    GPS reading from the pad at the first F (with the old token it would keep the parking spot's)."""
+    ad = _scheduled()
+    ad.park([1])
+    old = ad._token[1]
+    ad.place(1, (3.0, -2.0, 1.0))
+    ep, mode, _ = cf.parse_command(ad._cd[1].value)
+    assert ep == old + 1 and mode == 'H'
+    assert ad._tr[1].value == [3.0, -2.0, 1.0]
+    _fly(ad)
+    ep, mode, v = cf.parse_command(ad._cd[1].value)
+    assert (ep, mode, v) == (old + 1, 'F', (0.5, 0.0, 0.2))
+    assert ad._token[0] == ad.ep * 1000                          # the other drone is untouched
+
+
+def test_only_the_drone_just_released_is_checked():
+    ad = _scheduled()
+    ad.park([1])
+    ad._pos[1] = [500.0, 500.0, 20.0]
+    ad.place(1, (3.0, -2.0, 1.0))
+    ad._pos[0, 2] = -5.0                                         # drone_0 is not just released
+    ad._drop_check(ad._since < 16)
+    ad._pos[1, 2] = 1.0 - DROP_LIMIT - 0.05                      # drone_1 falls after its release
+    with pytest.raises(RuntimeError, match='drone_1'):
+        ad._drop_check(ad._since < 16)
+
+
+def test_tokens_never_repeat_across_episodes():
+    """Episode e uses tokens e * 1000 + launches; the next episode starts above them."""
+    from envs.webots_l2_multi import TOKENS_PER_EP
+    ad = _scheduled(n=1)
+    for _ in range(TOKENS_PER_EP - 1):
+        ad.park([0]); ad.place(0, (0.0, 0.0, 1.0))
+    assert ad._token[0] < (ad.ep + 1) * TOKENS_PER_EP

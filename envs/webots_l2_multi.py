@@ -36,6 +36,14 @@ it would shoot up at the next release (seen in crowd crossing, seed 22, episodes
 The Webots log (Webots + all drone controllers) is always written: webots.log in the config,
 else logs/webots/l2_multi_<time>_<pid>.log.
 
+Scheduled departures (SwarmEnv environment.schedule, E1/E4 Stage 3): park(indices) holds drones
+far out of the world (still, motors at hover speed, no PID: the spin-up hold), so they are out of
+every sensor's range; place(i, pos) puts one on its pad and releases it there. Each launch gives
+that drone's controller a new command token, which it treats as a new episode: PID reset, and its
+first F step sets the altitude setpoint and the previous GPS reading from the pad (with the old
+token it would keep the parking spot's). The motors are already at hover, so no new 2 s spin-up;
+the drop and start checks run for that drone after its own release.
+
 Per episode and drone, episode_stats() gives max |roll|, max |pitch| (deg) and max true speed
 (m/s) over the control steps, for the lost-control rule of scripts/webots_part4_table.py.
 """
@@ -62,6 +70,8 @@ START_CHECK_STEPS = 5          # control steps after release (0.16 s)
 START_SPEED_LIMIT = 1.0        # m/s; the Crazyflie needs ~0.2 s to respond to any command
 BROKEN_TILT_DEG = 60.0         # a drone that tilted past this in the last episode ...
 BROKEN_Z = 0.1                 # ... or ended below this height (m) is re-imported at the next reset
+PARK = (500.0, 500.0, 20.0)    # m: parked drone i is held at PARK + (5 i, 0, 0), far out of the world
+TOKENS_PER_EP = 1000           # command tokens: episode e uses e * 1000, each launch the next one
 
 
 class WebotsL2MultiAdapter(WebotsAdapter):
@@ -115,7 +125,9 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         self._cmd = np.zeros((n, 3))
         self._z_ref = np.zeros(n)                           # the controllers' altitude setpoints (drop check)
         self._z_spawn = np.zeros(n)                         # spawn heights (drop check)
-        self._steps_since_release = DROP_CHECK_STEPS
+        self._since = np.full(n, DROP_CHECK_STEPS)        # control steps since each drone's release
+        self._parked = np.zeros(n, dtype=bool)
+        self._token = np.zeros(n, dtype=np.int64)           # each drone's command token (its controller's episode)
         self._reset_stats()
 
     # ---------------------------------------------------------------- world
@@ -148,12 +160,13 @@ class WebotsL2MultiAdapter(WebotsAdapter):
             self._reimported_now = broken
         self.ep += 1
         starts = [[float(v) for v in spawn_positions[f'drone_{i}']] for i in range(self.n_agents)]
-        hold = format_command(self.ep, 'H', (0.0, 0.0, 0.0))
+        self._token[:] = self.ep * TOKENS_PER_EP
+        self._parked[:] = False
         for i, nd in enumerate(self.nodes):                 # L2 94-97
             self._tr[i].setSFVec3f(starts[i])
             self._rot[i].setSFRotation([0.0, 0.0, 1.0, 0.0])
             nd.resetPhysics()
-            self._cd[i].setSFString(hold)                   # L2 102-106 (in the controller): PID reset, hover motors
+            self._cd[i].setSFString(self._command(i, 'H'))  # L2 102-106 (in the controller): PID reset, hover motors
             self.goals[f'drone_{i}'] = np.array(goal_positions[f'drone_{i}'], dtype=np.float32)
         self._heading = {}                                  # L2 98-99
         self._build_obstacles(obstacles or [])
@@ -165,33 +178,68 @@ class WebotsL2MultiAdapter(WebotsAdapter):
                 self._tr[i].setSFVec3f(starts[i])
                 self._rot[i].setSFRotation([0.0, 0.0, 1.0, 0.0])
                 nd.setVelocity([0.0] * 6)
-        release = format_command(self.ep, 'F', (0.0, 0.0, 0.0))
         for i in range(self.n_agents):                      # first F: controller sets z_des, prev_gps
-            self._cd[i].setSFString(release)
+            self._cd[i].setSFString(self._command(i, 'F'))
         self.sup.step(self.basic_ms)                        # L2 115
         self._z_spawn[:] = [s[2] for s in starts]
         self._z_ref[:] = self._z_spawn                      # L2 105
-        self._steps_since_release = 0
+        self._since[:] = 0
         self._reset_stats()
         self._read_state()                                  # L2 117
 
+    def _command(self, i, mode, v=(0.0, 0.0, 0.0)):
+        return format_command(int(self._token[i]), mode, v)
+
+    # ------------------------------------------------------------ schedule
+    def _hold(self, i, pos):
+        self._tr[i].setSFVec3f([float(v) for v in pos])
+        self._rot[i].setSFRotation([0.0, 0.0, 1.0, 0.0])
+        self.nodes[i].setVelocity([0.0] * 6)
+
+    def park(self, indices):
+        """Hold these drones far out of the world, still, motors at hover speed (SwarmEnv schedule:
+        not departed yet, or landed; crash_mode remove). Called every control step."""
+        for i in indices:
+            self._parked[i] = True
+            self._cmd[i] = 0.0
+            self._cd[i].setSFString(self._command(i, 'H'))
+            self._hold(i, (PARK[0] + 5.0 * i, PARK[1], PARK[2]))
+
+    def place(self, i, pos):
+        """Put parked drone i on its pad at pos and release it there (SwarmEnv schedule: take-off).
+        A new token makes its controller start as in a new episode; the next apply_actions gives it
+        its first F step."""
+        self._parked[i] = False
+        self._token[i] += 1
+        self._cmd[i] = 0.0
+        self._cd[i].setSFString(self._command(i, 'H'))      # PID reset, hover motors
+        self._hold(i, pos)
+        self._pos[i] = [float(v) for v in pos]
+        self._z_spawn[i] = self._z_ref[i] = float(pos[2])
+        self._since[i] = 0
+
     # -------------------------------------------------------------- control
     def apply_actions(self, actions: dict):
-        """actions: {'drone_i': [vx, vy, vz, yaw_rate]}; yaw rate ignored (always 0, as Level 2)."""
+        """actions: {'drone_i': [vx, vy, vz, yaw_rate]}; yaw rate ignored (always 0, as Level 2).
+        Parked drones stay on hold."""
         for i in range(self.n_agents):                      # L2 140-142, per axis as PyBullet
+            if self._parked[i]:
+                continue
             v = np.clip(np.asarray(actions[f'drone_{i}'][:3], dtype=np.float64), -self.v_max, self.v_max)
             self._cmd[i] = v
-            self._cd[i].setSFString(format_command(self.ep, 'F', v))
+            self._cd[i].setSFString(self._command(i, 'F', v))
 
     def step_simulation(self):
         if self.sup.step(self.step_ms) == -1:               # the controllers run n_sub basic steps
             raise RuntimeError("Webots terminated")
         self._read_state()
-        if self._steps_since_release < DROP_CHECK_STEPS:
-            if self._steps_since_release < START_CHECK_STEPS:
-                self._start_check()
-            self._drop_check()
-            self._steps_since_release += 1
+        new = (self._since < DROP_CHECK_STEPS) & ~self._parked     # drones just released
+        if new.any():
+            start = new & (self._since < START_CHECK_STEPS)
+            if start.any():
+                self._start_check(start)
+            self._drop_check(new)
+            self._since[new] += 1
         self._max_roll = np.maximum(self._max_roll, np.abs(self._orn[:, 0]))
         self._max_pitch = np.maximum(self._max_pitch, np.abs(self._orn[:, 1]))
         self._max_speed = np.maximum(self._max_speed, np.linalg.norm(self._vel, axis=1))
@@ -202,21 +250,24 @@ class WebotsL2MultiAdapter(WebotsAdapter):
             self._vel[i] = nd.getVelocity()[:3]
             self._orn[i] = _euler_from_matrix(nd.getOrientation())
 
-    def _drop_check(self):
+    def _drop_check(self, which=None):
+        """which: boolean mask of the drones to check (default all): those just released."""
+        which = np.ones(self.n_agents, dtype=bool) if which is None else which
         # the setpoint each controller should now hold: z_des += vz * dt per basic step, floor 0.2
         for _ in range(self.n_sub):
-            self._z_ref = np.maximum(0.2, self._z_ref + self._cmd[:, 2] * self.dt)
+            self._z_ref = np.where(which, np.maximum(0.2, self._z_ref + self._cmd[:, 2] * self.dt), self._z_ref)
         drop = np.minimum(self._z_ref, self._z_spawn) - self._pos[:, 2]
-        bad = np.flatnonzero(drop > DROP_LIMIT)
+        bad = np.flatnonzero((drop > DROP_LIMIT) & which)
         if bad.size:
             names = ', '.join(f'drone_{i} ({drop[i]:.2f} m)' for i in bad)
             raise RuntimeError(f"webots_l2_multi: {names} fell below its spawn height and altitude "
                                f"setpoint right after spin-up; its cf_velocity controller is probably "
                                f"not running. See the Webots log: {self.log_path}")
 
-    def _start_check(self):
+    def _start_check(self, which=None):
+        which = np.ones(self.n_agents, dtype=bool) if which is None else which
         speed = np.linalg.norm(self._vel, axis=1)
-        bad = np.flatnonzero(speed > START_SPEED_LIMIT)
+        bad = np.flatnonzero((speed > START_SPEED_LIMIT) & which)
         if bad.size:
             names = ', '.join(f'drone_{i} ({speed[i]:.1f} m/s)' for i in bad)
             raise RuntimeError(f"webots_l2_multi: {names} faster than {START_SPEED_LIMIT} m/s within "
