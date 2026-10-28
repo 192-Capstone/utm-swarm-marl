@@ -46,10 +46,24 @@ Cases
              Wall seconds per simulated second: (a) the adapter alone, zero command, 10 s;
              (b) SwarmEnv with route following and the scripted chaser (and the policy when
              --checkpoint is given), 10 s. Plus start-up and reset wall time.
+  radio      E2 option 3, the Webots radio (webots.radio, envs/radio_msg.py). 4 drones on pads at
+             x = -15, -5, 5, 15, z = 1 m, 20 s; drones 0-2 fly a slow circle from the release,
+             drone_3 is parked until t = 8 s, then placed and flies the same circle. At t = 5 s
+             the UTM sends drone_0 a test intent. Run with noise_m 0 (radio_0) and 0.5
+             (radio_1), seed 20, and once with the radio off (radio_off). Per drone: reports,
+             expected ~1 per second of flight, none while parked, seq consecutive; error of the
+             reported position against node.getPosition() interpolated to t_sent (max, mean,
+             std per axis) and of the reported velocity against the true displacement over the
+             same interval; delay t_received - t_sent; the intent shows up in drone_0's first
+             report after it was sent. Pass (noise 0): counts as expected, no parked
+             reports, seq consecutive, max position error < 0.03 m, intent echoed exactly;
+             (noise 0.5): position error std per axis 0.4-0.6 m. Also: the drones' true tracks
+             in all three runs, compared with radio_off (byte-identical: no physics change).
 
 Usage (repo root, DISPLAY explicit, low priority, nothing else heavy running):
-  DISPLAY=:2 OMP_NUM_THREADS=4 nice -n 19 python scripts/c5_webots_city.py --cases maps route place land schedule
+  DISPLAY=:1 OMP_NUM_THREADS=4 nice -n 19 python scripts/c5_webots_city.py --cases maps route place land schedule
   ... --cases speed [--checkpoint <ckpt>]
+  ... --cases radio
 Writes logs/webots/c5/<case>_<k>.json and report_<cases>.json; Webots logs next to them.
 """
 import argparse
@@ -327,6 +341,125 @@ def compare_place(A, B):
             'others_track_diff_m': others, 'pass': bool(ok)}
 
 
+# ------------------------------------------------------------------ E2: the radio
+RADIO_N, RADIO_T, RADIO_PLACE_T, RADIO_INTENT_T = 4, 20.0, 8.0, 5.0
+RADIO_NOISE = (0.0, 0.5)                     # worker k
+RADIO_SEED = 20
+TEST_INTENT = [[7.0, 1.0, 2.0, 3.0], [9.0, 1.5, 2.5, 3.0], [11.0, 2.0, 3.0, 3.0]]
+
+
+def radio_script(t):
+    return [0.5 * math.cos(0.4 * t), 0.5 * math.sin(0.4 * t), 0.2 if t < 2.0 else 0.0]
+
+
+def case_radio(a, radio=True):
+    from envs.webots_l2_multi import WebotsL2MultiAdapter
+    tag = f'radio_{a.k}' if radio else 'radio_off'
+    cfg = load_cfg(RADIO_N, tag=tag)
+    noise = RADIO_NOISE[a.k] if radio else None
+    if radio:
+        cfg['webots']['radio'] = {'enabled': True, 'noise_m': noise, 'seed': RADIO_SEED}
+    ad = WebotsL2MultiAdapter(cfg)
+    sp = {f'drone_{i}': [10.0 * (i - 1.5), 0.0, PAD_Z] for i in range(RADIO_N)}
+    ad.reset_world(sp, {k: [v[0], v[1] + 5.0, v[2]] for k, v in sp.items()}, [])
+    last = RADIO_N - 1
+    ad.park([last])
+    parked = [last]
+    dt = ad.control_dt
+    n_steps, k_place = int(round(RADIO_T / dt)), int(round(RADIO_PLACE_T / dt))
+    t_last, intent_t, reports = None, None, []
+    truth_t, truth = [0.0], [[list(nd.getPosition()) for nd in ad.nodes]]
+    for s in range(n_steps):
+        t = s * dt
+        acts = {f'drone_{i}': radio_script(t) + [0.0] for i in range(last)}
+        acts[f'drone_{last}'] = radio_script(t_last) + [0.0] if t_last is not None else [0.0] * 4
+        ad.apply_actions(acts)
+        ad.step_simulation()
+        if t_last is not None:
+            t_last += dt
+        if s + 1 == k_place:                     # SwarmEnv: place after the step
+            ad.place(last, sp[f'drone_{last}'])
+            parked, t_last = [], 0.0
+        if parked:
+            ad.park(parked)
+        te = ad.sup.getTime() - ad._t0           # episode time
+        truth_t.append(te)
+        truth.append([list(nd.getPosition()) for nd in ad.nodes])
+        if radio:
+            if intent_t is None and te >= RADIO_INTENT_T - 1e-9:
+                ad.send_intent(0, TEST_INTENT)
+                intent_t = te
+            reports += [{'id': r.id, 'seq': r.seq, 't_sent': r.t_sent, 't_received': r.t_received,
+                         'pos': r.pos.tolist(), 'vel': r.vel.tolist(), 'intent': r.intent} for r in ad.reports()]
+    rejected = ad.radio_rejected
+    ad.close()
+    return {'radio': radio, 'noise_m': noise, 'dt': dt, 'basic_dt': ad.dt, 'place_t': k_place * dt, 'intent_t': intent_t,
+            'truth_t': truth_t, 'truth': truth, 'reports': reports, 'rejected': rejected}
+
+
+def case_radio_off(a):
+    return case_radio(a, radio=False)
+
+
+def analyse_radio(R, period=1.0):
+    """The checks of the radio case for one run (see the docstring)."""
+    T, P = np.array(R['truth_t']), np.array(R['truth'])
+    from envs.radio_msg import MIN_FLIGHT_STEPS
+    dt, place_t, last, bdt = R['dt'], R['place_t'], RADIO_N - 1, R.get('basic_dt', 0.004)
+    out, ok, errs = {}, True, []
+    for i in range(RADIO_N):
+        rs = sorted((r for r in R['reports'] if r['id'] == f'drone_{i}'), key=lambda r: r['t_sent'])
+        t0 = 0.0 if i < last else place_t
+        # take-off: at the release (t = 0), or for the placed drone 2 basic steps after the place
+        # (one in H, then F); first report MIN_FLIGHT_STEPS - 1 basic steps later, then every
+        # period. A report arrives one basic step after it is sent; the last ones collected are
+        # those that arrived by t = RADIO_T.
+        first = (0.0 if i < last else place_t + 2 * bdt) + (MIN_FLIGHT_STEPS - 1) * bdt
+        expected = int(math.floor((RADIO_T - bdt - first) / period + 1e-9)) + 1
+        parked = [r for r in rs if r['t_sent'] < t0 - 1e-9]
+        seq_ok = [r['seq'] for r in rs] == list(range(len(rs)))
+        # placed drone: truth only from the first sample after the place (the ones before are
+        # the parking spot); its report from the place's control step lies between, left out
+        keep = T >= (t0 + dt - 1e-9 if i == last else 0.0)
+        Tk, Pk = T[keep], P[keep, i]
+
+        def true_at(t):
+            return np.array([np.interp(t, Tk, Pk[:, j]) for j in range(3)])
+
+        use = [r for r in rs if r['t_sent'] >= Tk[0] - 1e-9]
+        e = np.array([np.array(r['pos']) - true_at(r['t_sent']) for r in use]).reshape(-1, 3)
+        errs.append(e)
+        verr = np.array([np.array(r1['vel']) - (true_at(r1['t_sent']) - true_at(r0['t_sent'])) / (r1['t_sent'] - r0['t_sent'])
+                         for r0, r1 in zip(use, use[1:])]).reshape(-1, 3)
+        delay = np.array([r['t_received'] - r['t_sent'] for r in rs])
+        d = {'reports': len(rs), 'expected': expected, 'while_parked': len(parked), 'seq_consecutive': seq_ok,
+             'first_t_sent': rs[0]['t_sent'] if rs else None,
+             'pos_err_max_m': float(np.linalg.norm(e, axis=1).max()) if len(e) else None,
+             'pos_err_mean_m': e.mean(axis=0).tolist() if len(e) else None,
+             'pos_err_std_m': e.std(axis=0).tolist() if len(e) else None,
+             'vel_err_max_ms': float(np.linalg.norm(verr, axis=1).max()) if len(verr) else None,
+             'delay_s': [float(delay.min()), float(np.median(delay)), float(delay.max())] if len(delay) else None}
+        if i == 0:
+            before = [r for r in rs if r['t_sent'] <= R['intent_t']]
+            after = [r for r in rs if r['t_sent'] > R['intent_t']]
+            d['intent_before'] = all(r['intent'] == [] for r in before)
+            d['intent_echoed'] = bool(after) and after[0]['intent'] == TEST_INTENT
+            d['intent_echo_t_sent'] = after[0]['t_sent'] if after else None
+        out[f'drone_{i}'] = d
+        ok &= len(rs) == expected and not parked and seq_ok
+    e = np.vstack(errs)
+    out['all_pos_err_std_m'] = e.std(axis=0).tolist()
+    out['all_pos_err_max_m'] = float(np.linalg.norm(e, axis=1).max())
+    out['rejected'] = R['rejected']
+    ok &= out['drone_0']['intent_echoed'] and out['drone_0']['intent_before']
+    if R['noise_m'] == 0.0:
+        ok &= out['all_pos_err_max_m'] < 0.03
+    else:
+        ok &= all(0.8 * R['noise_m'] <= s <= 1.2 * R['noise_m'] for s in out['all_pos_err_std_m'])
+    out['pass'] = bool(ok)
+    return out
+
+
 def case_land(a):
     ad = make_multi(3, 'land')
     sp, gl = place_spawns()
@@ -468,7 +601,8 @@ def case_speed(a):
 
 
 CASES = {'maps': case_maps, 'route': case_route, 'place': case_place, 'place_ref': case_place_ref,
-         'land': case_land, 'schedule': case_schedule, 'speed': case_speed}
+         'land': case_land, 'schedule': case_schedule, 'speed': case_speed,
+         'radio': case_radio, 'radio_off': case_radio_off}
 
 
 # ------------------------------------------------------------------ main side
@@ -511,6 +645,16 @@ def main():
         report['land'] = run_worker('land')
     if 'schedule' in a.cases:
         report['schedule'] = {'webots': run_worker('schedule', 0), 'pybullet': run_worker('schedule', 1)}
+    if 'radio' in a.cases:
+        runs = {'noise_0': run_worker('radio', 0), 'noise_0.5': run_worker('radio', 1), 'off': run_worker('radio_off')}
+        if any('error' in r for r in runs.values()):
+            report['radio'] = {k: r.get('error') for k, r in runs.items()}
+        else:
+            ref = np.array(runs['off']['truth'])
+            report['radio'] = {k: analyse_radio(r) for k, r in runs.items() if r['radio']}
+            report['radio']['tracks_identical_to_radio_off'] = {
+                k: bool(np.array_equal(np.array(r['truth']), ref)) for k, r in runs.items() if r['radio']}
+            report['radio']['wall_s'] = {k: r['wall_s'] for k, r in runs.items()}
     if 'speed' in a.cases:
         report['speed'] = [run_worker('speed', n, a.checkpoint) for n in SPEED_N]
     path = os.path.join(OUT, f"report_{'_'.join(a.cases)}.json")

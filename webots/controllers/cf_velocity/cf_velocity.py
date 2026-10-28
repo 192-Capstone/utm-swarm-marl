@@ -17,6 +17,12 @@ position (envs/cf_velocity_pid.py ControllerState), so a parked drone placed on 
 F) starts like a drone released at the episode start. A malformed command
 is an error: it is printed to stderr, the motors are switched off and the
 controller exits with code 1.
+
+E2 radio (webots.radio.enabled, envs/radio_msg.py): started with controllerArgs "--radio" "period_s=.." ...,
+the drone also has an Emitter "radio_tx" and a Receiver "radio_rx" (in its extensionSlot). Every
+basic step it reads the intents the UTM sent, and while flying (F) it reports its own GPS
+position, velocity and intent once per period (RadioSender). Without the argument none of this
+runs and no device is looked up.
 """
 
 import math
@@ -29,6 +35,7 @@ sys.path.insert(0, ROOT)
 from controller import Robot                                            # noqa: E402
 from envs.cf_velocity_pid import (VelocityPID, HOVER_RAD_S, HOVER_INTEGRATOR,   # noqa: E402
                                   ControllerState, parse_command)
+from envs.radio_msg import RadioSender, parse_controller_args          # noqa: E402
 
 
 def set_motors(motors, m):
@@ -56,6 +63,12 @@ def main():
     z_des = 0.0
     prev_gps = [0.0, 0.0, 0.0]
 
+    radio = parse_controller_args(sys.argv[1:])                         # E2 radio: None when off
+    if radio is not None:
+        tx, rx = robot.getDevice('radio_tx'), robot.getDevice('radio_rx')
+        rx.enable(basic_ms)
+        sender = RadioSender(robot.getName(), radio, dt)
+
     while robot.step(basic_ms) != -1:
         try:
             cmd = parse_command(robot.getCustomData())
@@ -65,6 +78,17 @@ def main():
             sys.exit(1)
 
         act = state.update(cmd)
+        if radio is not None:
+            while rx.getQueueLength() > 0:                              # intents from the UTM
+                try:
+                    sender.hear(rx.getString())
+                except ValueError as e:                                 # caught by the adapter's log check
+                    print(f"cf_velocity [{robot.getName()}]: {e}", file=sys.stderr, flush=True)
+                    set_motors(motors, [0.0] * 4)
+                    sys.exit(1)
+                rx.nextPacket()
+            if act in ('idle', 'hold'):
+                sender.stop()
         if act == 'idle':                                               # motors off
             set_motors(motors, [0.0] * 4)
             continue
@@ -85,6 +109,10 @@ def main():
         g = gps.getValues()                                             # L2 148
         v_world = [(g[k] - prev_gps[k]) / dt for k in range(3)]         # L2 149
         prev_gps = list(g)                                              # L2 150
+        if radio is not None:
+            msg = sender.step(cmd[0], act, robot.getTime(), g)
+            if msg is not None:
+                tx.send(msg)
         cy, sy = math.cos(yaw), math.sin(yaw)                           # L2 151
         vx_b = v_world[0] * cy + v_world[1] * sy                        # L2 152
         vy_b = -v_world[0] * sy + v_world[1] * cy                       # L2 153
