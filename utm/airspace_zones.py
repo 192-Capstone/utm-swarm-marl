@@ -1,8 +1,9 @@
 """
 airspace_zones.py
 -----------------
-D2 part 1: airspace structure for the UTM layer. No-fly zones and vertiports, a GeoJSON file
-format, and the link to the E1 strategic planner (utm/strategic_planner.py), without editing E1.
+D2: airspace structure for the UTM layer. No-fly zones and vertiports, a GeoJSON file format,
+and the link to the E1 strategic planner. E1 (utm/strategic_planner.py) consumes the zones
+through its D2 hooks: blocked, the ledger, exempt and zone_keys (#27).
 
     sky = map_airspace('ecity_crop50')                    # E1's Airspace for that map
     zones, ports, meta = load_zones('data/airspace/ecity_crop50_example.geojson', sky)
@@ -48,6 +49,11 @@ Rules and limits:
      and keep their direct route; every other flight waits for the zone or flies around it, the
      detour keeping the same buffer as rule 2 (E1 masks its route map wherever cells_near would
      reach a zone cell).
+  5. Not covered: corridors (fixed lanes that flights must follow) are part of D2's scope but not
+     implemented; future work.
+  6. Vertiports are defined here (Vertiport.pad() gives D4's pad format). D4 draws its own pads
+     unless they are passed in (generate_demand(..., pads=[v.pad() for v in ports])); loading
+     vertiports automatically and zone-aware pad sampling are planned.
 
 GeoJSON (RFC 7946) FeatureCollection, with two extra top-level members:
     "frame": "wgs84" (default; coordinates [lng, lat]) or "local_m" (coordinates [x, y] metres)
