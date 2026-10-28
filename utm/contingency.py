@@ -5,15 +5,16 @@ E4: contingency handling. E3 (utm/conformance.py) detects drones that leave thei
 changes the bookings so that everyone is safe again. The rules (agreed with the team):
 
     alert                       reaction
-    intrusion (inside another   re-plan this drone now, from where it is
-      flight's booking or an
-      active zone)
+    intrusion (inside another   if it is another flight's air: re-plan that other flight first
+      flight's booking or an      (it is on its plan and has more options), and this drone only
+      active zone)                if that fails; inside a zone: re-plan this drone
     unknown (a drone with no    book a protective volume around it (owner 'intruder:<id>', the
       plan: an intruder)          next `intruder_horizon` s), and re-plan every flight whose booking
                                   it now clashes with
-    late / off_route            re-plan this drone, but only once the alert has lasted `persist` s
-                                  (E3's own 1 s debounce comes first), so small wobbles don't
-                                  reshuffle everyone's bookings
+    late / off_route            re-plan this drone, but only when E3 rates the alert high risk
+                                  (another booking near it soon) and it has lasted `persist` s
+                                  (E3's own 1 s debounce comes first): a drone that is merely off
+                                  its plan with nobody around is left alone
     early / overstay            nothing (inside the safety margins / landing, not a hazard)
     a zone added mid-flight     book it from now (D2 rules), re-plan every flight it clashes with
     an emergency request        StrategicPlanner.submit with priority > 0 takes the air it needs;
@@ -41,7 +42,7 @@ from utm.airspace_zones import ZONE_PREFIX, zone_keys
 from utm.strategic_planner import FlightPlan
 
 IMMEDIATE = ('intrusion',)
-PERSISTENT = ('late', 'off_route')
+PERSISTENT = ('late', 'off_route')            # re-planned only when E3 rates them high risk
 
 
 class ContingencyManager:
@@ -106,22 +107,45 @@ class ContingencyManager:
                 out += self._intruder(fid, pos, t, positions)
                 continue
             state = self.mon.state.get(fid, 'ok') if self.mon is not None else 'ok'
+            risk = self.mon.risk.get(fid, '') if self.mon is not None else ''
             if state in IMMEDIATE:
+                out += self._intrusion(fid, t, positions)
+            elif state in PERSISTENT and risk == 'high' and t - self._since(fid, state) >= self.persist:
                 a = self._replan(fid, t, positions, state)
-            elif state in PERSISTENT and t - self._since(fid, state) >= self.persist:
-                a = self._replan(fid, t, positions, state)
-            else:
-                a = None
-            if a:
-                out.append(a)
+                if a:
+                    out.append(a)
         return out
 
     def _since(self, fid, state):
-        """When the drone's current alert state started (E3's confirmed event time)."""
+        """When the drone's current alert state started: the first of its latest run of events in
+        that state (a risk change within the same state doesn't restart the clock)."""
+        since = float('inf')
         for e in reversed(self.mon.events):
+            if e['flight'] != fid:
+                continue
+            if e['state'] != state:
+                break
+            since = e['t']
+        return since
+
+    def _intrusion(self, fid, t, positions):
+        """A drone inside air booked by another flight: re-plan that flight first, then this one."""
+        other = None
+        for e in reversed(self.mon.events if self.mon is not None else ()):
             if e['flight'] == fid:
-                return e['t'] if e['state'] == state else float('inf')
-        return float('inf')
+                other = e['other'] if e['state'] == 'intrusion' else None
+                break
+        out = []
+        if other in self.p.plans:
+            a = self._replan(other, t, positions, f'intrusion by {fid}')
+            if a:
+                out.append(a)
+                if a['decision'].status == 'approved':
+                    return out
+        a = self._replan(fid, t, positions, 'intrusion')
+        if a:
+            out.append(a)
+        return out
 
     def _intruder(self, iid, pos, t, positions):
         owner = 'intruder:' + str(iid)

@@ -214,12 +214,15 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
            'returned': len(home),
            'replans': replans}
     if monitor is not None:
-        warn = []
+        warn, detail = [], []
         for (a, b), t_close in close[1.4].items():
             first = [e['t'] for e in monitor.events
                      if e['flight'] in (ids[a], ids[b]) and e['state'] != 'ok'
                      and t_close - args.horizon <= e['t'] <= t_close]
             warn.append(None if not first else round(t_close - min(first), 2))
+            recent = [y for y in replans if y['flight'] in (ids[a], ids[b]) and t_close - 10.0 <= y['t'] <= t_close]
+            detail.append({'a': ids[a], 'b': ids[b], 't': round(t_close, 2), 'warning_s': warn[-1],
+                           'replanned_within_10s': recent})
         close_t = {}                                  # flight id -> times it was in a close pair
         for (a, b), t_close in close[1.4].items():
             close_t.setdefault(ids[a], []).append(t_close)
@@ -228,6 +231,7 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
         hit = [any(e['t'] <= tc <= e['t'] + args.horizon for tc in close_t.get(e['flight'], ())) for e in alerts]
         out['e3'] = {**monitor.summary(), 'events': monitor.events}
         out['close_pair_warning_s'] = warn
+        out['close_pairs'] = detail
         out['alerts_followed_by_close_pass'] = int(sum(hit))
     return out
 

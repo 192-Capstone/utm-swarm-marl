@@ -210,30 +210,57 @@ def test_flight_about_to_meet_an_intruder_is_replanned():
 
 
 # ------------------------------------------------------------------ E. alert rules
-def _late_run(persist):
+def _late_run(persist, traffic=True):
+    """A is 6 s behind its plan; with traffic, B was planned across A's route after A."""
     sky = StrategicPlanner([], B)
     a = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+    if traffic:
+        sky.submit(FlightPlan('B', (0, -15), (0, 15)))
     mon = ConformanceMonitor(sky)
     e4 = ContingencyManager(sky, mon, persist=persist)
     acts, t = [], 0.0
     while t < 20.0:
-        if t >= 6.0:                                       # the drone is 6 s behind its plan
+        if t >= 6.0:
             acts += e4.step(t, {'A': at(sky, a, t - 6.0)})
         t += 0.25
     return mon, acts
 
 
-def test_late_is_replanned_only_after_it_persisted():
+def test_late_with_nobody_around_is_left_alone():
+    mon, acts = _late_run(persist=3.0, traffic=False)
+    assert any(e['state'] == 'late' for e in mon.events) and acts == []
+
+
+def test_late_into_traffic_is_replanned_once_high_risk_for_long_enough():
     mon, acts = _late_run(persist=3.0)
-    late = [e['t'] for e in mon.events if e['flight'] == 'A' and e['state'] == 'late']
-    assert late and acts
-    assert acts[0]['why'] == 'late' and acts[0]['t'] >= late[0] + 3.0
+    late = [e for e in mon.events if e['flight'] == 'A' and e['state'] == 'late']
+    high = [e['t'] for e in late if e['risk'] == 'high']
+    mine = [x for x in acts if x['flight'] == 'A' and x['why'] == 'late']
+    assert high and mine
+    assert mine[0]['t'] >= late[0]['t'] + 3.0 and mine[0]['t'] >= high[0]
 
 
 def test_cooldown_limits_replans():
     _, acts = _late_run(persist=0.0)
-    times = [x['t'] for x in acts]
-    assert all(b - a >= 5.0 for a, b in zip(times, times[1:]))
+    times = [x['t'] for x in acts if x['flight'] == 'A']
+    assert times and all(b - a >= 5.0 for a, b in zip(times, times[1:]))
+
+
+def test_intrusion_replans_the_other_flight_first():
+    """A drifts into B's booked air: E4 moves B (on its plan, more options) and leaves A."""
+    sky = StrategicPlanner([], B)
+    a = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+    b = sky.submit(FlightPlan('B', (-15, 12), (15, 12), t_earliest=20.0))
+    mon = ConformanceMonitor(sky)
+    e4 = ContingencyManager(sky, mon)
+    acts = []
+    for k in range(40):                                     # A flies along B's route at B's time
+        t = b.t_dep + 2.0 + 0.25 * k
+        acts += e4.step(t, {'A': at(sky, b, t)})
+        if acts:
+            break
+    assert acts and acts[0]['flight'] == 'B' and acts[0]['why'] == 'intrusion by A'
+    assert acts[0]['decision'].status == 'approved'
 
 
 def test_early_drone_is_left_alone():
