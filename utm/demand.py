@@ -19,33 +19,53 @@ Departures are a Poisson process at that rate over [0, duration_s). An optional 
 (centre_s, width_s, factor) multiplies the rate by up to `factor` with a Gaussian bump around
 centre_s (rush hour); it is drawn by thinning, so the count stays Poisson.
 
+Where pads may go (the pad area): cells of the largest connected free region of layer 0's map
+(every pair is then connected) that are also at least pad_clearance m from every building (all
+heights) and edge m from the map border, and of those, the largest 4-connected part. Flown E1
+runs showed the policy won't settle on a pad close to a wall (it hovers ~1 m off and lands late
+or never), hence the defaults 1.5 m and 2 m. Pockets reachable only through gaps narrower than
+about 2 x pad_clearance (a courtyard behind a narrow opening) are excluded on purpose: a pad there
+has clearance, but every flight to it squeezes past walls. report['pad_area_share_all_parts'] vs
+report['pad_area_share'] shows what that costs. pad_clearance=0 and edge=0 give the whole region
+(the generator as it was before these settings). Pads are cell centres, so the clearance holds
+exactly at the pad.
+
 Origins / destinations (mode):
-    random  free points of the largest connected free region of layer 0's map (every pair is
-            then connected), trips at least min_trip m long; with max_trip set, the goal is
+    random  pad-area points, trips at least min_trip m long; with max_trip set, the goal is
             drawn at a uniform distance in [min_trip, max_trip] around the start (short trips
             on a big map),
             pads at least pad_sep m from the pads of flights departing within pad_window_s
-    hubs    n_hubs depots spread over the region (farthest-point) and n_drops drop points;
-            a share hub_share of the flights go depot -> drop point, the rest drop point -> depot
+    hubs    n_hubs depots spread over the pad area (farthest-point) and n_drops drop points;
+            a share hub_share of the flights go depot -> drop point, the rest drop point -> depot.
+            Each depot is a cluster of pads_per_hub pads within hub_radius of its centre, pad_sep
+            apart; a flight uses one pad of its depot at random. With a single pad per depot,
+            every depot flight takes off from or lands on that one pad, so E1 has to queue them
+            all on it and the depot pad, not the airspace, limits capacity.
     or pass `pads`: a plain list of (x, y) or (x, y, kind), e.g. from D2's vertiports later;
     'random' then picks two pads per flight, 'hubs' uses kind 'hub' as depots and the rest as
-    drop points.
+    drop points. Given pads are never moved or dropped for clearance: the report says how close
+    they are (pads_below_clearance, pads_below_edge).
 
-Every request has a D7 route on layer 0 (E1's own layer-0 map). Pads drawn from the region
-(random free points, generated hubs) always have one, since the region is connected the way A*
-moves, so they skip the A* check. Given pads may not: each such request is checked with A*, and
+Every request has a D7 route on layer 0 (E1's own layer-0 map). Pads drawn from the pad area
+(random points, generated hubs and drops) always have one, since the region is connected the way
+A* moves, so they skip the A* check. Given pads may not: each such request is checked with A*, and
 unroutable ones are dropped and counted (report['dropped_unroutable']), so E1's approval rate
 measures airspace capacity, not map connectivity; keep_unroutable=True keeps them (raw demand).
 
-Settings are validated (ValueError on a negative rate, min_trip > max_trip, ...). Anything that
-gives fewer flights or pads than asked shows in the report: no_valid_pair (no pair found within
-max_tries draws), dropped_unroutable, and pads_requested vs pads_placed (hubs mode).
+Settings are validated (ValueError on a negative rate, min_trip > max_trip, ...; also when
+pad_clearance and edge leave no cell for pads). Anything that gives fewer flights or pads than
+asked shows in the report: no_valid_pair (no pair found within max_tries draws),
+dropped_unroutable, pads_requested vs pads_placed and depot_pads (hubs mode), pad_area_share.
+The report also gives pad_clearance_min and pad_edge_min: how close the pads actually used are to
+a building and to the border.
 
 Each flight also gets an operator id (op0, op1, ... with configurable shares) for the fairness
 metrics (E7) and a preferred cruise layer.
 
-random_requests() is the small fixed-count generator the E1 preview has used since E1; it is
-kept unchanged for that.
+random_requests() is the small fixed-count generator the E1 scripts use. It applies the same
+pad_clearance / edge rule but NOT the largest-part rule: it must give exactly the requests of the
+E1 scripts' version (PR #27), which the flown E1 results were made with. 0, 0 gives its output from
+before pad clearance.
 """
 
 import json
@@ -54,13 +74,14 @@ from dataclasses import asdict, dataclass, field, fields
 
 import numpy as np
 
-from envs.route_planner import plan
+from envs.route_planner import _surface_distance_grid, build_grid, plan
 from utm.strategic_planner import FlightPlan, StrategicPlanner
 
 DISTRICT_AREA = 2500.0                          # m2: one 50 m x 50 m D1 city
 LEVELS = (5, 10, 20, 40, 80)                    # flights / min / district: low -> very high
 FORMAT = 'utm-demand'
-VERSION = 1
+VERSION = 2                                     # 2: pad_clearance, edge, pads_per_hub, hub_radius
+OLD_SETTINGS = {1: {'pad_clearance': 0.0, 'edge': 0.0, 'pads_per_hub': 1}}   # what version 1 used
 
 
 @dataclass
@@ -80,6 +101,10 @@ class DemandSettings:
     layers: tuple = (0,)                        # preferred cruise layer, drawn uniformly
     keep_unroutable: bool = False
     max_tries: int = 50                         # draws per flight before giving up on a request
+    pad_clearance: float = 1.5                  # m from any building to a generated pad
+    edge: float = 2.0                           # m from the map border to a generated pad
+    pads_per_hub: int = 1                       # 'hubs': pads per depot (1 = one pad per depot)
+    hub_radius: float = 6.0                     # 'hubs': m, a depot's pads lie within this of its centre
 
 
 @dataclass
@@ -87,6 +112,7 @@ class Pad:
     x: float
     y: float
     kind: str = ''                              # e.g. 'hub', 'drop'; free text
+    group: int = -1                             # depot index of a generated hub pad (-1: none)
 
 
 @dataclass
@@ -115,55 +141,42 @@ def rate_per_min(settings, bounds):
     return settings.rate * map_area(bounds) / DISTRICT_AREA
 
 
-class Region:
-    """The largest connected free region of a grid, as horizontal runs of free cells.
-    Connectivity is 4-neighbour, which is exactly what A* (8 moves, no corner cutting) can reach.
-    Works from runs rather than cells, so the full E-City map (~8.5 M cells) takes a second."""
+def _runs(mask):
+    """Horizontal runs of True cells: run k is row rows[k], columns [starts[k], ends[k])."""
+    ny = mask.shape[0]
+    pad = np.zeros((ny, 1), dtype=bool)
+    d = np.diff(np.hstack([pad, mask, pad]).astype(np.int8), axis=1)
+    rows, starts = np.nonzero(d == 1)
+    ends = np.nonzero(d == -1)[1]                # (same row-major order as the starts)
+    return rows, starts, ends
 
-    def __init__(self, grid):
+
+class Cells:
+    """A set of grid cells kept as horizontal runs: uniform sampling and membership tests without
+    listing every cell (the full E-City map has ~8.5 M cells)."""
+
+    def _set_runs(self, grid, rows, starts, ends):
         self.grid = grid
-        free = ~grid.occ
-        ny = free.shape[0]
-        pad = np.zeros((ny, 1), dtype=bool)
-        d = np.diff(np.hstack([pad, free, pad]).astype(np.int8), axis=1)
-        rows, starts = np.nonzero(d == 1)            # run k: row rows[k], columns [starts, ends)
-        ends = np.nonzero(d == -1)[1]                # (same row-major order as the starts)
-        n = len(rows)
-        if n == 0:
-            raise ValueError("the map has no free cell")
-        parent = np.arange(n)
-
-        def find(a):
-            while parent[a] != a:
-                parent[a] = parent[parent[a]]
-                a = parent[a]
-            return a
-
-        row_first = np.searchsorted(rows, np.arange(ny + 1))
-        for y in range(ny - 1):
-            i, i_end = row_first[y], row_first[y + 1]
-            j, j_end = row_first[y + 1], row_first[y + 2]
-            while i < i_end and j < j_end:
-                if starts[i] < ends[j] and starts[j] < ends[i]:      # columns overlap: touching
-                    a, b = find(i), find(j)
-                    if a != b:
-                        parent[b] = a
-                if ends[i] < ends[j]:
-                    i += 1
-                else:
-                    j += 1
-        roots = np.array([find(k) for k in range(n)], dtype=np.int64)
+        self.rows, self.starts, self.ends = rows, starts, ends
         lengths = (ends - starts).astype(np.int64)
-        size = np.bincount(roots, weights=lengths)
-        keep = roots == int(np.argmax(size))
-        self.rows, self.starts, self.ends = rows[keep], starts[keep], ends[keep]
-        self.n_cells = int(lengths[keep].sum())
-        self.free_cells = int(lengths.sum())
-        self._cdf = np.cumsum(lengths[keep]) / lengths[keep].sum()   # pick a run by its length
-        self._row_first = np.searchsorted(self.rows, np.arange(ny + 1))
+        self.n_cells = int(lengths.sum())
+        self._cdf = np.cumsum(lengths) / max(lengths.sum(), 1)    # pick a run by its length
+        self._row_first = np.searchsorted(rows, np.arange(grid.occ.shape[0] + 1))
+
+    @classmethod
+    def from_mask(cls, grid, mask):
+        c = cls.__new__(cls)
+        c._set_runs(grid, *_runs(mask))
+        return c
+
+    def mask(self):
+        m = np.zeros(self.grid.occ.shape, dtype=bool)
+        for row, a, b in zip(self.rows, self.starts, self.ends):
+            m[row, a:b] = True
+        return m
 
     def sample(self, rng):
-        """A uniformly random cell centre (x, y) of the region."""
+        """A uniformly random cell centre (x, y) of the set."""
         k = min(int(np.searchsorted(self._cdf, rng.uniform(), side='right')), len(self.rows) - 1)
         col = self.starts[k] + rng.randint(self.ends[k] - self.starts[k])
         return self.grid.to_world((int(self.rows[k]), int(col)))
@@ -174,6 +187,111 @@ class Region:
             return False
         lo, hi = self._row_first[iy], self._row_first[iy + 1]
         return bool(np.any((self.starts[lo:hi] <= ix) & (ix < self.ends[lo:hi])))
+
+
+def _largest_part(mask):
+    """The largest 4-connected part of a boolean mask, as runs (rows, starts, ends), plus the
+    number of True cells in all parts; None when the mask is empty. Works on runs, not cells."""
+    ny = mask.shape[0]
+    rows, starts, ends = _runs(mask)
+    n = len(rows)
+    if n == 0:
+        return None
+    parent = np.arange(n)
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    row_first = np.searchsorted(rows, np.arange(ny + 1))
+    for y in range(ny - 1):
+        i, i_end = row_first[y], row_first[y + 1]
+        j, j_end = row_first[y + 1], row_first[y + 2]
+        while i < i_end and j < j_end:
+            if starts[i] < ends[j] and starts[j] < ends[i]:      # columns overlap: touching
+                a, b = find(i), find(j)
+                if a != b:
+                    parent[b] = a
+            if ends[i] < ends[j]:
+                i += 1
+            else:
+                j += 1
+    roots =np.array([find(k) for k in range(n)], dtype=np.int64)
+    lengths = (ends - starts).astype(np.int64)
+    size = np.bincount(roots, weights=lengths)
+    keep = roots == int(np.argmax(size))
+    return rows[keep], starts[keep], ends[keep], int(lengths.sum())
+
+
+class Region(Cells):
+    """The largest connected free region of a grid, as horizontal runs of free cells.
+    Connectivity is 4-neighbour, which is exactly what A* (8 moves, no corner cutting) can reach.
+    Works from runs rather than cells, so the full E-City map (~8.5 M cells) takes a second."""
+
+    def __init__(self, grid):
+        part = _largest_part(~grid.occ)
+        if part is None:
+            raise ValueError("the map has no free cell")
+        rows, starts, ends, all_free = part
+        self._set_runs(grid, rows, starts, ends)
+        self.free_cells = all_free
+        self.cells_all_parts = self.n_cells
+        self._pad_areas = {}
+
+
+# ----------------------------------------------------------------------------- pad clearance
+def surface_clearance(layout, points, min_height=0.0):
+    """Horizontal distance (m) from each point to the nearest obstacle surface taller than
+    min_height (negative inside one; inf with no obstacle)."""
+    p = np.asarray(points, dtype=float).reshape(-1, 2)
+    d = np.full(len(p), np.inf)
+    for ob in layout:
+        if ob.get('height', np.inf) > min_height:
+            d = np.minimum(d, _surface_distance_grid(ob, p[:, 0], p[:, 1]))
+    return d
+
+
+def edge_distance(bounds, points):
+    """Distance (m) from each point to the nearest map border."""
+    p = np.asarray(points, dtype=float).reshape(-1, 2)
+    (x0, x1), (y0, y1) = bounds
+    return np.min([p[:, 0] - x0, x1 - p[:, 0], p[:, 1] - y0, y1 - p[:, 1]], axis=0)
+
+
+def pad_mask(grid, layout, bounds, pad_clearance, edge):
+    """Cells whose centre is >= pad_clearance from every building (all heights) and >= edge inside
+    the bounds (not yet limited to the connected region). The same expression as the E1 scripts'
+    pad rule (PR #27), so random_requests matches theirs exactly."""
+    pad_map = build_grid(layout, bounds, grid.res, pad_clearance)
+    if pad_map.occ.shape != grid.occ.shape:
+        raise ValueError("pad_mask: the clearance grid doesn't match the layer-0 grid (bounds?)")
+    (x0, x1), (y0, y1) = bounds
+    gx, gy = np.meshgrid(grid.xs, grid.ys)
+    inside = (gx >= x0 + edge) & (gx <= x1 - edge) & (gy >= y0 + edge) & (gy <= y1 - edge)
+    return ~pad_map.occ & inside
+
+
+def pad_area(region, layout, bounds, pad_clearance=1.5, edge=2.0):
+    """Where generated pads may go: the largest 4-connected part of the region's cells that pass
+    pad_mask (kept on the region, so repeated calls on the same map are free). Its
+    cells_all_parts counts every part, before keeping the largest. pad_clearance = edge = 0 gives
+    the region itself."""
+    if pad_clearance <= 0 and edge <= 0:
+        return region
+    key = (float(pad_clearance), float(edge))
+    if key not in region._pad_areas:
+        part = _largest_part(region.mask() & pad_mask(region.grid, layout, bounds, pad_clearance, edge))
+        if part is None:
+            raise ValueError(f"pad_clearance {pad_clearance} m and edge {edge} m leave no cell for pads "
+                             f"in the connected region ({region.n_cells} cells): lower them")
+        rows, starts, ends, all_parts = part
+        area = Cells.__new__(Cells)
+        area._set_runs(region.grid, rows, starts, ends)
+        area.cells_all_parts = all_parts
+        region._pad_areas[key] = area
+    return region._pad_areas[key]
 
 
 # ----------------------------------------------------------------------------- time
@@ -208,19 +326,33 @@ def _as_pads(pads):
     return out
 
 
-def hub_pads(rng, region, n_hubs, n_drops, min_sep=3.0, candidates=400):
-    """n_hubs depots spread over the region (farthest-point sampling over random candidates), then
-    n_drops drop points at least min_sep from every other pad."""
-    cand = np.array([region.sample(rng) for _ in range(candidates)])
+def hub_pads(rng, area, n_hubs, n_drops, min_sep=3.0, candidates=400, per_hub=1, radius=6.0):
+    """n_hubs depots spread over the area (farthest-point sampling over random candidates), each a
+    cluster of up to per_hub pads within radius of its centre (the centre is the first), then
+    n_drops drop points; every added pad is at least min_sep from every other pad. Pads that don't
+    fit are left out (the caller reports the shortfall). per_hub = 1 draws exactly as before."""
+    cand = np.array([area.sample(rng) for _ in range(candidates)])
     hubs = [cand[rng.randint(len(cand))]]
     while len(hubs) < n_hubs:
         d = np.min(np.linalg.norm(cand[:, None, :] - np.array(hubs)[None, :, :], axis=2), axis=1)
         hubs.append(cand[int(np.argmax(d))])
-    pads = [Pad(float(x), float(y), 'hub') for x, y in hubs]
+    pads = [Pad(float(x), float(y), 'hub', i) for i, (x, y) in enumerate(hubs)]
+    g = area.grid
+    for i, (cx, cy) in enumerate(hubs if per_hub > 1 else []):
+        tries = 0
+        while sum(p.group == i for p in pads) < per_hub and tries < 200 * per_hub:
+            tries += 1
+            r, ang = radius * np.sqrt(rng.uniform()), rng.uniform(0.0, 2 * np.pi)
+            q = (cx + r * np.cos(ang), cy + r * np.sin(ang))
+            if not area.contains(q):
+                continue
+            x, y = g.to_world(g.to_cell(q))
+            if np.hypot(x - cx, y - cy) <= radius and all(np.hypot(x - p.x, y - p.y) >= min_sep for p in pads):
+                pads.append(Pad(float(x), float(y), 'hub', i))
     tries = 0
     while sum(p.kind == 'drop' for p in pads) < n_drops and tries < 100 * n_drops:
         tries += 1
-        x, y = region.sample(rng)
+        x, y = area.sample(rng)
         if all(np.hypot(x - p.x, y - p.y) >= min_sep for p in pads):
             pads.append(Pad(float(x), float(y), 'drop'))
     return pads
@@ -249,6 +381,10 @@ def validate(s, given_pads=False):
         raise ValueError(f"mode 'hubs' needs n_hubs >= 1 and n_drops >= 1, got {s.n_hubs}, {s.n_drops}")
     if len(s.layers) == 0 or any(int(k) < 0 for k in s.layers):
         raise ValueError(f"layers must be a non-empty list of layers >= 0, got {s.layers}")
+    if not s.pad_clearance >= 0 or not s.edge >= 0:
+        raise ValueError(f"pad_clearance and edge must be >= 0 m, got {s.pad_clearance}, {s.edge}")
+    if int(s.pads_per_hub) < 1 or not s.hub_radius >= 0:
+        raise ValueError(f"pads_per_hub must be >= 1 and hub_radius >= 0, got {s.pads_per_hub}, {s.hub_radius}")
     if s.operators:
         w = np.array([float(v) for v in s.operators.values()])
         if (w < 0).any() or w.sum() <= 0:
@@ -283,15 +419,24 @@ def generate_demand(layout, bounds, settings=None, seed=0, pads=None, planner_se
         grid = grid if grid is not None else layer0_grid(layout, bounds, planner_settings)
         region = Region(grid)
     source = 'given' if pads is not None else ('generated' if s.mode == 'hubs' else 'free')
+    area = region if source == 'given' else pad_area(region, layout, bounds, s.pad_clearance, s.edge)
     pads = _as_pads(pads) if pads is not None else (
-        hub_pads(rng, region, s.n_hubs, s.n_drops, s.pad_sep) if s.mode == 'hubs' else [])
+        hub_pads(rng, area, s.n_hubs, s.n_drops, s.pad_sep, per_hub=int(s.pads_per_hub),
+                 radius=s.hub_radius) if s.mode == 'hubs' else [])
     hubs = [p for p in pads if p.kind == 'hub']
     others = [p for p in pads if p.kind != 'hub']
     if s.mode == 'hubs' and (not hubs or not others):
-        raise ValueError("mode 'hubs' needs at least one pad of kind 'hub' and one other pad")
+        why = (f": only {_kinds(pads)} fit in the pad area ({area.n_cells} cells) with pad_sep {s.pad_sep}, "
+               f"pad_clearance {s.pad_clearance}, edge {s.edge}" if source == 'generated' else "")
+        raise ValueError(f"mode 'hubs' needs at least one pad of kind 'hub' and one other pad{why}")
     if s.mode == 'random' and source == 'given' and len(pads) < 2:
         raise ValueError(f"mode 'random' with given pads needs at least 2 pads, got {len(pads)}")
-    check_route = source == 'given'             # region pads are always connected (see top)
+    check_route = source == 'given'             # pad-area pads are always connected (see top)
+    depots = {}                                 # depot -> its hub pads (a given hub is its own depot)
+    for i, p in enumerate(hubs):
+        depots.setdefault(p.group if p.group >= 0 else ('given', i), []).append(p)
+    depots = list(depots.values())
+    clustered = any(len(dp) > 1 for dp in depots)
 
     times = departure_times(rng, rate_per_min(s, bounds), s.duration_s, s.peak)
     plans, recent = [], []                      # recent: (t, start, goal) for pad_sep
@@ -300,21 +445,26 @@ def generate_demand(layout, bounds, settings=None, seed=0, pads=None, planner_se
         pair = None
         for _ in range(s.max_tries):
             if s.mode == 'hubs':
-                h, o = hubs[rng.randint(len(hubs))], others[rng.randint(len(others))]
+                if clustered:                    # a depot, then one of its pads
+                    dp = depots[rng.randint(len(depots))]
+                    h = dp[rng.randint(len(dp))]
+                else:                            # one pad per depot: the draws of version 1
+                    h = hubs[rng.randint(len(hubs))]
+                o = others[rng.randint(len(others))]
                 a, b = ((h.x, h.y), (o.x, o.y)) if rng.uniform() < s.hub_share else ((o.x, o.y), (h.x, h.y))
             elif pads:
                 i, j = rng.choice(len(pads), 2, replace=False)
                 a, b = (pads[i].x, pads[i].y), (pads[j].x, pads[j].y)
             elif s.max_trip is not None:         # goal drawn around the start: a big map with
-                a = region.sample(rng)           # short trips would reject almost every pair
+                a = area.sample(rng)             # short trips would reject almost every pair
                 r = rng.uniform(s.min_trip, s.max_trip)
                 ang = rng.uniform(0.0, 2 * np.pi)
                 q = (a[0] + r * np.cos(ang), a[1] + r * np.sin(ang))
-                if not region.contains(q):
+                if not area.contains(q):
                     continue
                 b = grid.to_world(grid.to_cell(q))
             else:
-                a, b = region.sample(rng), region.sample(rng)
+                a, b = area.sample(rng), area.sample(rng)
             L =float(np.hypot(b[0] - a[0], b[1] - a[1]))
             if L < s.min_trip or (s.max_trip is not None and L > s.max_trip):
                 continue
@@ -352,11 +502,32 @@ def generate_demand(layout, bounds, settings=None, seed=0, pads=None, planner_se
         'region_share': region.n_cells / max(region.free_cells, 1),
         'operators': dict(Counter(p.operator for p in plans)),
         'pads_source': source,                  # 'free' (random points), 'generated' (hubs), 'given'
-        'pads_requested': ({'drop': int(s.n_drops), 'hub': int(s.n_hubs)} if source == 'generated'
-                           else _kinds(pads)),
+        'pads_requested': ({'drop': int(s.n_drops), 'hub': int(s.n_hubs) * int(s.pads_per_hub)}
+                           if source == 'generated' else _kinds(pads)),
         'pads_placed': _kinds(pads),            # distinct positions; < requested when they didn't fit
+        'depot_pads': [len({(p.x, p.y) for p in dp}) for dp in depots],    # pads per depot
+        'pad_area_share_all_parts': area.cells_all_parts / max(region.n_cells, 1),   # before the
+        'pad_area_share': area.n_cells / max(region.n_cells, 1),           # largest-part rule, after
     }
+    report.update(_clearance_report(layout, bounds, s, pads if pads else None, plans))
     return Demand(plans, pads, s, report, seed, tuple(tuple(map(float, b)) for b in bounds))
+
+
+def _clearance_report(layout, bounds, s, pads, plans):
+    """How close pads are to buildings and to the border: the minimum over the pads actually used
+    (None when no flight or no building), and how many pads (the given / generated ones, or the
+    used ones for random points) are below pad_clearance / edge."""
+    used = sorted({q for p in plans for q in (p.start, p.goal)})
+    pool = [(p.x, p.y) for p in pads] if pads else used
+    cl_used, ed_used = surface_clearance(layout, used), edge_distance(bounds, used)
+    cl_pool, ed_pool = surface_clearance(layout, pool), edge_distance(bounds, pool)
+    finite = cl_used[np.isfinite(cl_used)]
+    return {
+        'pad_clearance_min': float(finite.min()) if len(finite) else None,
+        'pad_edge_min': float(ed_used.min()) if used else None,
+        'pads_below_clearance': int(np.sum(cl_pool < s.pad_clearance - 1e-9)),
+        'pads_below_edge': int(np.sum(ed_pool < s.edge - 1e-9)),
+    }
 
 
 # ----------------------------------------------------------------------------- save / load
@@ -380,10 +551,11 @@ def load_demand(path):
         data = json.load(f)
     if data.get('format') != FORMAT:
         raise ValueError(f"{path} is not a demand file (format {data.get('format')!r})")
-    if data.get('version') != VERSION:
-        raise ValueError(f"{path}: demand format version {data.get('version')}, expected {VERSION}")
+    version = data.get('version')
+    if version not in (1, VERSION):
+        raise ValueError(f"{path}: demand format version {version}, expected 1 or {VERSION}")
     known = {f.name for f in fields(DemandSettings)}
-    s = {k: v for k, v in data['settings'].items() if k in known}
+    s = {**OLD_SETTINGS.get(version, {}), **{k: v for k, v in data['settings'].items() if k in known}}
     for k in ('peak', 'layers'):
         if s.get(k) is not None:
             s[k] = tuple(s[k])
@@ -397,11 +569,18 @@ def load_demand(path):
 
 
 # ----------------------------------------------------------------------------- E1 preview helper
-def random_requests(rng, sky, n, min_sep=3.0, window=30.0):
-    """n requests between free points of layer 0's map that have a route, pads >= min_sep apart.
-    (The E1 preview's fixed-count generator, moved here unchanged.)"""
+def random_requests(rng, sky, n, min_sep=3.0, window=30.0, pad_clearance=1.5, edge=2.0):
+    """n requests between free points of layer 0's map that have a route, pads >= min_sep apart,
+    >= pad_clearance from every building and >= edge from the border. Identical to the E1
+    scripts' version (PR #27): no largest-part rule here. pad_clearance = edge = 0 gives its
+    output from before pad clearance."""
     g = sky._grid(0)
-    free = np.argwhere(~g.occ)
+    ok = ~g.occ
+    if pad_clearance > 0 or edge > 0:
+        ok = ok & pad_mask(g, sky.layout, sky.bounds, pad_clearance, edge)
+    free = np.argwhere(ok)
+    if len(free) == 0:
+        raise ValueError(f"pad_clearance {pad_clearance} m and edge {edge} m leave no free cell for pads")
     pads, out, tries = [], [], 0
     while len(out) < n and tries < 50 * n:
         tries += 1

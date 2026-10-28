@@ -8,8 +8,9 @@ D4 demand (utm/demand.py) checked as a random generator, over many seeds:
     peak       departure times vs the rush-hour curve (chi-square over time bins)
     operators  operator shares vs the configured shares (chi-square)
     hub_share  share of hubs-mode flights leaving a depot vs hub_share (chi-square)
-    spread     pads over the free region: share per map quarter vs that quarter's share of the
-               connected region (Region.sample: chi-square; generated starts: max difference)
+    spread     pads over the pad area (connected region minus the pad_clearance / edge margins):
+               share per map quarter vs that quarter's share of the area (sampling: chi-square;
+               generated starts: max difference)
 
     python scripts/demand_stats.py                  # all of the above, default number of seeds
     python scripts/demand_stats.py --seeds 400      # more seeds
@@ -35,7 +36,7 @@ sys.path.insert(0, ROOT)
 from envs.city_generator import generate_city  # noqa: E402
 from envs.osm_scenario import load_osm_layout  # noqa: E402
 from utm.demand import (LEVELS, DemandSettings, Region, departure_times,  # noqa: E402
-                        generate_demand, layer0_grid, rate_per_min)
+                        generate_demand, layer0_grid, pad_area, rate_per_min)
 from utm.demand_checks import (check_demand, check_seeds, chi_square, ks_exponential,  # noqa: E402
                                peak_expected, poisson_dispersion, quarter_of, quarter_shares,
                                safe_seeds)
@@ -135,29 +136,31 @@ def stat_hub_share(maps, seeds, hub_share=0.8, name="medium"):
 
 
 def stat_spread(maps, seeds, draws=20000, names=("empty", "easy", "medium", "hard", "crop")):
-    """Per map quarter: share of the connected region, of Region.sample draws, and of the starts of
-    generated random-mode demand (trip length and pad spacing reject some pairs, so starts are close
-    to, not exactly, uniform)."""
+    """Per map quarter: share of the pad area (the region minus the pad_clearance / edge margins),
+    of pad-area sample draws, and of the starts of generated random-mode demand (trip length and
+    pad spacing reject some pairs, so starts are close to, not exactly, uniform)."""
     rows = []
+    s = DemandSettings(rate=40, duration_s=120.0)
     for name in names:
         layout, bounds, region = maps[name]
+        cells = pad_area(region, layout, bounds, s.pad_clearance, s.edge)
         centre = (0.5 * sum(bounds[0]), 0.5 * sum(bounds[1]))
-        area = quarter_shares(region, centre)
+        area = quarter_shares(cells, centre)
         rng = np.random.RandomState(seeds[0])
-        q = np.bincount(quarter_of([region.sample(rng) for _ in range(draws)], centre), minlength=4)
+        q = np.bincount(quarter_of([cells.sample(rng) for _ in range(draws)], centre), minlength=4)
         live = area > 0
         stat, dof, p = chi_square(q[live], draws * area[live])
-        s = DemandSettings(rate=40, duration_s=120.0)
         starts = [p.start for k in seeds for p in generate_demand(layout, bounds, s, seed=k, region=region).plans]
         gen = np.bincount(quarter_of(starts, centre), minlength=4) / len(starts)
         rows.append(dict(map=name, region=area, sampled=q / draws, p_sample=p, starts=gen, n_starts=len(starts),
-                         max_diff=float(np.max(np.abs(gen - area)))))
+                         max_diff=float(np.max(np.abs(gen - area))), area_share=cells.n_cells / region.n_cells))
     return rows
 
 
 def run_invariants(maps, seeds=(0, 1, 2, 3), duration=120.0, names=("easy", "medium", "hard", "crop")):
     seeds = check_seeds(seeds)
-    modes = {"random": {}, "random-short": dict(max_trip=20.0), "hubs": dict(mode="hubs")}
+    modes = {"random": {}, "random-short": dict(max_trip=20.0), "hubs": dict(mode="hubs"),
+             "hubs-clustered": dict(mode="hubs", pads_per_hub=3)}
     n_runs = n_flights = 0
     problems = []
     for name in names:
@@ -167,7 +170,7 @@ def run_invariants(maps, seeds=(0, 1, 2, 3), duration=120.0, names=("easy", "med
                 for k in seeds:
                     d = generate_demand(layout, bounds, DemandSettings(rate=level, duration_s=duration, **kw),
                                         seed=k, region=region)
-                    found = check_demand(d, region, route=True)
+                    found = check_demand(d, region, route=True, layout=layout)
                     problems += [f"{name} {mode} {level} seed {k}: {m}" for m in found]
                     n_runs += 1
                     n_flights += len(d.plans)
@@ -224,19 +227,19 @@ def main():
     out(f"{hs['n']} flights: {hs['share']:.4f} leave a depot, chi-square {hs['chi2']:.2f}, p = {hs['p']:.3f}")
 
     out()
-    out("## Spread over the free region (quarters SW, SE, NW, NE)")
-    out("| map | region share | Region.sample | p | generated starts | max diff |")
-    out("|---|---|---|---|---|---|")
+    out("## Spread over the pad area (quarters SW, SE, NW, NE; pad area = region minus 1.5 m / 2 m margins)")
+    out("| map | pad area / region | pad-area share | sampled | p | generated starts | max diff |")
+    out("|---|---|---|---|---|---|---|")
     fmt = lambda v: " ".join(f"{x:.3f}" for x in v)  # noqa: E731
     for r in stat_spread(maps, seeds[:60]):
-        out(f"| {r['map']} | {fmt(r['region'])} | {fmt(r['sampled'])} | {r['p_sample']:.3f} | "
-            f"{fmt(r['starts'])} | {r['max_diff']:.3f} |")
+        out(f"| {r['map']} | {r['area_share']:.2f} | {fmt(r['region'])} | {fmt(r['sampled'])} | "
+            f"{r['p_sample']:.3f} | {fmt(r['starts'])} | {r['max_diff']:.3f} |")
 
     if args.invariants:
         inv = run_invariants(maps)
         out()
-        out("## Invariants (D1 easy / medium / hard + crop x random / random-short / hubs x levels 5-80 "
-            "x seeds 0-3, 120 s, real A* on every request)")
+        out("## Invariants (D1 easy / medium / hard + crop x random / random-short / hubs / hubs-clustered "
+            "x levels 5-80 x seeds 0-3, 120 s, real A* on every request, pad clearance and edge)")
         out(f"{inv['runs']} runs, {inv['flights']} flights, {len(inv['problems'])} problems")
         for m in inv["problems"][:20]:
             out(f"- {m}")

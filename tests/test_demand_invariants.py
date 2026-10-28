@@ -4,13 +4,16 @@ test_demand_invariants.py
 D4 demand (utm/demand.py): invariants that must hold for every demand, checked by
 utm/demand_checks.check_demand over every map x mode x level x a few seeds:
 
-  pads in the connected region; every request routable (real A* on each one, so this also tests
-  that skipping A* for region pads is safe); min / max trip; pad spacing between flights close in
-  time; departure times sorted inside [0, duration); unique ids; report counts adding up; hubs-mode
-  flights have exactly one hub end; no more pads placed than requested.
+  pads in the connected region; every pad >= pad_clearance from every building and >= edge from
+  the border; every request routable (real A* on each one, so this also tests that skipping A*
+  for pad-area pads is safe); min / max trip; pad spacing between flights close in time and
+  between generated pads; depot pads within hub_radius; departure times sorted inside
+  [0, duration); unique ids; report counts adding up; hubs-mode flights have exactly one hub end;
+  no more pads placed than requested.
 
 Maps: D1 easy / medium / hard (city seed 0) and the E-City crop. Modes: random, random with
-max_trip (short trips), hubs. Levels: LEVELS (5 .. 80 flights / min / district), seeds 0 and 1,
+max_trip (short trips), hubs, hubs with 3 pads per depot. Levels: LEVELS (5 .. 80 flights / min /
+district), seeds 0 and 1,
 20 s of departures to keep it fast (scripts/demand_stats.py --invariants runs the full 120 s).
 
 Run: python -m pytest tests/test_demand_invariants.py -q
@@ -30,7 +33,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from envs.city_generator import generate_city                                      # noqa: E402
 from envs.osm_scenario import load_osm_layout                                      # noqa: E402
-from utm.demand import LEVELS, DemandSettings, Region, generate_demand, layer0_grid  # noqa: E402
+from utm.demand import (LEVELS, DemandSettings, Region, generate_demand, layer0_grid,  # noqa: E402
+                        surface_clearance)
 from utm.demand_checks import check_demand, check_seeds                            # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
@@ -40,6 +44,7 @@ MODES = {
     'random': dict(mode='random'),
     'random-short': dict(mode='random', max_trip=20.0),
     'hubs': dict(mode='hubs'),
+    'hubs-clustered': dict(mode='hubs', pads_per_hub=3),
 }
 
 
@@ -70,7 +75,7 @@ def test_invariants_hold_everywhere(maps, name, mode):
             s = DemandSettings(rate=level, duration_s=20.0, **MODES[mode])
             d = generate_demand(layout, bounds, s, seed=seed, region=region)
             kept += len(d.plans)
-            problems = check_demand(d, region, route=True)
+            problems = check_demand(d, region, route=True, layout=layout)
             assert problems == [], f"{name} {mode} level {level} seed {seed}: {problems[:5]}"
     assert kept > 50                            # ~103 expected (155 / min x 20 s x 2 seeds): real work done
 
@@ -93,6 +98,14 @@ def test_check_demand_catches_broken_demand(maps):
     assert any('outside the connected region' in m for m in broken(plans=[replace(p[0], goal=blocked)] + p[1:]))
     close = replace(p[1], t_earliest=p[0].t_earliest, start=(p[0].start[0] + 0.5, p[0].start[1]))
     assert any('apart' in m for m in broken(plans=[p[0], close] + p[2:]))
+    # pads in the region but too close to a building / to the border
+    near_wall = next(region.grid.to_world((int(iy), int(ix))) for iy, ix in np.argwhere(region.mask())
+                     if 0.6 < surface_clearance(layout, [region.grid.to_world((int(iy), int(ix)))])[0] < 1.0)
+    found = check_demand(replace(d, plans=[replace(p[0], goal=near_wall)] + p[1:]), region, route=False, layout=layout)
+    assert any('from a building' in m for m in found)
+    at_edge = (bounds[0][0] + 0.125, p[0].start[1])
+    found = check_demand(replace(d, plans=[replace(p[0], goal=at_edge)] + p[1:]), region, route=False, layout=layout)
+    assert any('from the border' in m for m in found)
     # a free cell cut off from the connected region (the crop has some): A* finds no route
     layout, bounds, crop = maps['crop']
     g = crop.grid

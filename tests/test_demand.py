@@ -15,6 +15,12 @@ D4 traffic demand (utm/demand.py):
   H. Edge cases and validation: bad settings raise a clear ValueError; rate 0, 1 s, a tiny free
      region, exhausted max_tries and drops that don't fit work and show in the report.
   I. E1 fit: generate -> save -> load -> submit to fresh E1 planners gives identical decisions.
+  J. Pad clearance: every generated pad (random, hub, drop, random_requests) is >= pad_clearance
+     from buildings and >= edge from the border; pockets behind narrow gaps are not pad area;
+     random_requests matches the E1 scripts' version (PR #27) exactly; given pads are kept and
+     reported; no room for pads raises, little room shows in the report.
+  K. Depot clusters (pads_per_hub): pads within hub_radius, pad_sep apart, all used; shortfall
+     reported.
 
 Statistics over many seeds: tests/test_demand_stats.py. Invariants over maps x modes x levels:
 tests/test_demand_invariants.py.
@@ -26,6 +32,7 @@ import hashlib
 import json
 import os
 import sys
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
@@ -38,9 +45,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from envs.city_generator import generate_city                                      # noqa: E402
 from envs.osm_scenario import load_osm_layout                                      # noqa: E402
-from envs.route_planner import plan                                                # noqa: E402
-from utm.demand import (DemandSettings, Pad, Region, departure_times,  # noqa: E402
-                        generate_demand, layer0_grid, load_demand, random_requests, save_demand)
+from envs.route_planner import build_grid, plan                                    # noqa: E402
+from utm.demand import (DemandSettings, Pad, Region, departure_times, edge_distance,  # noqa: E402
+                        generate_demand, layer0_grid, load_demand, pad_area, random_requests,
+                        save_demand, surface_clearance)
 from utm.demand_checks import check_demand                                         # noqa: E402
 from utm.strategic_planner import FlightPlan, StrategicPlanner                     # noqa: E402
 
@@ -212,6 +220,25 @@ def test_save_load_round_trip(tmp_path):
         load_demand(p)
 
 
+def test_version_1_files_load_with_the_settings_they_were_made_with(tmp_path):
+    """Files saved before pad_clearance existed were made with no clearance, one pad per depot:
+    loading them must say so, not claim today's defaults."""
+    d = generate_demand([], B, DemandSettings(rate=20, duration_s=30, mode='hubs', pad_clearance=0.0, edge=0.0),
+                        seed=1)
+    p = tmp_path / 'v1.json'
+    save_demand(p, d)
+    raw = json.loads(p.read_text())
+    raw['version'] = 1
+    for k in ('pad_clearance', 'edge', 'pads_per_hub', 'hub_radius'):
+        del raw['settings'][k]
+    for pad in raw['pads']:
+        del pad['group']
+    p.write_text(json.dumps(raw))
+    e = load_demand(p)
+    assert (e.settings.pad_clearance, e.settings.edge, e.settings.pads_per_hub) == (0.0, 0.0, 1)
+    assert e.plans == d.plans and [(q.x, q.y, q.kind) for q in e.pads] == [(q.x, q.y, q.kind) for q in d.pads]
+
+
 # ----------------------------------------------------------------------------- E. with E1
 def test_feeds_the_strategic_planner():
     layout, bounds = city('medium', 1)
@@ -251,19 +278,33 @@ def fingerprint(d):
     return hashlib.sha256(json.dumps(rows).encode()).hexdigest()[:16]
 
 
-def test_reference_fingerprints():
+@pytest.mark.parametrize('clear, fp_a, fp_b', [
+    # pad_clearance = edge = 0: the generator before these settings, draw for draw
+    (dict(pad_clearance=0.0, edge=0.0), (38, '6973167f305e186e'), (121, 'd100049e49eaaa9f')),
+    # the defaults (1.5 m from buildings, 2 m from the border)
+    (dict(), (38, 'cd9bc2cff8565bf9'), (112, 'faf4b9b4e04301f6')),
+])
+def test_reference_fingerprints(clear, fp_a, fp_b):
     """Exactly these flights for these inputs. If this fails, a change altered what the generator
     draws (or numpy's RandomState did): every saved experiment's demand would change with it."""
     layout, bounds = city('medium', 0)
-    a = generate_demand(layout, bounds, DemandSettings(rate=20), seed=1)
-    assert (len(a.plans), fingerprint(a)) == (38, '6973167f305e186e')
+    a = generate_demand(layout, bounds, DemandSettings(rate=20, **clear), seed=1)
+    assert (len(a.plans), fingerprint(a)) == fp_a
     crop = load_osm_layout(CROP)
-    s = DemandSettings(rate=40, mode='hubs', peak=(60, 15, 3))
+    s = DemandSettings(rate=40, mode='hubs', peak=(60, 15, 3), **clear)
     b = generate_demand(crop, B, s, seed=2)
-    assert (len(b.plans), fingerprint(b)) == (121, 'd100049e49eaaa9f')
+    assert (len(b.plans), fingerprint(b)) == fp_b
     # a prebuilt region (reused across calls by the scripts) gives the same demand
     again = generate_demand(crop, B, s, seed=2, region=Region(layer0_grid(crop, B)))
-    assert fingerprint(again) == 'd100049e49eaaa9f'
+    assert fingerprint(again) == fp_b[1]
+
+
+def test_random_requests_zero_clearance_is_the_old_output():
+    """random_requests(..., 0, 0) matches the version before pad_clearance (pinned from it)."""
+    layout, bounds = city('easy', 0)
+    out = random_requests(np.random.RandomState(0), StrategicPlanner(layout, bounds), 10, pad_clearance=0, edge=0)
+    rows = [[p.id, list(p.start), list(p.goal), p.t_earliest] for p in out]
+    assert hashlib.sha256(json.dumps(rows).encode()).hexdigest()[:16] == '52217322b6750002'
 
 
 # ----------------------------------------------------------------------------- H. edge cases
@@ -349,3 +390,144 @@ def test_save_load_submit_gives_identical_e1_decisions(tmp_path):
         first = decide(d.plans)
         assert first == decide(e.plans) == decide(d.plans)
         assert any(x['status'] == 'approved' for x in first)
+
+
+# ----------------------------------------------------------------------------- J. pad clearance
+@pytest.mark.parametrize('kw', [dict(), dict(max_trip=20.0), dict(mode='hubs'), dict(mode='hubs', pads_per_hub=3)],
+                         ids=['random', 'random-short', 'hubs', 'hubs-clustered'])
+def test_generated_pads_keep_clear_of_buildings_and_border(kw):
+    for layout, bounds in (city('hard', 0), (load_osm_layout(CROP), B)):
+        region = Region(layer0_grid(layout, bounds))
+        d = generate_demand(layout, bounds, DemandSettings(rate=40, **kw), seed=4, region=region)
+        assert len(d.plans) > 30
+        assert check_demand(d, region, layout=layout) == []
+        pts = [q for p in d.plans for q in (p.start, p.goal)] + [(q.x, q.y) for q in d.pads]
+        assert surface_clearance(layout, pts).min() >= 1.5 and edge_distance(bounds, pts).min() >= 2.0
+        r = d.report
+        assert r['pad_clearance_min'] >= 1.5 and r['pad_edge_min'] >= 2.0
+        assert r['pads_below_clearance'] == r['pads_below_edge'] == 0
+        assert all(region.contains(q) for q in pts)          # still routable by construction
+
+
+def test_zero_clearance_lets_pads_close_to_walls():
+    layout, bounds = city('hard', 0)
+    d = generate_demand(layout, bounds, DemandSettings(rate=40, pad_clearance=0.0, edge=0.0), seed=4)
+    assert d.report['pad_clearance_min'] < 1.0 and d.report['pad_edge_min'] < 1.0
+    assert d.report['pad_area_share'] == d.report['pad_area_share_all_parts'] == 1.0
+
+
+def test_pockets_behind_narrow_gaps_are_not_pad_area():
+    """D1 medium (city seed 0): the courtyard of the U-shaped building top left is connected to the
+    rest through a gap a route passes 0.53 m from the wall. Its centre has 1.6 m clearance, but it
+    is a separate part of the clearance grid, so it is left out of the pad area."""
+    layout, bounds = city('medium', 0)
+    region = Region(layer0_grid(layout, bounds))
+    courtyard = (-19.0, 17.5)
+    assert region.contains(courtyard) and surface_clearance(layout, [courtyard])[0] >= 1.5
+    area = pad_area(region, layout, bounds)
+    assert not area.contains(courtyard)
+    assert 0 < area.n_cells < area.cells_all_parts < region.n_cells
+    d = generate_demand(layout, bounds, DemandSettings(rate=80, mode='hubs', pads_per_hub=3), seed=1, region=region)
+    r = d.report
+    assert r['pad_area_share'] == pytest.approx(area.n_cells / region.n_cells)
+    assert r['pad_area_share'] < r['pad_area_share_all_parts'] < 1.0
+    assert all(area.contains((q.x, q.y)) for q in d.pads)
+    assert all(area.contains(q) for p in d.plans for q in (p.start, p.goal))
+
+
+def aman_random_requests(rng, sky, n, min_sep=3.0, window=30.0, pad_clearance=1.5, edge=2.0):
+    """Verbatim copy of random_requests in scripts/preview_strategic.py from PR #27 (the version
+    the flown E1 results were made with). Don't edit: it is the reference."""
+    g = sky._grid(0)
+    pad_map = build_grid(sky.layout, sky.bounds, g.res, pad_clearance)
+    (x0, x1), (y0, y1) = sky.bounds
+    gx, gy = np.meshgrid(g.xs, g.ys)
+    inside = (gx >= x0 + edge) & (gx <= x1 - edge) & (gy >= y0 + edge) & (gy <= y1 - edge)
+    free = np.argwhere(~g.occ & ~pad_map.occ & inside)
+    pads, out, tries = [], [], 0
+    while len(out) < n and tries < 50 * n:
+        tries += 1
+        a, b = (g.to_world(tuple(free[rng.randint(len(free))])) for _ in range(2))
+        if np.hypot(a[0] - b[0], a[1] - b[1]) < 8.0:
+            continue
+        if any(np.hypot(p[0] - q[0], p[1] - q[1]) < min_sep for p in (a, b) for q in pads):
+            continue
+        if sky.route(a, b, 0) is None:
+            continue
+        pads += [a, b]
+        out.append(FlightPlan(f"f{len(out)}", a, b, t_earliest=float(rng.uniform(0, window))))
+    return out
+
+
+@pytest.mark.parametrize('name', ['easy', 'medium', 'hard', 'crop'])
+def test_random_requests_match_the_e1_scripts_exactly(name):
+    """With the defaults, our random_requests gives exactly the E1 scripts' requests (PR #27), on
+    every map and several seeds: no largest-part rule, the same clearance and edge expressions."""
+    layout, bounds = (load_osm_layout(CROP), B) if name == 'crop' else city(name, 0)
+    sky = StrategicPlanner(layout, bounds)
+    for seed in (0, 1, 2, 3):
+        n = 30 if seed % 2 else 10
+        ours = random_requests(np.random.RandomState(seed), sky, n)
+        theirs = aman_random_requests(np.random.RandomState(seed), sky, n)
+        assert ours == theirs and len(ours) == n
+
+
+def test_random_requests_keep_clear_of_buildings_and_border():
+    layout, bounds = city('hard', 0)
+    out = random_requests(np.random.RandomState(1), StrategicPlanner(layout, bounds), 25)
+    pts = [q for p in out for q in (p.start, p.goal)]
+    assert len(out) == 25
+    assert surface_clearance(layout, pts).min() >= 1.5 and edge_distance(bounds, pts).min() >= 2.0
+    with pytest.raises(ValueError, match='no free cell'):
+        random_requests(np.random.RandomState(1), StrategicPlanner(layout, bounds), 5, edge=26.0)
+
+
+def test_given_pads_are_kept_and_their_clearance_reported():
+    layout, bounds = walled()                       # wall faces at x = 9.5 (and 10.5, 19.5, 20.5)
+    pads = [(-20.0, -20.0), (20.0, -20.0), (8.5, 15.0), (-24.0, 0.0)]   # 1.0 m off a wall; 1.0 m off the border
+    d = generate_demand(layout, bounds, DemandSettings(rate=40, duration_s=60), seed=2, pads=pads)
+    assert [(q.x, q.y) for q in d.pads] == pads                          # not moved, not dropped
+    r = d.report
+    assert r['pads_below_clearance'] == 1 and r['pads_below_edge'] == 1
+    assert r['pad_clearance_min'] == pytest.approx(1.0) and r['pad_edge_min'] == pytest.approx(1.0)
+    assert any((8.5, 15.0) in (p.start, p.goal) for p in d.plans)
+
+
+def test_no_room_for_pads_raises_and_little_room_shows_in_the_report():
+    with pytest.raises(ValueError, match='leave no cell for pads'):
+        generate_demand([], B, DemandSettings(edge=26.0))
+    layout, bounds = city('medium', 0)
+    with pytest.raises(ValueError, match='leave no cell for pads'):
+        generate_demand(layout, bounds, DemandSettings(pad_clearance=12.0))
+    # the pocket: a sliver of pad area, no 8 m trip, no room for a drop point next to a depot
+    region = Region(layer0_grid(pocket(), B))
+    d = generate_demand(pocket(), B, DemandSettings(rate=20, duration_s=60), seed=1, region=region)
+    assert 0 < d.report['pad_area_share'] < 0.3 and d.plans == []
+    assert d.report['no_valid_pair'] == d.report['requested'] > 0
+    with pytest.raises(ValueError, match='fit in the pad area'):
+        generate_demand(pocket(), B, DemandSettings(mode='hubs'), seed=1, region=region)
+
+
+# ----------------------------------------------------------------------------- K. depot clusters
+def test_depots_are_clusters_of_pads():
+    layout, bounds = load_osm_layout(CROP), B
+    region = Region(layer0_grid(layout, bounds))
+    s = DemandSettings(rate=80, duration_s=120, mode='hubs', pads_per_hub=4, hub_radius=6.0)
+    d = generate_demand(layout, bounds, s, seed=3, region=region)
+    assert d.report['depot_pads'] == [4, 4, 4] and d.report['pads_placed']['hub'] == 12
+    assert check_demand(d, region, layout=layout) == []        # radius, pad_sep, clearance, one hub end
+    hub_ends = Counter(q for p in d.plans for q in (p.start, p.goal) if q in {(h.x, h.y) for h in d.pads if h.kind == 'hub'})
+    assert len(hub_ends) == 12 and min(hub_ends.values()) >= 5   # every pad of every depot is used
+    # a depot's share of the flights doesn't depend on how many pads it has
+    per_depot = Counter(next(h.group for h in d.pads if (h.x, h.y) == q) for q in hub_ends.elements())
+    assert max(per_depot.values()) < 1.6 * min(per_depot.values())
+
+
+def test_depot_pads_that_dont_fit_show_in_the_report():
+    layout, bounds = city('medium', 0)
+    s = DemandSettings(rate=20, mode='hubs', pads_per_hub=10, hub_radius=3.0)
+    d = generate_demand(layout, bounds, s, seed=1)
+    assert d.report['pads_requested']['hub'] == 30
+    assert sum(d.report['depot_pads']) == d.report['pads_placed']['hub'] < 30
+    assert all(1 <= n < 10 for n in d.report['depot_pads'])
+    assert check_demand(d, Region(layer0_grid(layout, bounds)), layout=layout) == []

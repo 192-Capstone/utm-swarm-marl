@@ -20,6 +20,7 @@ import math
 import numpy as np
 
 from envs.route_planner import plan
+from utm.demand import edge_distance, pad_area, surface_clearance
 
 RESERVED_SEEDS = range(10, 15)                  # the final test run's seeds: never used here
 
@@ -163,9 +164,11 @@ def quarter_shares(region, centre):
 
 
 # ----------------------------------------------------------------------------- invariants
-def check_demand(d, region, route=True, tol=1e-9):
+def check_demand(d, region, route=True, tol=1e-9, layout=None):
     """Problems with one Demand (an empty list when everything holds). region: the Region of the
-    layer-0 grid it was generated on. route=True runs real A* on every kept request."""
+    layer-0 grid it was generated on. route=True runs real A* on every kept request. layout: the
+    map's obstacles; when given, every generated pad must be >= pad_clearance from every building
+    (exact surface distance) and >= edge from the border."""
     s, r, plans = d.settings, d.report, d.plans
     out = []
     t = [p.t_earliest for p in plans]
@@ -211,6 +214,29 @@ def check_demand(d, region, route=True, tol=1e-9):
     for q in pts:
         if not region.contains(q):
             out.append(f"pad {tuple(round(v, 3) for v in q)} is outside the connected region")
+    if pts and layout is not None:
+        area = pad_area(region, layout, d.bounds, s.pad_clearance, s.edge)
+        for q in pts:
+            if region.contains(q) and not area.contains(q):
+                out.append(f"pad {tuple(round(v, 3) for v in q)} is outside the pad area (its largest part)")
+        cl, ed = surface_clearance(layout, pts), edge_distance(d.bounds, pts)
+        for q, c, e in zip(pts, cl, ed):
+            if c < s.pad_clearance - tol:
+                out.append(f"pad {tuple(round(v, 3) for v in q)} is {c:.2f} m from a building "
+                           f"(pad_clearance {s.pad_clearance})")
+            if e < s.edge - tol:
+                out.append(f"pad {tuple(round(v, 3) for v in q)} is {e:.2f} m from the border (edge {s.edge})")
+    if source == 'generated':                   # depots' and drop points' pads pad_sep apart
+        xy = sorted({(q.x, q.y) for q in d.pads})
+        for i, a in enumerate(xy):
+            for b in xy[i + 1:]:
+                if math.hypot(a[0] - b[0], a[1] - b[1]) < s.pad_sep - tol:
+                    out.append(f"pads {a} and {b} closer than pad_sep {s.pad_sep}")
+        for q in d.pads:
+            if q.kind == 'hub' and q.group >= 0:
+                centre = next(c for c in d.pads if c.kind == 'hub' and c.group == q.group)
+                if math.hypot(q.x - centre.x, q.y - centre.y) > s.hub_radius + tol:
+                    out.append(f"depot {q.group} pad ({q.x}, {q.y}) beyond hub_radius {s.hub_radius}")
 
     if source == 'free' and s.pad_sep > 0:
         for i, p in enumerate(plans):
