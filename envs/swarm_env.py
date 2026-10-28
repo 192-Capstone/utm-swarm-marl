@@ -400,6 +400,7 @@ class SwarmEnv:
         xy = np.asarray([p[:2] for p in route], dtype=float)
         self._cruise[key] = float(route[1][2] if len(route) > 2 else max(p[2] for p in route))
         self._climbed[key] = False
+        self._landing[i] = False                  # C5: a re-routed drone is not latched onto its old goal
         self.followers[key] = RouteFollower(np.column_stack([xy, np.full(len(xy), self._cruise[key])]),
                                             lookahead=self.route_lookahead)
         self.goals[i, :2] = xy[-1]

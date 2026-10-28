@@ -126,6 +126,26 @@ def test_options_off_fly_exactly_as_before():
     assert tracks[0].shape == tracks[1].shape and np.array_equal(tracks[0], tracks[1])
 
 
+def test_set_route_clears_the_landing_latch():
+    """E4 re-plans a drone mid-landing (set_route): it climbs and follows the new route instead of
+    staying latched (no vz limit on the re-climb, no carrot pulled straight to the new goal)."""
+    env = make_env(land_latch_m=2.4, land_vz_max=0.5)
+    seen = _spy(env)
+    assert at(env, 0.5) is True and env._landing[0]               # landing, latched
+    px, py, _ = env.adapter.get_positions()[0]
+    gx = px - 2.0                                                  # new pad 2 m away: inside the latch
+    env.set_route(0, [(px, py, 1.0), (px, py, 4.0), (gx, py, 4.0), (gx, py, 1.0)])
+    assert not env._landing[0]
+    env.step({'drone_0': [0.0, 0.0, 1.5, 0.0], 'drone_1': [0.0] * 4})
+    assert seen[-1]['drone_0'][2] == pytest.approx(1.5)            # re-climb not limited
+    env.adapter.place(0, [px, py, 4.0])                            # climbed, 2 m from the new goal
+    env.step(ZERO)
+    env.step(ZERO)
+    assert not env._landing[0]
+    assert env.adapter.goals['drone_0'][2] == pytest.approx(4.0)   # route at cruise, not the goal
+    env.close()
+
+
 def test_bad_values_are_refused():
     with pytest.raises(ValueError):
         make_env(land_latch_m=LAND_RADIUS_M - 0.1)
