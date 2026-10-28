@@ -134,6 +134,43 @@ def test_lands_even_if_the_drone_stops_short_of_the_carrot():
     env.close()
 
 
+def test_set_route_mid_flight_follows_the_new_route():
+    """E4 re-planning: halfway, the drone gets a new route from where it is, via a detour 4 m to
+    the side; it follows the detour and still lands on its goal."""
+    env = make_env(route=True)
+    spawns = {'drone_0': [-8.0, 0.0, 1.0], 'drone_1': [8.0, 6.0, 1.0]}
+    goals = {'drone_0': [8.0, 0.0, 1.0], 'drone_1': [8.0, 2.0, 1.0]}
+    route = {'drone_0': [(-8.0, 0.0, 1.0), (-8.0, 0.0, 2.0), (8.0, 0.0, 2.0), (8.0, 0.0, 1.0)]}
+    env.start_episode(spawns, goals, obstacles=[], routes=route)
+    switched, ys, info = False, [], {}
+    for _ in range(2000):
+        pos = env.adapter.get_positions()
+        if not switched and pos[0][0] > -3.0:
+            x, y, z = (float(v) for v in pos[0])
+            env.set_route(0, [(x, y, z), (x, y, 2.0), (0.0, 4.0, 2.0), (8.0, 0.0, 2.0), (8.0, 0.0, 1.0)])
+            switched = True
+        c = env.adapter.goals['drone_0']
+        v = np.clip(1.5 * (c - pos[0]), -1.0, 1.0)
+        _, _, done, info = env.step({'drone_0': [*v, 0.0], 'drone_1': [0.0] * 4})
+        ys.append(env.adapter.get_positions()[0][1])
+        if info['drone_reached_goal'][0]:
+            break
+    assert switched and max(ys) > 2.5 and info['drone_reached_goal'][0]
+    env.close()
+
+
+def test_cancelled_drone_never_takes_off_and_the_episode_still_ends():
+    env = make_env()
+    env.start_episode(SPAWNS, GOALS, obstacles=[], departures={'drone_0': 0.0, 'drone_1': 2.0})
+    env.cancel(1)
+    t, info = fly_to_goals(env, 1500)
+    assert info['drone_reached_goal'][0] and not info['drone_reached_goal'][1]
+    assert env.waiting[1] and env.cancelled[1] and t < 1500
+    with pytest.raises(ValueError):
+        env.cancel(0)                                     # already flown: can't be called off
+    env.close()
+
+
 def test_off_by_default():
     env = make_env(schedule=False)
     with pytest.raises(ValueError):

@@ -32,6 +32,14 @@ Flow for one plan (first come, first served):
 A reservation is a set of keys (H3 cell, layer), each with time intervals (s). Two flights
 conflict when they share a key with overlapping intervals.
 
+Changing a booking (E4, utm/contingency.py): release(id, t) frees what a flight booked after t;
+replan(id, position, t) books a new plan from where the drone is now (no start pad, the climb or
+descent to the chosen layer starts at its current height); the first `grace` s are not checked
+(they are already happening: the onboard policy handles them), and if no option fits, the old
+booking is kept. A request with priority > 0 (an emergency) may take air booked by lower-priority
+flights: it is booked as if they weren't there; those still on the ground are re-submitted, and
+airborne ones are returned in Decision.displaced for re-planning from their positions.
+
 Scale (Settings) is the drone-sized sim world by default: H3 resolution 15 (0.6 m edge), 2 layers
 of 2 m from 1 m (cruise at 2 m and 4 m), separation target 2 m -> radius 1 m + 1.1 m tracking
 margin (the D7 route-following p99 cross-track error), cruise 1.5 m/s, climb 0.5 m/s,
@@ -82,7 +90,7 @@ class FlightPlan:
     goal: tuple
     layer: int = 0                    # preferred cruise layer
     t_earliest: float = 0.0           # s
-    priority: int = 0                 # informational for now (E4)
+    priority: int = 0                 # > 0: emergency, may displace lower-priority bookings (E4)
     operator: str = ''                # who flies it (E7 fairness between operators)
 
 
@@ -100,6 +108,7 @@ class Decision:
     reason: str = ''
     around_zones: bool = False        # flies the route around the no-fly zones
     blockers: list = field(default_factory=list)        # 'blocked' / 'zone:<id>' that were in the way
+    displaced: list = field(default_factory=list)       # airborne flights an emergency took air from (E4)
 
 
 def _merge(intervals):
@@ -127,6 +136,8 @@ class StrategicPlanner:
         self.zone_keys = {}               # 'zone:<id>' -> its (cell, layer) keys, routed around (D2)
         self.ledger = {}                  # (cell, layer) -> [(t0, t1, flight id)]
         self.decisions = []
+        self.plans = {}                   # flight id -> its FlightPlan (E4 re-planning)
+        self.current = {}                 # flight id -> its booked Decision now
         self._grids = {}
         self._centres = {}
         self._edge = self.sky.edge_length()
@@ -172,12 +183,13 @@ class StrategicPlanner:
             self._grids[cache] = Grid(occ, g.xs, g.ys, g.res)
         return self._grids[cache]
 
-    def route(self, start, goal, layer, avoid=frozenset()):
+    def route(self, start, goal, layer, avoid=frozenset(), snap=1.0):
         """Simplified D7 route (x, y) on the layer's map, or None. avoid: zone owners
-        ('zone:<id>', see zone_keys) to fly around."""
+        ('zone:<id>', see zone_keys) to fly around. snap: how far (m) start and goal may be from
+        the nearest free grid cell (a drone re-planned mid-air may be inside a zone's margin)."""
         avoid = frozenset(z for z in avoid if any(k == layer for _, k in self.zone_keys[z]))
         g = self._zone_grid(layer, avoid) if avoid else self._grid(layer)
-        p = plan(g, start, goal)
+        p = plan(g, start, goal, snap)
         return None if p is None else simplify(g, p)
 
     def cells_near(self, x, y):
@@ -194,16 +206,19 @@ class StrategicPlanner:
         return out
 
     # ------------------------------------------------------------- profile
-    def profile(self, route_xy, layer):
-        """Samples (tau, x, y, z) from departure (tau = 0) to arrival at start_z over the goal."""
+    def profile(self, route_xy, layer, z_start=None):
+        """Samples (tau, x, y, z) from departure (tau = 0) to arrival at start_z over the goal.
+        z_start: height the climb starts from (default start_z, a pad; E4 re-plans mid-air)."""
         s = self.s
-        z0, zl = s.start_z, self.layer_z(layer)
+        z0 = s.start_z if z_start is None else float(z_start)
+        zl = self.layer_z(layer)
         climb = abs(zl - z0) / s.v_climb
+        descent = abs(zl - s.start_z) / s.v_climb
         pts = np.asarray(route_xy, dtype=float)
         seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
         cum = np.concatenate([[0.0], np.cumsum(seg)])
         cruise = cum[-1] / s.v_cruise
-        total = 2 * climb + cruise
+        total = climb + cruise + descent
         out = []
         for tau in np.append(np.arange(0.0, total, s.dt), total):
             if tau < climb:
@@ -215,7 +230,7 @@ class StrategicPlanner:
                 x, y = pts[k] + t * (pts[k + 1] - pts[k])
                 z = zl
             else:
-                x, y, z = pts[-1, 0], pts[-1, 1], zl + (z0 - zl) * (tau - climb - cruise) / climb
+                x, y, z = pts[-1, 0], pts[-1, 1], zl + (s.start_z - zl) * (tau - climb - cruise) / descent
             out.append((float(tau), float(x), float(y), float(z)))
         return out, total
 
@@ -248,11 +263,16 @@ class StrategicPlanner:
         return {k: _merge(v) for k, v in out.items()}
 
     # ------------------------------------------------------------- ledger
-    def conflicts(self, reservation, fid=None):
+    def conflicts(self, reservation, fid=None, after=None):
         """Flight ids (or 'blocked') sharing a key with an overlapping interval. Owners in
-        exempt[fid] don't count (a flight authorised into a zone)."""
+        exempt[fid] don't count (a flight authorised into a zone), nor does fid itself; with
+        `after`, only the parts of the reservation from that time on are checked (E4: the next
+        seconds are already happening)."""
         hit = set()
-        skip = self.exempt.get(fid, ())
+        skip = set(self.exempt.get(fid, ())) | {fid}
+        if after is not None:
+            reservation = {k: [(max(lo, after), hi) for lo, hi in ivs if hi > after]
+                           for k, ivs in reservation.items()}
         for key, ivs in reservation.items():
             if key in self.blocked:
                 hit.add('blocked')
@@ -266,17 +286,36 @@ class StrategicPlanner:
             self.ledger.setdefault(key, []).extend((lo, hi, fid) for lo, hi in ivs)
 
     # ------------------------------------------------------------- submit
-    def submit(self, fp):
+    def submit(self, fp, now=None):
+        """Decide a request (first come, first served) and book it. A request with priority > 0
+        may displace lower-priority bookings: flights still on the ground at `now` (default: the
+        request's earliest departure) are re-submitted here; airborne ones are listed in
+        Decision.displaced, to be re-planned from their positions (utm/contingency.py)."""
+        self.plans[fp.id] = fp
+        before = dict(self.current)
+        d = self._submit(fp)
+        t = fp.t_earliest if now is None else now
+        for fid in list(d.displaced):
+            old = before.get(fid)
+            if old is not None and old.t_dep >= t:           # not flying yet: just file it again
+                p = self.plans[fid]
+                self._submit(FlightPlan(p.id, p.start, p.goal, p.layer, max(p.t_earliest, t),
+                                        p.priority, p.operator))
+                d.displaced.remove(fid)
+        return d
+
+    def _submit(self, fp, z_start=None, pad_start=True, after=None, max_delay=None, snap=1.0):
         s = self.s
+        max_delay = s.max_delay if max_delay is None else max_delay
         options = {}
         avoid = frozenset(self.zone_keys) - self.exempt.get(fp.id, set())
         for layer in range(s.n_layers):
-            direct = self.route(fp.start, fp.goal, layer)
-            around = self.route(fp.start, fp.goal, layer, avoid) if avoid else None
+            direct = self.route(fp.start, fp.goal, layer, snap=snap)
+            around = self.route(fp.start, fp.goal, layer, avoid, snap) if avoid else None
             for kind, r in ((0, direct), (1, around)):
                 if r is None or (kind == 1 and r == direct):
                     continue
-                prof, total = self.profile(r, layer)
+                prof, total = self.profile(r, layer, z_start)
                 options[layer, kind] = (r, total, self._relative_reservation(prof))
         if not options:
             d = Decision(fp.id, 'rejected', reason='no route on any layer')
@@ -285,33 +324,89 @@ class StrategicPlanner:
         fastest = min(fp.t_earliest + total for _, total, _ in options.values())
         cands = []
         for (layer, kind), (_, total, _) in options.items():
-            for delay in np.arange(0.0, s.max_delay + 1e-9, s.delay_step):
+            for delay in np.arange(0.0, max_delay + 1e-9, s.delay_step):
                 arrival = fp.t_earliest + delay + total
                 cost = (arrival - fastest) + s.layer_penalty * abs(layer - fp.layer)
                 cands.append((cost, float(delay), layer, kind))
         cands.sort()
-        start_cells, goal_cells = self.cells_near(*fp.start), self.cells_near(*fp.goal)
+        start_cells = self.cells_near(*fp.start) if pad_start else []
+        goal_cells = self.cells_near(*fp.goal)
         blockers = set()
         for cost, delay, layer, kind in cands:
             r, total, rel = options[layer, kind]
             t_dep = fp.t_earliest + delay
             res = self._absolute(rel, t_dep, start_cells, goal_cells, total)
-            hit = self.conflicts(res, fp.id)
+            hit = self.conflicts(res, fp.id, after)
             blockers |= {h for h in hit if h == 'blocked' or str(h).startswith('zone:')}
-            if not hit:
+            moved = sorted(h for h in hit if self._yields(h, fp))
+            if len(moved) == len(hit):                      # no clash, or only flights that give way
+                for h in moved:
+                    self.release(h, -INF)
                 self._book(fp.id, res)
                 zl = self.layer_z(layer)
-                wps = ([(r[0][0], r[0][1], s.start_z)] + [(x, y, zl) for x, y in r]
+                z0 = s.start_z if z_start is None else float(z_start)
+                wps = ([(r[0][0], r[0][1], z0)] + [(x, y, zl) for x, y in r]
                        + [(r[-1][0], r[-1][1], s.start_z)])
                 d = Decision(fp.id, 'approved', layer, t_dep, delay, t_dep + total, float(cost),
-                             wps, res, around_zones=bool(kind))
+                             wps, res, around_zones=bool(kind), displaced=moved)
                 self.decisions.append(d)
+                self.current[fp.id] = d
                 return d
-        why = f'no conflict-free option within {s.max_delay} s'
+        why = f'no conflict-free option within {max_delay} s'
         if blockers:
             why += ' (zones in the way: ' + ', '.join(sorted(blockers)) + ')'
         d = Decision(fp.id, 'rejected', reason=why, blockers=sorted(blockers))
         self.decisions.append(d)
+        return d
+
+    def _yields(self, owner, fp):
+        """Does a booking owner give way to this request? Only a flight of lower priority, and
+        only to an emergency (priority > 0); never a zone or an intruder's protective volume."""
+        if fp.priority <= 0 or owner == 'blocked' or str(owner).startswith(('zone:', 'intruder:')):
+            return False
+        other = self.plans.get(owner)
+        return other is not None and other.priority < fp.priority
+
+    # ------------------------------------------------------------- changing a booking (E4)
+    def release(self, fid, t):
+        """Free what flight fid has booked from time t on (its windows are cut at t)."""
+        for key in list(self.ledger):
+            kept = []
+            for lo, hi, owner in self.ledger[key]:
+                if owner != fid:
+                    kept.append((lo, hi, owner))
+                elif lo < t:
+                    kept.append((lo, min(hi, t), owner))
+            if kept:
+                self.ledger[key] = kept
+            else:
+                del self.ledger[key]
+
+    def replan(self, fid, position, t, grace=2.0, snap=3.5):
+        """Book a new plan for an airborne flight from its current position (x, y, z) at time t
+        to its original goal; the first `grace` s are not checked. It leaves now (a flying drone
+        can't wait on a pad: hovering in place would not be booked), so only the layer and the
+        route can change; its start may be up to `snap` m from free air (inside a zone's margin).
+        If a zone (or blocked air) is what keeps it from its goal, it returns to its start pad
+        instead (Decision.reason 'return to base'); traffic alone never sends it home. If nothing
+        fits, the old booking is restored and the rejected Decision returned."""
+        p = self.plans[fid]
+        ledger, current = {k: list(v) for k, v in self.ledger.items()}, self.current.get(fid)
+        self.release(fid, t)
+        here = (float(position[0]), float(position[1]))
+        for goal, note in ((p.goal, ''), (p.start, 'return to base')):
+            fp = FlightPlan(fid, here, goal, p.layer, float(t), p.priority, p.operator)
+            d = self._submit(fp, z_start=float(position[2]), pad_start=False, after=t + grace,
+                             max_delay=0.0, snap=snap)
+            if d.status == 'approved':
+                d.reason = note
+                break
+            if not d.blockers:                      # only traffic in the way: don't give up the goal
+                break
+        if d.status != 'approved':
+            self.ledger = ledger
+            if current is not None:
+                self.current[fid] = current
         return d
 
     def summary(self):

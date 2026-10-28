@@ -15,6 +15,8 @@ Same flights, routes, policy and noise seeds in both. Scored: arrived, crashed, 
 (pairs of airborne drones that ever came closer than 2.0 m and 1.4 m: E1's separation target
 and the policy's reaction distance), closest approach, E1's delays, and how late each drone
 settled on its goal pad compared with the planned arrival (late_s; E1 holds the pad pad_after s).
+In the e1 condition, E3's conformance monitor (utm/conformance.py) watches every airborne drone
+once per second against its booking: alerts by state, and flights with at least one alert.
 
 --zones FRAC adds temporary no-fly zones (D2, utm/airspace_zones.py): 10 m tiles covering about
 FRAC of the map, each closed for 20-40 s starting at a random time in the window. E1 plans around
@@ -49,8 +51,9 @@ from modules.goal_hold import GoalHoldPolicy, goal_hold_enabled    # noqa: E402
 from preview_route import load_map                                 # noqa: E402
 from preview_strategic import random_requests                      # noqa: E402
 from record_rollout import disable_all_collision_physics           # noqa: E402
+from utm.conformance import ConformanceMonitor                     # noqa: E402
 from utm.airspace_zones import apply_zones, random_block_zones, tile_blocks, zone_keys  # noqa: E402
-from utm.strategic_planner import StrategicPlanner                 # noqa: E402
+from utm.strategic_planner import Settings, StrategicPlanner       # noqa: E402
 
 NEAR = (2.0, 1.4)
 
@@ -117,11 +120,16 @@ def fly(cfg, args, layout, flights, mode, seed, sky=None, windows=None):
     min_sep = np.inf
     entered, inside_steps = set(), 0
     settled = np.full(n, np.nan)
+    monitor = ConformanceMonitor(sky) if mode == 'e1' and sky is not None else None
+    every = max(1, int(round(1.0 / dt)))
     info = {}
     for step in range(cfg['environment']['max_steps']):
         obs, _, done, info = env.step(policy.act(obs, env, n))
         air = np.flatnonzero(~(env.waiting | env.landed | env.crashed))
         settled[np.isnan(settled) & env.landed] = (step + 1) * dt
+        if monitor is not None and (step + 1) % every == 0:
+            pos = env.adapter.get_positions()
+            monitor.check((step + 1) * dt, {flights[i]['id']: pos[i] for i in air})
         if windows:
             t = (step + 1) * dt
             for i, (x, y, z) in zip(air, env.adapter.get_positions()[air]):
@@ -146,6 +154,7 @@ def fly(cfg, args, layout, flights, mode, seed, sky=None, windows=None):
             'pairs_below_2.0': len(close[2.0]), 'pairs_below_1.4': len(close[1.4]),
             'min_separation_m': None if min_sep == np.inf else round(min_sep, 3),
             'zone_entries': len(entered), 'zone_seconds': round(inside_steps * dt, 2),
+            'e3': None if monitor is None else {**monitor.summary(), 'events': monitor.events},
             'late_s': [None if np.isnan(t) else round(float(t - f['arrival'][mode]), 2)
                        for t, f in zip(settled, flights)]}
 
@@ -159,6 +168,11 @@ def main():
     ap.add_argument('--flights', type=int, default=20)
     ap.add_argument('--window', type=float, default=60.0, help='requested departures spread over this many s')
     ap.add_argument('--seeds', type=int, nargs='+', default=[20, 21, 22])
+    ap.add_argument('--radius', type=float, default=None,
+                    help="E1's safety radius (m; default Settings: 2.1 = 1.0 half-separation + 1.1 drift)")
+    ap.add_argument('--hold-engage', type=float, default=None,
+                    help='goal-hold engage distance (m) for these runs (config: 0.5); release = +0.2 m. '
+                         'E1 landings: drones can stall ~0.6 m from the goal, outside a 0.5 m zone')
     ap.add_argument('--zones', type=float, default=0.0,
                     help='fraction of the map under temporary no-fly zones (0 = none)')
     ap.add_argument('--out', default=None)
@@ -170,13 +184,17 @@ def main():
         cfg = yaml.safe_load(f)
     cfg.pop('scenario_mix', None)
     cfg['environment']['collision_physics'] = False
+    if args.hold_engage is not None:                        # this experiment only; config untouched
+        cfg.setdefault('goal_hold', {}).update(engage_dist=args.hold_engage,
+                                               release_dist=args.hold_engage + 0.2)
     cfg.setdefault('obstacles', {})['enabled'] = False      # the map layout is passed explicitly
 
     rows = []
     for seed in args.seeds:
         args.seed = seed
         layout, bounds = load_map(args)
-        sky = StrategicPlanner(layout, bounds)
+        settings = Settings() if args.radius is None else dataclasses.replace(Settings(), radius=args.radius)
+        sky = StrategicPlanner(layout, bounds, settings)
         zones = (temporary_zones(np.random.RandomState(1000 + seed), bounds, args.zones, args.window)
                  if args.zones else [])
         apply_zones(sky, zones)
@@ -209,6 +227,11 @@ def main():
           f"mean delay {np.mean([r['delay_mean_s'] for r in rows]):.1f} s, "
           f"rejected with a zone in the way {sum(r['rejected_by_zone'] for r in rows)}, "
           f"flown around zones {sum(r['around_zones'] for r in rows)}")
+    e3 = [r['e1']['e3'] for r in rows if r['e1'].get('e3')]
+    if e3:
+        by = {k: sum(x['by_state'][k] for x in e3) for k in e3[0]['by_state']}
+        print(f"E3 alerts (e1): {sum(x['alerts'] for x in e3)} on {sum(x['flights_alerted'] for x in e3)} of "
+              f"{sum(r['e1']['flights'] for r in rows)} flights; " + ', '.join(f'{k} {v}' for k, v in by.items() if v))
     for m in ('no_e1', 'e1'):
         late = np.array([x for r in rows for x in r[m]['late_s'] if x is not None])
         if len(late):
