@@ -13,7 +13,7 @@ format, and the link to the E1 strategic planner (utm/strategic_planner.py), wit
 Zones follow the ideas of EUROCAE ED-269 (UAS geographical zones) and India's Digital Sky
 red / yellow zones:
     restriction  'prohibited'    (red: nobody may fly there)
-                 'authorisation' (yellow: only flights in `authorised`; see TODO in apply_zones)
+                 'authorisation' (yellow: only flights in `authorised`)
     lower_m / upper_m            height band above ground (None = from the surface / no ceiling)
     active                       [[t0, t1], ...] sim-second windows; empty = permanent
     geometry                     polygon (local metres) or circle (centre + radius_m)
@@ -23,9 +23,11 @@ every cell that overlaps the zone, plus possibly a few that only come within a c
 of it (works for any simple polygon, convex or not). Layers: those whose height band overlaps the
 zone's band.
 
-Zone -> E1: permanent zones go into planner.blocked, temporary zones are booked in the planner's
-ledger as flight 'zone:<id>' over their windows, so E1 delays a flight until the zone ends exactly
-as it would for another flight. Routes do not avoid zones yet (part 2, routing masks after D7).
+Zone -> E1: permanent red zones go into planner.blocked; other zones are booked in the planner's
+ledger as flight 'zone:<id>' over their windows (forever when permanent), so E1 delays a flight
+until the zone ends exactly as it would for another flight, and lets a yellow zone's authorised
+flights through (planner.exempt). E1 also plans a route around the zones (planner.zone_keys) and
+picks between waiting and flying around by its cost.
 
 Rules and limits:
   1. Order: zones must be applied before any flight is submitted (apply_zones raises otherwise;
@@ -42,8 +44,10 @@ Rules and limits:
   3. Thin zones over-block: one row of ~1 m hexagons is wider than a thin strip, so a 0.5 m x 10 m
      strip blocks about 3.8x its area (3.3-4.1x depending on position and angle). Fine at our
      scale; noted for the report (tests: test_thin_strip_over_blocking_matches_docstring).
-  4. Yellow ('authorisation') zones are treated as prohibited by apply_zones for now. The E1 change
-     that lets the flights in zone.authorised through is coming in Aman's E1 PR.
+  4. Yellow ('authorisation') zones: the flights in zone.authorised get through (planner.exempt)
+     and keep their direct route; every other flight waits for the zone or flies around it, the
+     detour keeping the same buffer as rule 2 (E1 masks its route map wherever cells_near would
+     reach a zone cell).
 
 GeoJSON (RFC 7946) FeatureCollection, with two extra top-level members:
     "frame": "wgs84" (default; coordinates [lng, lat]) or "local_m" (coordinates [x, y] metres)
@@ -332,11 +336,11 @@ def zone_keys(zone, airspace, n_layers):
 # ------------------------------------------------------------------ zones -> E1
 def apply_zones(planner, zones):
     """Put zones into an E1 StrategicPlanner (call before any flight is submitted: E1 is first
-    come, first served). Permanent zones -> planner.blocked; temporary zones -> booked in the
-    ledger as 'zone:<id>' over their active windows. Returns {key: [zone ids]} for zones_hit().
-
-    TODO(E1): 'authorisation' zones are treated as 'prohibited' for now. Letting the flights in
-    zone.authorised through needs E1 to skip a zone's keys for those flight ids."""
+    come, first served). Permanent 'prohibited' zones -> planner.blocked; every other zone is
+    booked in the ledger as 'zone:<id>' over its active windows (forever when permanent), and the
+    flights in an 'authorisation' zone's `authorised` list are exempt from it (planner.exempt).
+    planner.zone_keys gets every zone's keys, so E1 also tries a route around them.
+    Returns {key: [zone ids]} for zones_hit()."""
     if planner.decisions:
         raise ValueError(f'apply_zones must run before any flight is submitted '
                          f'({len(planner.decisions)} already decided)')
@@ -348,11 +352,15 @@ def apply_zones(planner, zones):
         keys = zone_keys(z, planner.sky, planner.s.n_layers)
         for key in keys:
             index.setdefault(key, []).append(z.id)
-        if z.permanent:
+        planner.zone_keys[ZONE_PREFIX + z.id] = keys
+        if z.permanent and z.restriction == 'prohibited':
             planner.blocked |= keys
-        else:
-            windows = [tuple(w) for w in z.active]
-            planner._book(ZONE_PREFIX + z.id, {key: windows for key in keys})
+            continue
+        windows = [(-math.inf, math.inf)] if z.permanent else [tuple(w) for w in z.active]
+        planner._book(ZONE_PREFIX + z.id, {key: windows for key in keys})
+        if z.restriction == 'authorisation':
+            for fid in z.authorised:
+                planner.exempt.setdefault(fid, set()).add(ZONE_PREFIX + z.id)
     return index
 
 

@@ -34,15 +34,24 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from preview_route import draw_obstacle, load_map  # noqa: E402
+from envs.route_planner import build_grid  # noqa: E402
 from utm.strategic_planner import FlightPlan, Settings, StrategicPlanner  # noqa: E402
 
 LAYER_COLOURS = ["#2f6fb3", "#e08a1e", "#3a9a5b", "#a04ac0"]      # layer 0, 1, ...
 
 
-def random_requests(rng, sky, n, min_sep=3.0, window=30.0):
-    """n requests between free points of layer 0's map that have a route, pads >= min_sep apart."""
+def random_requests(rng, sky, n, min_sep=3.0, window=30.0, pad_clearance=1.5, edge=2.0):
+    """n requests between pads that have a route on layer 0, pads >= min_sep apart, each pad at
+    least pad_clearance from any building and edge from the map's border. (Pads hugging a wall,
+    as close as the route map allows (~0.5 m), made the policy hover ~1 m off instead of settling:
+    it keeps its trained distance from buildings. Real vertiports are not squeezed against walls
+    either; D2's examples sit 2-7 m from buildings.)"""
     g = sky._grid(0)
-    free = np.argwhere(~g.occ)
+    pad_map = build_grid(sky.layout, sky.bounds, g.res, pad_clearance)
+    (x0, x1), (y0, y1) = sky.bounds
+    gx, gy = np.meshgrid(g.xs, g.ys)
+    inside = (gx >= x0 + edge) & (gx <= x1 - edge) & (gy >= y0 + edge) & (gy <= y1 - edge)
+    free = np.argwhere(~g.occ & ~pad_map.occ & inside)
     pads, out, tries = [], [], 0
     while len(out) < n and tries < 50 * n:
         tries += 1

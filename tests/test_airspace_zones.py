@@ -157,8 +157,13 @@ def test_crop_example_loads_into_e1_with_the_crop_airspace():
     layout = load_osm_layout(CROP_LAYOUT)
     planner = StrategicPlanner(layout, B, airspace=sky)
     apply_zones(planner, zones)
-    perm = set().union(*(zone_keys(z, sky, 2) for z in zones if z.permanent))
-    assert planner.blocked == perm and perm
+    red = set().union(*(zone_keys(z, sky, 2) for z in zones
+                        if z.permanent and z.restriction == 'prohibited'))
+    assert planner.blocked == red and red
+    for z in zones:                                     # permanent yellow zones: booked forever
+        if z.permanent and z.restriction == 'authorisation':
+            for key in zone_keys(z, sky, 2):
+                assert (-np.inf, np.inf, 'zone:' + z.id) in planner.ledger[key]
     temp = zones[[z.id for z in zones].index('ecity_temp_street')]
     for key in zone_keys(temp, sky, 2):
         assert (120.0, 300.0, 'zone:ecity_temp_street') in planner.ledger[key]
@@ -328,9 +333,15 @@ def _temporary(t0, t1):
     return Zone('tmp', 'Street closure', active=[[t0, t1]], polygon=square(0, 0, 2))
 
 
+def _wall(active=()):
+    """A closure across the whole map: no way around it."""
+    return Zone('wall', 'Street closure', active=list(active),
+                polygon=[(-2, -25), (2, -25), (2, 25), (-2, 25)])
+
+
 def test_temporary_zone_delays_the_flight_until_it_ends():
     sky = StrategicPlanner([], B)
-    zone = _temporary(0.0, 20.0)
+    zone = _wall([[0.0, 20.0]])
     apply_zones(sky, [zone])
     d = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
     assert d.status == 'approved' and d.delay > 0
@@ -340,7 +351,7 @@ def test_temporary_zone_delays_the_flight_until_it_ends():
 
 def test_temporary_zone_beyond_max_delay_rejects():
     sky = StrategicPlanner([], B, Settings(max_delay=5.0))
-    apply_zones(sky, [_temporary(0.0, 40.0)])
+    apply_zones(sky, [_wall([[0.0, 40.0]])])
     assert sky.submit(FlightPlan('A', (-15, 0), (15, 0))).status == 'rejected'
 
 
@@ -363,6 +374,37 @@ def test_conflict_ids_map_back_to_zone_names():
     assert zones_hit(free.reservation, index, zones) == ['Hospital', 'Street closure']
 
 
+def _yellow(active=()):
+    return Zone('yel', 'Campus', 'authorisation', 'test', active=list(active), authorised=['ok'],
+                polygon=square(0, 0, 2))
+
+
+def test_authorised_flight_flies_through_a_permanent_yellow_zone():
+    sky = StrategicPlanner([], B)
+    apply_zones(sky, [_yellow()])
+    ok = sky.submit(FlightPlan('ok', (-15, 0), (15, 0)))
+    assert (ok.status, ok.delay) == ('approved', 0.0)
+    other = sky.submit(FlightPlan('other', (-15, 1), (15, 1)))
+    assert other.status == 'approved' and other.around_zones
+
+
+def test_authorised_flight_is_not_delayed_by_a_temporary_yellow_zone():
+    sky = StrategicPlanner([], B)
+    apply_zones(sky, [_yellow(active=[[0.0, 20.0]])])
+    assert sky.submit(FlightPlan('ok', (-15, 0), (15, 0))).delay == 0.0
+    assert sky.submit(FlightPlan('other', (-15, 0), (15, 0), t_earliest=0.0)).delay > 0
+
+
+def test_rejection_names_the_zone_in_the_way():
+    zones = [_wall()]
+    sky = StrategicPlanner([], B)
+    apply_zones(sky, zones)
+    d = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+    assert d.status == 'rejected' and d.blockers == ['blocked']
+    clear = sky.submit(FlightPlan('B', (-15, 15), (-15, -15)))
+    assert clear.status == 'approved' and clear.blockers == []
+
+
 def test_apply_zones_before_any_flight_only():
     sky = StrategicPlanner([], B)
     sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
@@ -372,11 +414,46 @@ def test_apply_zones_before_any_flight_only():
         apply_zones(StrategicPlanner([], B), [SQUARE, SQUARE])
 
 
-@pytest.mark.xfail(strict=True, reason="routes don't avoid zones yet: part 2 (D7 routing masks)")
+def _touches(d, zone, sky):
+    keys = zone_keys(zone, sky.sky, sky.s.n_layers)
+    return [key for key in d.reservation if key in keys]
+
+
 def test_flight_detours_around_a_permanent_zone():
     sky = StrategicPlanner([], B)
-    apply_zones(sky, [Zone('perm', 'Perm', polygon=square(0, 0, 3))])
-    assert sky.submit(FlightPlan('A', (-15, 0), (15, 0))).status == 'approved'
+    zone = Zone('perm', 'Perm', polygon=square(0, 0, 3))
+    apply_zones(sky, [zone])
+    d = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+    assert d.status == 'approved' and d.around_zones and d.delay == 0.0
+    assert not _touches(d, zone, sky)
+    assert max(abs(y) for _, y, _ in d.waypoints) > 3.0              # went around, not through
+
+
+def test_short_closure_waits_long_closure_detours():
+    """Cost decides: a closure ending soon is cheaper to wait out than a detour; a long one isn't."""
+    def closure(t1):
+        return Zone('tmp', 'Street closure', active=[[0.0, t1]], polygon=square(0, 0, 6))
+
+    short, long_ = closure(10.0), closure(50.0)
+    sky = StrategicPlanner([], B)
+    apply_zones(sky, [short])
+    wait = sky.submit(FlightPlan('A', (-20, 0), (20, 0)))
+    assert wait.status == 'approved' and not wait.around_zones and wait.delay > 0
+    sky = StrategicPlanner([], B)
+    apply_zones(sky, [long_])
+    go = sky.submit(FlightPlan('A', (-20, 0), (20, 0)))
+    assert go.status == 'approved' and go.around_zones and go.delay < 50.0
+    for key in zone_keys(long_, sky.sky, sky.s.n_layers):          # never inside while it is closed
+        assert all(lo >= 50.0 for lo, hi in go.reservation.get(key, ()))
+
+
+def test_authorised_flight_keeps_the_direct_route():
+    sky = StrategicPlanner([], B)
+    apply_zones(sky, [_yellow()])
+    ok = sky.submit(FlightPlan('ok', (-15, 0), (15, 0)))
+    assert not ok.around_zones and ok.delay == 0.0
+    other = sky.submit(FlightPlan('other', (-15, 18), (15, -18)))
+    assert other.status == 'approved' and other.around_zones
 
 
 # ------------------------------------------------------------------ D. generator
