@@ -154,6 +154,44 @@ def test_e1_pairs_by_flight_id_and_reports_both_levels(tmp_path):
     assert late['medium/e1']['n'] == 3 and late['medium/e1']['median_diff'] == pytest.approx(0.5)
 
 
+def test_mark_lost_makes_lost_control_a_failure():
+    rows = cc.mark_lost([
+        {'arrived': True, 'crashed': False, 'late_s': 1.0, 'max_tilt_deg': 61.0},   # lost, "arrived"
+        {'arrived': True, 'crashed': False, 'late_s': 2.0, 'max_tilt_deg': 60.0},   # exactly 60: not lost
+        {'arrived': False, 'crashed': True, 'late_s': None},                       # PyBullet: no tilt
+        {'settled': True, 'crashed': False, 'episode_crash': False, 'max_tilt_deg': 179.0}])
+    assert [r['lost'] for r in rows] == [True, False, False, True]
+    assert [r['crash_or_lost'] for r in rows] == [True, False, True, True]
+    assert (rows[0]['arrived'], rows[0]['late_s']) == (False, None)
+    assert (rows[1]['arrived'], rows[1]['late_s']) == (True, 2.0)
+    assert rows[3]['settled'] is False
+
+
+def test_lost_control_counts_as_failure_in_both_families(tmp_path):
+    wb = [dict(_flight(20, 'e1', 'f1', late=1.0), max_tilt_deg=80.0),       # arrived but lost control
+          dict(_flight(20, 'e1', 'f2', late=1.0), max_tilt_deg=5.0)]
+    pb = [_flight(20, 'e1', 'f1', late=1.0), _flight(20, 'e1', 'f2', late=1.0)]
+    _write(tmp_path, 'e1_wb_medium.rows.json', {'rows': wb})
+    _write(tmp_path, 'e1_pb_medium.rows.json', {'rows': pb})
+    out = cc.compare_e1(str(tmp_path))
+    fl = {r['metric']: r for r in out['flight'] if r['test'] == 'medium/e1'}
+    assert (fl['arrived']['wb'], fl['arrived']['pb'], fl['arrived']['only_pb']) == (1, 2, 1)
+    assert (fl['crash_or_lost']['only_wb'], fl['lost']['only_wb']) == (1, 1)
+    ep = {r['metric']: r for r in out['episode'] if r['test'] == 'medium/e1'}
+    assert (ep['all_arrived']['only_pb'], ep['any_crash_or_lost']['only_wb']) == (1, 1)
+    assert next(r for r in out['late_s'] if r['test'] == 'medium/e1')['n'] == 1     # f1 has no late_s
+    rate = next(r for r in out['flight_rates'] if r['test'] == 'medium/e1' and r['sim'] == 'wb')
+    assert (rate['crashed'], rate['crash_or_lost'], rate['lost_control']) == (0, 1, 1)
+    # routes: a settled flight that flipped is not settled; episode counts it as crash or lost
+    rw = _route_rows([[OK, OK]] * 2)
+    rw[0]['max_tilt_deg'] = 120.0
+    _write(tmp_path, 'routes_wb_easy.route.rows.json', {'rows': rw})
+    _write(tmp_path, 'routes_pb_easy.route.rows.json', {'rows': _route_rows([[OK, OK]] * 2)})
+    ro = cc.compare_routes(str(tmp_path))
+    e = {r['metric']: r for r in ro['episode'] if r['test'] == 'easy'}
+    assert (e['all_settled']['only_pb'], e['any_crash_or_lost']['only_wb'], e['any_lost']['wb']) == (1, 1, 1)
+
+
 def test_e1_approval_difference_is_flagged(tmp_path):
     _write(tmp_path, 'e1_wb_crop.rows.json', {'rows': [_flight(20, 'e1', 'a')]})
     _write(tmp_path, 'e1_pb_crop.rows.json', {'rows': [_flight(20, 'e1', 'a')]})
@@ -205,3 +243,29 @@ def test_cli_refuses_test_seeds_and_unknown_simulators(script):
     if script == 'eval_e1_flown.py':
         p = _cli(script, '--seeds', '20', '--worker-seed', '15', '--worker-mode', 'e1', '--worker-out', '/dev/null')
         assert p.returncode == 2 and 'reserved' in p.stderr
+
+
+def test_a_b_pairing_across_folders(tmp_path):
+    """A sensitivity variant (its own folder, prefix wb) against the original Webots run."""
+    orig, var = tmp_path / 'orig', tmp_path / 'var'
+    orig.mkdir(); var.mkdir()
+    o = [dict(_flight(20, 'e1', 'f1', late=3.0), max_tilt_deg=90.0), dict(_flight(20, 'e1', 'f2', late=2.0), max_tilt_deg=5.0)]
+    v = [dict(_flight(20, 'e1', 'f1', late=4.0), max_tilt_deg=8.0), dict(_flight(20, 'e1', 'f2', late=3.0), max_tilt_deg=5.0)]
+    trials = {'trials': [{'seed': 20, 'approved': 2, 'requested': 3}]}
+    _write(orig, 'e1_wb_medium.rows.json', {'rows': o}); _write(orig, 'e1_wb_medium.json', trials)
+    _write(var, 'e1_wb_medium.rows.json', {'rows': v}); _write(var, 'e1_wb_medium.json', trials)
+    out = cc.compare_e1('unused', (str(var), 'wb'), (str(orig), 'wb'))
+    fl = {r['metric']: r for r in out['flight'] if r['test'] == 'medium/e1'}
+    assert (fl['lost']['only_pb'], fl['arrived']['only_wb']) == (1, 1)       # variant fixed f1
+    assert out['approvals']['medium']['identical']
+    late = next(r for r in out['late_s'] if r['test'] == 'medium/e1')
+    assert late['n'] == 1 and late['median_diff'] == pytest.approx(1.0)     # f2 only (f1 lost in orig)
+    rep = tmp_path / 'rep'
+    p = subprocess.run([sys.executable, os.path.join(ROOT, 'scripts', 'c5_compare.py'), '--a', f'{var}:wb',
+                        '--b', f'{orig}:wb', '--label-a', 'latch', '--label-b', 'Webots', '--out', str(rep)],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    md = (rep / 'c5_compare.md').read_text()
+    assert md.startswith('# C5: latch vs Webots') and '| latch | Webots |' in md and 'median A-B' in md
+    assert subprocess.run([sys.executable, os.path.join(ROOT, 'scripts', 'c5_compare.py'), '--a', 'nocolon'],
+                          capture_output=True, text=True).returncode == 2

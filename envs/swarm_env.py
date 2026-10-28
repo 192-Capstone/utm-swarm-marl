@@ -83,6 +83,24 @@ class SwarmEnv:
         # at its goal it is parked again (landed). So a drone is only in the air during its own
         # flight, as E1 books it. Use with crash_mode remove. Off: nothing changes.
         self.schedule = bool((config['environment'].get('schedule') or {}).get('enabled', False))
+        # E1 landing options (C5; both off by default, None). Landing starts when a drone with an
+        # E1 layer profile first comes within LAND_RADIUS_M of its goal (horizontally).
+        #   land_latch_m: from then on its carrot stays the goal until it has landed, unless it
+        #                 drifts more than land_latch_m from the goal (then: route carrot again,
+        #                 and landing starts afresh at LAND_RADIUS_M). Off: the carrot is the goal
+        #                 only while the drone is within LAND_RADIUS_M (the carrot jumps back up to
+        #                 cruise height when it drifts just outside).
+        #   land_vz_max:  while landing (latched as above, or within LAND_RADIUS_M without a
+        #                 latch), its commanded vz is clipped to +-land_vz_max m/s; the clipped
+        #                 action is the one applied and recorded.
+        sch = config['environment'].get('schedule') or {}
+        self.land_latch_m = None if sch.get('land_latch_m') is None else float(sch['land_latch_m'])
+        self.land_vz_max = None if sch.get('land_vz_max') is None else float(sch['land_vz_max'])
+        if self.land_latch_m is not None and self.land_latch_m < LAND_RADIUS_M:
+            raise ValueError(f"schedule.land_latch_m ({self.land_latch_m}) must be >= LAND_RADIUS_M ({LAND_RADIUS_M})")
+        if self.land_vz_max is not None and self.land_vz_max < 0:
+            raise ValueError("schedule.land_vz_max must be >= 0")
+        self._landing = np.zeros(self.n_agents, dtype=bool)
         self.control_dt = float(config['environment'].get('control_timestep', 0.032))
         self.waiting = np.zeros(self.n_agents, dtype=bool)
         self.landed = np.zeros(self.n_agents, dtype=bool)
@@ -317,6 +335,7 @@ class SwarmEnv:
         else:
             self.departures = None
             self.waiting = np.zeros(self.n_agents, dtype=bool)
+        self._landing = np.zeros(self.n_agents, dtype=bool)
         self.followers = self._make_followers(spawns, goals, routes) if routes else None
         self._update_carrots()
 
@@ -403,6 +422,7 @@ class SwarmEnv:
         for key, f in self.followers.items():
             i = int(key.split('_')[1])
             if self.waiting[i] or self.landed[i] or self.crashed[i]:
+                self._landing[i] = False          # (all False unless a landing option is on)
                 continue                          # parked: not flying
             carrot = f.visible_target(positions[i], self._los_grid, min_dist=self.route_min_target)
             if key in self._cruise:               # E1 profile: vertical climb and landing at the pads
@@ -411,11 +431,26 @@ class SwarmEnv:
                     self._climbed[key] = True
                 if not self._climbed[key]:
                     carrot = np.array([f.w[0, 0], f.w[0, 1], zc])
-                elif np.hypot(*(positions[i][:2] - goal[:2])) < LAND_RADIUS_M:
-                    carrot = goal
+                elif self.land_latch_m is None and self.land_vz_max is None:   # default (unchanged)
+                    if np.hypot(*(positions[i][:2] - goal[:2])) < LAND_RADIUS_M:
+                        carrot = goal
+                else:                             # landing options: track the landing state
+                    d = np.hypot(*(positions[i][:2] - goal[:2]))
+                    if d < LAND_RADIUS_M:
+                        self._landing[i] = True
+                    elif self.land_latch_m is None or d > self.land_latch_m:
+                        self._landing[i] = False
+                    if self._landing[i]:
+                        carrot = goal
             self.adapter.goals[key] = np.asarray(carrot, dtype=np.float32)
 
     def step(self, actions_dict):
+        if self.land_vz_max is not None and self._landing.any():   # E1 landing: limit vz
+            actions_dict = dict(actions_dict)
+            for i in np.flatnonzero(self._landing):
+                a = np.array(actions_dict[f'drone_{i}'], dtype=np.float32)
+                a[2] = np.clip(a[2], -self.land_vz_max, self.land_vz_max)
+                actions_dict[f'drone_{i}'] = a
         # 1. apply actions + advance the simulator
         self.adapter.apply_actions(actions_dict)
         self.adapter.step_simulation()

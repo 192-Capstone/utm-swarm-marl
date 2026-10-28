@@ -31,6 +31,8 @@ Seeds 10-19 are refused (reserved for test runs).
 C5 (PyBullet vs Webots):
     --simulator pybullet (default) | webots_l2_multi (envs/webots_l2_multi.py; Webots log next
                 to the output, <out stem>.s<seed>.<mode>.webots.log)
+    --land-latch-m / --land-vz-max   E1 landing options (envs/swarm_env.py, both off by default;
+                sensitivity runs): keep the carrot on the goal once landing / limit vz while landing
 Each (seed, condition) is flown in its OWN subprocess (one Webots connection per Python process,
 and the number of drones changes from trial to trial); the trial (map, zones, requests, E1's
 plan) is drawn again there from the same seed and checked against this process's (digest).
@@ -124,7 +126,11 @@ def per_flight(flights, mode, reached, crashed, entered, close, settled, stats=N
 def fly(cfg, args, layout, flights, mode, seed, sky=None, windows=None):
     n = len(flights)
     cfg = json.loads(json.dumps(cfg))
-    cfg['environment'].update(n_agents=n, crash_mode='remove', schedule={'enabled': True},
+    sch = {'enabled': True}
+    for k in ('land_latch_m', 'land_vz_max'):               # C5 landing options (absent = off)
+        if getattr(args, k, None) is not None:
+            sch[k] = getattr(args, k)
+    cfg['environment'].update(n_agents=n, crash_mode='remove', schedule=sch,
                               route_follow={'enabled': True})
     dt = cfg['environment'].get('control_timestep', 0.032)
     last = max(f[mode][0] for f in flights)
@@ -238,6 +244,11 @@ def main():
                     help='fraction of the map under temporary no-fly zones (0 = none)')
     ap.add_argument('--out', default=None)
     ap.add_argument('--simulator', choices=['pybullet', 'webots_l2_multi'], default='pybullet')
+    ap.add_argument('--land-latch-m', type=float, default=None,
+                    help='environment.schedule.land_latch_m: once landing, the carrot stays the goal '
+                         'unless the drone drifts beyond this many m (default: off)')
+    ap.add_argument('--land-vz-max', type=float, default=None,
+                    help='environment.schedule.land_vz_max: |vz| limit in m/s while landing (default: off)')
     ap.add_argument('--worker-seed', type=int, default=None, help=argparse.SUPPRESS)
     ap.add_argument('--worker-mode', default=None, help=argparse.SUPPRESS)
     ap.add_argument('--worker-out', default=None, help=argparse.SUPPRESS)
@@ -246,6 +257,9 @@ def main():
         ap.error('seeds 10-19 are reserved for test runs')
     worker = (args.worker_seed, args.worker_mode, args.worker_out)
     del args.worker_seed, args.worker_mode, args.worker_out
+    for k in ('land_latch_m', 'land_vz_max'):               # off: not in the args block (output unchanged)
+        if getattr(args, k) is None:
+            delattr(args, k)
     if worker[0] is not None and 10 <= worker[0] <= 19:
         ap.error('seeds 10-19 are reserved for test runs')
     path = args.out or os.path.join('eval_results', 'e1_flown',
