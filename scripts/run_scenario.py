@@ -14,7 +14,10 @@ E6, system integration: one command runs the whole system on one scenario (utm/s
 The flying, monitoring and E4 loop is eval_layered.py's fly(), so a scenario run and the
 evaluations behave the same. Prints the results and E7's metrics; writes the recording.
 sim.simulator webots_l2_multi flies it in Webots (C5; DISPLAY set, one run per process).
-C5's landing options are on by default here (sim.land_latch_m 2.4, sim.land_vz_max 0.5).
+C5's landing options are on by default here (sim.land_latch_m 2.4, sim.land_vz_max 0.5), and
+two found in Webots: E1 holds a landing pad 10 s after arrival (utm.pad_after; E1's default 7 s
+is PyBullet's p99 landing) and a drone waits above its pad while another is low over it
+(sim.land_wait_clear_m 1.5).
 """
 
 import argparse
@@ -41,7 +44,7 @@ from utm.airspace_zones import Zone                                # noqa: E402
 from utm.demand import DemandSettings, generate_demand             # noqa: E402
 from utm.flight_log import FlightLog                               # noqa: E402
 from utm.metrics import safety_per_flight_hour, system_metrics     # noqa: E402
-from utm.strategic_planner import StrategicPlanner                 # noqa: E402
+from utm.strategic_planner import Settings, StrategicPlanner       # noqa: E402
 
 
 def requests(sc, layout, bounds, sky):
@@ -111,7 +114,7 @@ def run(sc, record=None):
     ns = types.SimpleNamespace(**sc['map'])
     ns.level, ns.seed = sc['map'].get('level', 'medium'), sc['map'].get('seed', 0)
     layout, bounds = load_map(ns)
-    sky = StrategicPlanner(layout, bounds)
+    sky = StrategicPlanner(layout, bounds, Settings(pad_after=float(sc['utm']['pad_after'])))
     reqs = requests(sc, layout, bounds, sky)
     op = {fp.id: fp.operator for fp in reqs}
     decisions, flights = plans(sky, reqs)
@@ -134,7 +137,7 @@ def run(sc, record=None):
     ckpt = checkpoint_path(sc['sim']['checkpoint']) if sc['sim']['pilot'] == 'learned' else sc['sim']['checkpoint']
     args = types.SimpleNamespace(checkpoint=ckpt, horizon=20.0, risk=sc['utm']['risk'],
                                  simulator=sc['sim']['simulator'], land_latch_m=sc['sim']['land_latch_m'],
-                                 land_vz_max=sc['sim']['land_vz_max'],
+                                 land_vz_max=sc['sim']['land_vz_max'], land_wait_clear_m=sc['sim']['land_wait_clear_m'],
                                  telemetry=sc['utm']['telemetry'], zone_at=None,
                                  extra_time=60.0 + sum(float(z.get('for') or 60.0) for z in sc['zones']))
     rec = FlightLog(sc)

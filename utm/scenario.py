@@ -21,9 +21,12 @@ for the dashboard. YAML, every key optional except map (defaults below).
       - {at: 40, polygon: [[x, y], ...]}         #   a given outline (local m), permanent
     emergencies:                     # emergency flights: filed at t with priority (E4 makes room)
       - {t: 30, start: [x, y], goal: [x, y], priority: 1}
-    utm:  {mode: e4, risk: booking, telemetry: null}   # mode: no_e1 | e1 | e4; telemetry [noise, delay, loss]
+    utm:  {mode: e4, risk: booking, telemetry: null,   # mode: no_e1 | e1 | e4; telemetry [noise, delay, loss]
+           pad_after: 10}                    # s E1 holds a landing pad after arrival (E1 default 7:
+                                             #   PyBullet's p99 landing; Webots lands ~2 s later)
     sim:  {config: ..., checkpoint: ..., pilot: learned, simulator: pybullet,   # or webots_l2_multi (C5)
-           land_latch_m: 2.4, land_vz_max: 0.5}       # C5's landing options (null: off)
+           land_latch_m: 2.4, land_vz_max: 0.5,          # C5's landing options (null: off)
+           land_wait_clear_m: 1.5}           # hold above the pad while another drone is low over it
     record: eval_results/scenarios/ecity_demo.json.gz
 
 Seeds 10-19 are refused (reserved for test runs), as in the evaluation scripts.
@@ -42,10 +45,11 @@ DEFAULTS = {
     'zone': None,
     'zones': [],
     'emergencies': [],
-    'utm': {'mode': 'e4', 'risk': 'booking', 'telemetry': None},
+    'utm': {'mode': 'e4', 'risk': 'booking', 'telemetry': None, 'pad_after': 10.0},
     'sim': {'config': 'configs/config_stage2_round7_eval_goalhold.yaml',
             'checkpoint': '../utm-swarm-marl/checkpoints/stage2_r1_crowd_rl_r7v3ft_s0_lab/checkpoint_final.pth',
-            'pilot': 'learned', 'simulator': 'pybullet', 'land_latch_m': 2.4, 'land_vz_max': 0.5},
+            'pilot': 'learned', 'simulator': 'pybullet', 'land_latch_m': 2.4, 'land_vz_max': 0.5,
+            'land_wait_clear_m': 1.5},
     'record': None,
 }
 MODES, RISKS, PILOTS = ('no_e1', 'e1', 'e4'), ('booking', 'intent'), ('simple', 'blind', 'learned')

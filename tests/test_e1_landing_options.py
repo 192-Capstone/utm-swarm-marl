@@ -151,3 +151,30 @@ def test_bad_values_are_refused():
         make_env(land_latch_m=LAND_RADIUS_M - 0.1)
     with pytest.raises(ValueError):
         make_env(land_vz_max=-0.1)
+
+
+def carrot_with_drone_1_at(env, q):
+    """drone_1 (no route) placed at q, drone_0 at cruise 0.5 m from its goal; drone_0's carrot."""
+    env.adapter.place(1, q)
+    env.adapter.place(0, [GOALS['drone_0'][0] - 0.5, 0.0, 4.0])
+    env.step(ZERO)
+    return np.asarray(env.adapter.goals['drone_0'], dtype=float)
+
+
+def test_wait_clear_holds_above_a_pad_another_drone_is_low_over():
+    env = make_env(land_wait_clear_m=1.5)
+    busy = carrot_with_drone_1_at(env, [8.0, 0.3, 1.2])           # drone_1 still settling on the pad
+    assert np.allclose(busy, [8.0, 0.0, 4.0])                     # hold at cruise above the pad
+    assert not env._landing[0]
+    clear = carrot_with_drone_1_at(env, [8.0, 6.0, 1.2])          # gone: land
+    assert np.allclose(clear, GOALS['drone_0'])
+    env.close()
+
+
+def test_wait_clear_ignores_a_drone_passing_at_cruise_and_is_off_by_default():
+    env = make_env(land_wait_clear_m=1.5)
+    assert np.allclose(carrot_with_drone_1_at(env, [8.0, 0.3, 4.0]), GOALS['drone_0'])   # not low: lands
+    env.close()
+    env = make_env()                                              # off: lands onto the busy pad
+    assert np.allclose(carrot_with_drone_1_at(env, [8.0, 0.3, 1.2]), GOALS['drone_0'])
+    env.close()
