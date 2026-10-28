@@ -30,6 +30,22 @@ off by about the same amount for a while), which a predictor finds harder to ave
 Defaults are a perfect link (no noise, no delay, no loss): the UTM then sees the true positions,
 as before E2. In Webots the reports can instead come from the drones themselves over a simulated
 radio (Emitter -> Receiver); they use the same format, and receive() / latest work the same.
+
+RadioTelemetry is that radio (option 3: envs/webots_l2_multi.py with webots.radio.enabled,
+envs/radio_msg.py), with TelemetryModel's interface, so the eval switches with one line:
+
+    tm = RadioTelemetry(env.adapter, ids)    # ids[i]: the flight id of drone_i
+
+    send(t, states)   sends each drone in states its intent (UTM -> drone, ~ once per second as
+                      the eval calls it); the true pos / vel in states are IGNORED: the drones
+                      report their own GPS, on their own clock (once per period while flying)
+    receive(t)        the reports that arrived since the last call (the adapter stamps
+                      t_received each control step, so t is not used), ids mapped to flight ids;
+                      updates latest
+    sent, lost        from the drones' seq numbers: sent = sum over drones of (highest seq heard
+                      + 1), lost = sent - received. Blind spot: a lost LAST report (or all of a
+                      drone's reports) is not seen, so lost can be undercounted by up to one
+                      report per drone.
 """
 
 from dataclasses import dataclass, field
@@ -80,11 +96,60 @@ class TelemetryModel:
                 r.t_received = float(a)
                 got.append(r)
         self._queue = [(a, r) for a, r in self._queue if a > t + 1e-9]
-        for r in got:
-            if r.id not in self.latest or r.t_sent >= self.latest[r.id].t_sent:
-                self.latest[r.id] = r
+        _update_latest(self.latest, got)
         return got
 
     def forget(self, fid):
         """Drop a drone that has landed or crashed (it stops reporting)."""
         self.latest.pop(fid, None)
+
+
+def _update_latest(latest, got):
+    for r in got:
+        if r.id not in latest or r.t_sent >= latest[r.id].t_sent:
+            latest[r.id] = r
+
+
+class RadioTelemetry:
+    """The UTM's side of the Webots radio, as a drop-in for TelemetryModel. adapter: anything
+    with reports() (Reports with ids drone_i) and send_intent(i, intent); ids[i] is drone_i's
+    flight id."""
+
+    def __init__(self, adapter, ids):
+        self.adapter = adapter
+        self.ids = list(ids)
+        if len(set(self.ids)) != len(self.ids):
+            raise ValueError('RadioTelemetry: flight ids must be unique')
+        self._index = {fid: i for i, fid in enumerate(self.ids)}
+        self._fid = {f'drone_{i}': fid for i, fid in enumerate(self.ids)}
+        self.latest = {}
+        self.received = 0
+        self._max_seq = {}                # flight id -> highest seq heard
+
+    def send(self, t, states):
+        """states: {flight id: (pos, vel, intent)}: each drone is sent its intent (pos, vel unused)."""
+        for fid, (_, _, intent) in states.items():
+            self.adapter.send_intent(self._index[fid], [list(map(float, q)) for q in intent])
+
+    def receive(self, t):
+        """The reports that arrived since the last call (oldest first); also updates latest."""
+        got = []
+        for r in self.adapter.reports():
+            fid = self._fid[r.id]
+            got.append(Report(fid, r.t_sent, r.pos, r.vel, r.intent, r.seq, r.t_received))
+            self._max_seq[fid] = max(self._max_seq.get(fid, -1), r.seq)
+        self.received += len(got)
+        _update_latest(self.latest, got)
+        return got
+
+    def forget(self, fid):
+        """Drop a drone that has landed or crashed (it stops reporting)."""
+        self.latest.pop(fid, None)
+
+    @property
+    def sent(self):
+        return sum(s + 1 for s in self._max_seq.values())
+
+    @property
+    def lost(self):
+        return self.sent - self.received

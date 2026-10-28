@@ -55,6 +55,20 @@ Both update the cached state at once (SwarmEnv reads positions right after).
 Buildings are only rebuilt when the layout changes (webots.reuse_layout, default true): the
 same layout (E-City crop, both conditions of an E1 trial) keeps its nodes. They are visual
 only, so this changes nothing in the flight.
+
+E2 radio (webots.radio, off by default; envs/radio_msg.py):
+    webots.radio: {enabled: false, period_s: 1.0, noise_m: 0.0, seed: 20, range_m: 200.0}
+With it on, every drone is imported with an Emitter (range range_m) and a Receiver in its
+extensionSlot and "--radio" controllerArgs: it reports its own GPS position, velocity and
+intent once per period_s while flying (never while held or parked). The supervisor's Receiver
+"utm_rx" (in the world file, inert when off) is emptied every control step; reports() returns
+what arrived since the last call as utm/telemetry.py Reports (id drone_i, times in EPISODE time:
+seconds since the release, as SwarmEnv counts them; reports from another episode are dropped).
+send_intent(i, intent) sends drone i its intent on the shared downlink. range_m is measured from
+the supervisor (the origin): parked drones (>= 1.4 km away) are out of range as well as silent.
+The state SwarmEnv sees is still the TRUE state; the radio is what the UTM hears
+(utm/telemetry.py RadioTelemetry). With it off, the drone nodes, their commands and the
+supervisor's devices are exactly as before.
 """
 
 import os
@@ -64,13 +78,33 @@ import numpy as np
 
 from envs import lidar as lidar_mod
 from envs.cf_velocity_pid import format_command
+from envs.radio_msg import (radio_config, controller_args, decode_report, encode_intent,
+                            UPLINK, DOWNLINK)
 from envs.webots_adapter import WebotsAdapter, ROOT, _euler_from_matrix, _note_lag_ignored
+from utm.telemetry import Report
 
 L2_MULTI_WORLD = os.path.join(ROOT, 'webots', 'worlds', 'swarm_l2_multi.wbt')
 DRONE_NODE = """DEF DRONE_{i} Crazyflie {{
   translation {x} 0 0.015
   name "drone_{i}"
   controller "cf_velocity"
+}}"""
+DRONE_RADIO_NODE = """DEF DRONE_{i} Crazyflie {{
+  translation {x} 0 0.015
+  name "drone_{i}"
+  controller "cf_velocity"
+  controllerArgs [ {args} ]
+  extensionSlot [
+    Emitter {{
+      name "radio_tx"
+      channel {up}
+      range {range}
+    }}
+    Receiver {{
+      name "radio_rx"
+      channel {down}
+    }}
+  ]
 }}"""
 DROP_CHECK_STEPS = 16          # control steps after release (0.51 s)
 DROP_LIMIT = 0.3               # m; free fall covers this in 0.25 s
@@ -87,6 +121,15 @@ def park_spot(i):
     return [PARK_X0 + PARK_DX * i, PARK_Y, PARK_Z]
 
 
+def drone_node(i, rc=None):
+    """The node string of drone i (on the ground at x = 2 i); with the radio on (rc: an enabled
+    radio_config), with its radio devices and controllerArgs."""
+    if rc is None or not rc['enabled']:
+        return DRONE_NODE.format(i=i, x=2.0 * i)
+    args = ' '.join(f'"{a}"' for a in controller_args(rc))
+    return DRONE_RADIO_NODE.format(i=i, x=2.0 * i, args=args, up=UPLINK, down=DOWNLINK, range=rc['range_m'])
+
+
 def layout_key(layout):
     """Exact, hashable form of a layout (what the building nodes are made from)."""
     return tuple((ob['type'], tuple(float(v) for v in ob['center']),
@@ -95,6 +138,8 @@ def layout_key(layout):
 
 
 class WebotsL2MultiAdapter(WebotsAdapter):
+    _rx = _tx = None                                        # radio devices: None = radio off
+
     def __init__(self, config, gui: bool = False):
         config = dict(config)
         w = dict(config.get('webots') or {})
@@ -124,6 +169,7 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         self.goals, self.layout, self._heading = {}, [], {}
         self.lidar_cfg = lidar_mod.lidar_config(config)
         _note_lag_ignored(config)
+        self.radio = radio_config(w)                        # E2 radio (off by default)
 
         self._start_webots(gui, w)                          # inherited: own port, writes w['log']
         self.basic_ms = int(round(self.sup.getBasicTimeStep()))
@@ -138,8 +184,17 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         n = self.n_agents
         self.nodes, self._tr, self._rot, self._cd, self.drone_ids = [None] * n, [None] * n, [None] * n, [None] * n, [None] * n
         for i in range(n):                                  # on the ground, 2 m apart, motors off
-            self._drones_root.importMFNodeFromString(-1, DRONE_NODE.format(i=i, x=2.0 * i))
+            self._drones_root.importMFNodeFromString(-1, drone_node(i, self.radio))
             self._attach(i)
+        self._rx = self._tx = None
+        self._t0 = 0.0                                      # Webots time of the release (episode t = 0)
+        self._inbox = []                                    # radio reports not yet returned by reports()
+        self.radio_rejected = 0                             # reports from another episode, dropped
+        if self.radio['enabled']:
+            self._rx = self.sup.getDevice('utm_rx')
+            self._rx.enable(self.basic_ms)
+            self._tx = self.sup.getDevice('utm_tx')
+            self._tx.setRange(self.radio['range_m'])
         self.reimport_log = []                              # (episode about to start, [drones re-imported])
         self._reimported_now = []                           # drones re-imported before this episode
         self.ep = 0
@@ -169,7 +224,7 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         """Remove drone i (its controller is terminated) and import a fresh one."""
         self.nodes[i].remove()
         self.sup.step(self.basic_ms)
-        self._drones_root.importMFNodeFromString(-1, DRONE_NODE.format(i=i, x=2.0 * i))
+        self._drones_root.importMFNodeFromString(-1, drone_node(i, self.radio))
         self._attach(i)
 
     def reset_world(self, spawn_positions: dict, goal_positions: dict, obstacles=None):
@@ -212,6 +267,10 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         self._pending.clear()
         self._reset_stats()
         self._read_state()                                  # L2 117
+        if self._rx is not None:                            # radio: a fresh inbox, episode time from now
+            self._inbox = []                                # (the last episode's: not collected, dropped)
+            self._t0 = self.sup.getTime()
+            self._drain()                                   # the old episode's are rejected, the release reports kept
 
     def _build_obstacles(self, layout):
         """Rebuild the buildings only when the layout changed (reuse_layout)."""
@@ -293,6 +352,35 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         self._max_roll = np.maximum(self._max_roll, np.abs(self._orn[:, 0]))
         self._max_pitch = np.maximum(self._max_pitch, np.abs(self._orn[:, 1]))
         self._max_speed = np.maximum(self._max_speed, np.linalg.norm(self._vel, axis=1))
+        if self._rx is not None:
+            self._drain()
+
+    # ---------------------------------------------------------------- radio (E2)
+    def _drain(self):
+        """Move the reports that arrived into the inbox, stamped with the time now."""
+        rx, now = self._rx, self.sup.getTime() - self._t0
+        while rx.getQueueLength() > 0:
+            d = decode_report(rx.getString())
+            rx.nextPacket()
+            if d['ep'] != self.ep:
+                self.radio_rejected += 1
+                continue
+            self._inbox.append(Report(d['id'], d['t'] - self._t0, np.array(d['p']), np.array(d['v']),
+                                      d['i'], d['seq'], now))
+
+    def reports(self):
+        """The radio reports received since the last call (oldest first), ids drone_i,
+        t_sent / t_received in episode time."""
+        if self._rx is None:
+            raise RuntimeError('webots_l2_multi: reports() needs webots.radio.enabled')
+        got, self._inbox = self._inbox, []
+        return got
+
+    def send_intent(self, i, intent):
+        """Send drone i its intent [[t, x, y, z], ...] (episode time) over the radio."""
+        if self._tx is None:
+            raise RuntimeError('webots_l2_multi: send_intent() needs webots.radio.enabled')
+        self._tx.send(encode_intent(f'drone_{int(i)}', self.ep, intent))
 
     def _read_state(self):                                  # L2 124-127, every drone
         for i, nd in enumerate(self.nodes):

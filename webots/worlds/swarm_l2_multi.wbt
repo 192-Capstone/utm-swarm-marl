@@ -4,7 +4,7 @@
 # runtime, each with controller "cf_velocity" (webots/controllers/cf_velocity: Bitcraze's velocity
 # PID onboard, commands via customData). Same real sky, grass and buildings (visual only, no
 # bounding objects: LiDAR and crash checks stay analytic). Assets are fetched by Webots from
-# cyberbotics/webots R2025a.
+# cyberbotics/webots R2025a. The supervisor carries the UTM's radio (E2, off unless enabled).
 
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
@@ -40,6 +40,18 @@ DEF SUPERVISOR Robot {
   name "swarm_supervisor"
   controller "<extern>"
   supervisor TRUE
+  children [
+    # E2 radio (envs/radio_msg.py): inert unless webots.radio.enabled (the adapter then enables
+    # utm_rx and sets utm_tx's range); no physics, no bounding object
+    Receiver {
+      name "utm_rx"
+      channel 100
+    }
+    Emitter {
+      name "utm_tx"
+      channel 101
+    }
+  ]
 }
 DEF DRONES Group {
 }
