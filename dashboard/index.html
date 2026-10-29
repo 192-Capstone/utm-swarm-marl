@@ -269,7 +269,8 @@ renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadow
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 600);
 const controls = new OrbitControls(camera, canvas);
-controls.enableDamping = true; controls.enabled = false; controls.maxPolarAngle = Math.PI * 0.47;
+controls.enableDamping = true; controls.dampingFactor = 0.15; controls.zoomToCursor = true; controls.zoomSpeed = 1.4;
+controls.enabled = false; controls.maxPolarAngle = Math.PI * 0.47; controls.minDistance = 3;
 const hemi = new THREE.HemisphereLight(0xffffff, 0xcfcac0, 1.25); scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(-40, 70, 30); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
@@ -289,22 +290,37 @@ for (const v of Object.values(D.routes)) for (const x of v) for (const p of x.ro
 const ax0 = Math.min(...act.map(p => p[0])) - 15, ax1 = Math.max(...act.map(p => p[0])) + 15;
 const ay0 = Math.min(...act.map(p => p[1])) - 15, ay1 = Math.max(...act.map(p => p[1])) + 15;
 const acx = (ax0 + ax1) / 2, acy = (ay0 + ay1) / 2, aspan = Math.max(ax1 - ax0, ay1 - ay0, 50);
-const SC = aspan / 65, DS = Math.min(3, Math.max(1, SC * 0.55)), PS = Math.min(2.2, DS);
+const SC = aspan / 65, DS = Math.min(2, Math.max(1, SC * 0.45)), PS = Math.min(2.2, Math.max(1, SC * 0.55));
 camera.far = Math.max(600, aspan * 5); camera.updateProjectionMatrix();
 Object.assign(sun.shadow.camera, { left: -aspan * 0.7, right: aspan * 0.7, top: aspan * 0.7, bottom: -aspan * 0.7, far: aspan * 4 + 200 });
 sun.position.set(acx - 40 * SC, 70 * SC, -acy + 30 * SC); sun.target.position.set(acx, 0, -acy); scene.add(sun.target);
-const groundMat = new THREE.MeshStandardMaterial({ roughness: 1 });
+// textures, drawn here in grey so the theme colours tint them: a fine surface grain with a 10 m grid
+// on the ground, rows of windows on the walls (roofs plain)
+function canvasTex(w, h, draw) { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy(); return t; }
+const groundTex = canvasTex(256, 256, (g, w, h) => { g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 2600; i++) { const v = 228 + Math.floor(Math.random() * 27); g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(Math.random() * w, Math.random() * h, 2, 2); }
+  g.strokeStyle = 'rgba(0,0,0,0.10)'; g.lineWidth = 2; g.strokeRect(0, 0, w, h); });
+groundTex.repeat.set(span * 4 / 10, span * 4 / 10);
+const wallTex = canvasTex(64, 64, (g, w, h) => { g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.fillStyle = '#d4d4d4';
+  for (let y = 10; y < h; y += 24) for (let x = 6; x < w; x += 16) g.fillRect(x, y, 9, 12);
+  g.fillStyle = '#ececec'; g.fillRect(0, 0, w, 3); });
+const groundMat = new THREE.MeshStandardMaterial({ roughness: 1, map: groundTex });
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(span * 4, span * 4), groundMat);
 ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; ground.position.set(cx, 0, -cy); scene.add(ground);
 const plotMat = new THREE.MeshStandardMaterial({ roughness: 1 });
 const plot = new THREE.Mesh(new THREE.PlaneGeometry(bx1 - bx0, by1 - by0), plotMat);
 plot.rotation.x = -Math.PI / 2; plot.position.set(cx, 0.005, -cy); plot.receiveShadow = true; scene.add(plot);
 
-const bMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0 });
+const bMat = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 });          // the roofs
+const wallMats = [];                                 // walls: a window texture scaled to each building (3 m storeys)
 const eMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.55 });
 for (const b of D.map.buildings) {
   const g = new THREE.BoxGeometry(2 * b.h[0], b.z, 2 * b.h[1]);
-  const m = new THREE.Mesh(g, bMat); m.castShadow = m.receiveShadow = true;
+  const tex = wallTex.clone(); tex.needsUpdate = true; tex.repeat.set(Math.max(1, Math.round((b.h[0] + b.h[1]) / 2)), Math.max(1, Math.round(b.z / 3)));
+  const wall = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0, map: tex }); wallMats.push(wall);
+  const m = new THREE.Mesh(g, [wall, wall, bMat, bMat, wall, wall]); m.castShadow = m.receiveShadow = true;
   m.position.set(b.c[0], b.z / 2, -b.c[1]); m.rotation.y = b.yaw; scene.add(m);
   const e = new THREE.LineSegments(new THREE.EdgesGeometry(g), eMat); e.position.copy(m.position); e.rotation.copy(m.rotation); scene.add(e);
 }
@@ -343,7 +359,7 @@ const HX = D.hex.cells, hexMat = new THREE.MeshBasicMaterial({ transparent: true
 const hexGeo = new THREE.CylinderGeometry(D.hex.radius * 0.94, D.hex.radius * 0.94, 0.9, 6, 1);
 hexGeo.rotateY(D.hex.angle);
 const hexes = new THREE.InstancedMesh(hexGeo, hexMat, HX.length);
-hexes.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(hexes);
+hexes.instanceMatrix.setUsage(THREE.DynamicDrawUsage); hexes.frustumCulled = false; scene.add(hexes);
 const zero = new THREE.Matrix4().makeScale(0, 0, 0), mtx = new THREE.Matrix4();
 for (let i = 0; i < HX.length; i++) hexes.setMatrixAt(i, zero);
 const layerZ = D.map.layers;
@@ -399,7 +415,8 @@ function paint() {
   scene.background = new THREE.Color(css('--scene-ground'));
   scene.fog = new THREE.Fog(css('--scene-ground'), 90 * SC, 220 * SC);
   groundMat.color.set(css('--scene-ground')); plotMat.color.set(css('--scene-ground')).offsetHSL(0, 0, theme === 'dark' ? 0.02 : 0.015);
-  bMat.color.set(css('--scene-building')); eMat.color.set(css('--scene-edge'));
+  bMat.color.set(css('--scene-building')).offsetHSL(0, 0, theme === 'dark' ? 0.04 : -0.03); eMat.color.set(css('--scene-edge'));
+  wallMats.forEach(m => m.color.set(css('--scene-building')));
   padMat.color.set(css('--scene-pad')); markMat.color.set(css('--scene-mark')); dangerMat.color.set(css('--danger'));
   hexMat.color.set(css('--data')); hexMat.opacity = theme === 'dark' ? 0.2 : 0.14;
   routeMat.color.set(css('--data')); routeEm.color.set(css('--danger')); routeIn.color.set(css('--muted'));
@@ -506,12 +523,21 @@ addEventListener('keydown', (e) => {
   const m = { 1: 'director', 2: 'orbit', 3: 'overhead', 4: 'follow' }[e.key]; if (m) setCam(m);
 });
 let downAt = null;                                 // a drag or a scroll on the view: the viewer takes the camera
+let fYaw = 0, fPitch = 0.55, fDist = 1;            // follow: angle around the drone, height angle, distance
 canvas.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
 canvas.addEventListener('pointermove', (e) => {
-  if (downAt && cam !== 'orbit' && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) setCam('orbit');
+  if (!downAt) return;
+  if (cam === 'follow') {                         // stays on the drone: turn around it
+    fYaw += (e.clientX - downAt[0]) * 0.008; fPitch = Math.min(1.45, Math.max(0.08, fPitch + (e.clientY - downAt[1]) * 0.006));
+    downAt = [e.clientX, e.clientY]; return;
+  }
+  if (cam !== 'orbit' && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) setCam('orbit');
 });
 addEventListener('pointerup', () => { downAt = null; });
-canvas.addEventListener('wheel', () => { if (cam !== 'orbit') setCam('orbit'); }, { passive: true });
+canvas.addEventListener('wheel', (e) => {
+  if (cam === 'follow') { fDist = Math.min(5, Math.max(0.25, fDist * (1 + e.deltaY * 0.0015))); e.preventDefault(); return; }
+  if (cam !== 'orbit') setCam('orbit');
+}, { passive: false });
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
 canvas.addEventListener('click', (e) => {
   const r = canvas.getBoundingClientRect(); ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
@@ -532,9 +558,16 @@ function updateHexes() {
   const live = new Set();
   for (let i = 0; i < N; i++) {
     const d = DR[i], s = statusAt(i, t);
-    if (d.kind === 'intruder' || s === 2 || s === 3 || s === 4) continue;
+    if (d.kind === 'intruder' || s !== 1) continue;
     const b = bookAt(d.id, t); if (!b) continue;
-    for (const [k, t0, t1] of b.cells) if (t0 <= t + 6 && t1 >= t) live.add(k);
+    // the air it has booked around and ahead of where it really is (a drone early or late against its
+    // booking would otherwise show its cells behind or far ahead of it)
+    const p = posAt(i, t), q = posAt(i, Math.max(0, t - 0.5)), hx = p[0] - q[0], hy = p[1] - q[1], hn = Math.hypot(hx, hy) || 1;
+    for (const [k, t0, t1] of b.cells) {
+      if (t1 < t - 2) continue;
+      const [x, y] = HX[k], dx = x - p[0], dy = y - p[1], along = (dx * hx + dy * hy) / hn;
+      if (Math.hypot(dx, dy) < 10 && along > -2) live.add(k);
+    }
   }
   for (let k = 0; k < HX.length; k++) {
     if (live.has(k)) { const [x, y, L] = HX[k]; mtx.makeTranslation(x, layerZ[L] ?? 2, -y); hexes.setMatrixAt(k, mtx); }
@@ -593,7 +626,6 @@ function director(dt) {
   if (emIdx >= 0 && statusAt(emIdx, t) === 1) { focus = v3(posAt(emIdx, t)); dist = 30 * DS; pitch = 0.95; }
   else if (zz) { focus = new THREE.Vector3(zz.centre[0], 1.5, -zz.centre[1]); dist = 40 * DS; pitch = 0.98; }
   else { const intr = DR.findIndex((d, i) => d.kind === 'intruder' && statusAt(i, t) === 1 && t - d.t_dep < 6); if (intr >= 0) { focus = v3(posAt(intr, t)); dist = 38 * DS; pitch = 0.98; } }
-  if (!reduce && focus) orbitAng += dt * 0.05;
   const c = focus || new THREE.Vector3(acx, 1, -acy);
   wantLook.copy(c);
   wantPos.set(c.x + Math.cos(orbitAng) * dist * Math.cos(pitch), Math.max(c.y + dist * Math.sin(pitch), ROOF + 8), c.z + Math.sin(orbitAng) * dist * Math.cos(pitch));
@@ -605,15 +637,17 @@ function frameCamera(dt) {
   if (cam === 'overhead') { wantLook.set(acx, 0, -acy); wantPos.set(acx, aspan * 1.35, -acy + 0.01); }
   if (cam === 'follow') {
     const i = selected >= 0 ? selected : emIdx, st = statusAt(i, t);
+    let p, yaw = fYaw;                            // drag turns the view around the drone, scroll zooms
     if (st !== 1) {                               // on its pad or landed: watch the pad until it flies
-      const pad = st === 0 ? DR[i].start : DR[i].goal, p = new THREE.Vector3(pad[0], 0.4, -pad[1]);
-      if (!reduce) orbitAng += dt * 0.12;
-      wantLook.copy(p); wantPos.set(p.x + Math.cos(orbitAng) * 14 * DS, ROOF * 0.9 + 4 * DS, p.z + Math.sin(orbitAng) * 14 * DS);
+      const pad = st === 0 ? DR[i].start : DR[i].goal; p = new THREE.Vector3(pad[0], 0.4, -pad[1]);
     } else {
-      const p = v3(posAt(i, t)), q = v3(posAt(i, Math.max(0, t - 0.6)));
-      const dir = p.clone().sub(q); dir.y = 0; if (dir.lengthSq() < 1e-4) dir.set(1, 0, 0); dir.normalize();
-      wantLook.copy(p).addScaledVector(dir, 4 * DS); wantPos.copy(p).addScaledVector(dir, -9 * DS); wantPos.y += 7 * DS;
+      p = v3(posAt(i, t)); const q = v3(posAt(i, Math.max(0, t - 0.6)));
+      const dir = p.clone().sub(q); dir.y = 0;
+      if (dir.lengthSq() > 1e-4) yaw += Math.atan2(dir.z, dir.x) + Math.PI;   // from behind it, by default
     }
+    const R = 12 * DS * fDist;
+    wantLook.copy(p);
+    wantPos.set(p.x + Math.cos(yaw) * R * Math.cos(fPitch), p.y + R * Math.sin(fPitch), p.z + Math.sin(yaw) * R * Math.cos(fPitch));
   }
   const k = reduce ? 1 : 1 - Math.exp(-dt * (cam === 'follow' ? 4 : 1.6));
   camera.position.lerp(wantPos, k); look.lerp(wantLook, k); camera.lookAt(look);
