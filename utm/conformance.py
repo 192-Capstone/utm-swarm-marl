@@ -47,13 +47,21 @@ telemetry's GPS noise as noise_m=tm.noise; it only widens the arrival test below
                        position its booking gives for now: it is assumed to fly on as filed.
     down               the drone reported status 'emergency', or its last vz is below DOWN_VZ
                        (healthy drones are limited to 2 m/s). Confirmed at once.
-    emergency_landing  status 'landing', or descending (vz < LANDING_VZ in every report for
+    emergency_landing  status 'landing' or 'landed' away from the goal pad, or descending (vz < LANDING_VZ in every report for
                        LANDING_DEBOUNCE_S) below the height of its CURRENT booking
                        (planner.current[fid], so a re-plan that moves it down a layer is not a
-                       landing), away from its own goal pad.
+                       landing), away from its own goal pad. The descent test only fires once the
+                       drone is HEIGHT_MARGIN_M (3 m) below its booked height: from the low layers
+                       (6-8 m) that is below about 3-5 m, so a forced landing from lower down is
+                       caught by its 'landing' status, not by the descent.
 Precedence is down > emergency_landing > lost_link. down and emergency_landing are sticky; a
 lost_link drone whose reports resume goes back to ok. A flight whose last reports (their mean, up
-to 3) were on its goal pad, or close(fid) was called, has arrived: it going quiet is not a lost link.
+to 3) were on its goal pad (z within CLIMB_DONE_M + FINAL_DESCENT_M of it: a drone whose 'landed'
+report was lost, on its last metres down), or close(fid) was called, has arrived: it going quiet is
+not a lost link. Status 'landed' (on the ground, like Remote ID's on-ground status) settles it
+at once: within the goal tolerance (xy: the safety radius + 3 noise_m, for a single report) the flight
+is closed; away from the goal it is an unplanned landing: emergency_landing is latched (unless it is
+already down) and the drone is never lost_link afterwards.
 The monitor keeps the last report of each flight itself, so a drone the eval dropped from
 tm.latest (forget after LINK_TIMEOUT_S) still counts as silent, not as gone.
 Known limit: from silence alone a motor failure looks like comms loss and is handled as lost_link
@@ -80,6 +88,8 @@ LANDING_VZ = -0.2                 # m/s: descending
 LANDING_DEBOUNCE_S = 2.0          # s of descent below the booking before it is a landing
 HEIGHT_MARGIN_M = 3.0             # m below the booked height: 3 z sd (a layer is 2 m, so it only
                                   # works above the lowest layers; below them a landing is reported)
+FINAL_DESCENT_M = 1.5             # m: on top of CLIMB_DONE_M, the last metres of a landing in which the 'landed'
+                                  # report may not have been sent (or was lost) before the drone goes quiet
 CLIMB_DONE_M = 0.6                # m: as envs/swarm_env.py (tests check it; utm/ must not import torch)
 
 
@@ -222,7 +232,7 @@ class ConformanceMonitor:
 
     def _closed_flight(self, fid, d):
         """Arrived: close() was called, or the mean of its last (up to 3) reports is on its goal pad:
-        xy within the safety radius, z at the pad or the last report sent within LINK_TIMEOUT_S of
+        xy within the safety radius, z at the pad (or within its last FINAL_DESCENT_M) or the last report sent within LINK_TIMEOUT_S of
         the booked arrival. One report is not enough: with GPS noise it can land outside the pad
         for a drone that has settled on it; the mean of n has 1/sqrt(n) of the error, and the
         tolerance is widened by 3 of those."""
@@ -237,7 +247,7 @@ class ConformanceMonitor:
         goal = d.waypoints[-1]
         if np.hypot(*(mean[:2] - np.asarray(goal[:2]))) > self.p.s.radius + tol:
             return False
-        return bool(mean[2] <= goal[2] + CLIMB_DONE_M + tol or hist[-1].t_sent >= d.arrival - LINK_TIMEOUT_S)
+        return bool(mean[2] <= goal[2] + CLIMB_DONE_M + FINAL_DESCENT_M + tol or hist[-1].t_sent >= d.arrival - LINK_TIMEOUT_S)
 
     def _latch(self, fid, state, since):
         cur = self._latched.get(fid)
@@ -252,6 +262,12 @@ class ConformanceMonitor:
         if r.status == 'landing':
             self._latch(fid, 'emergency_landing', r.t_sent)
         goal = d.waypoints[-1]
+        if r.status == 'landed':                          # on the ground: settled at once
+            off = np.hypot(*(np.asarray(r.pos[:2], dtype=float) - np.asarray(goal[:2])))
+            if off <= self.p.s.radius + 3.0 * self.noise_m:
+                self._closed.add(fid)
+            else:
+                self._latch(fid, 'emergency_landing', r.t_sent)      # keeps down: it ranks higher
         floor = None
         booked = self.booked_at(fid, r.t_sent)
         if booked is not None:

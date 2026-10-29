@@ -13,7 +13,8 @@ intent is the drone's planned path for the next ~10 s (utm/intent.py route_inten
 drone that has none to share (an intruder, tracked by surveillance: position and velocity only).
 
 status is the drone's own state, as Remote ID's emergency status (D5): 'ok' (default), 'emergency'
-(a motor failure: it is going down) or 'landing' (a forced landing where it is).
+(a motor failure: it is going down), 'landing' (a forced landing where it is) or 'landed' (on the
+ground, like Remote ID's on-ground status; the last report of a drone that has touched down).
 
 TelemetryModel turns the simulator's true states into the reports the UTM receives:
 
@@ -79,7 +80,7 @@ class Report:
     intent: list = field(default_factory=list)        # [[t, x, y, z], ...]
     seq: int = 0                                      # per drone, from 0
     t_received: float = None
-    status: str = 'ok'                                # 'ok' | 'emergency' | 'landing' (D5)
+    status: str = 'ok'                                # 'ok' | 'emergency' | 'landing' | 'landed' (D5)
 
 
 class TelemetryModel:

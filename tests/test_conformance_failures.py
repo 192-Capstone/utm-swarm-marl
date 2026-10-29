@@ -31,7 +31,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 pytest.importorskip('h3')
 
-from utm.conformance import (CLIMB_DONE_M, DOWN_VZ, FAILURE_STATES, HEIGHT_MARGIN_M,  # noqa: E402
+from utm.conformance import (CLIMB_DONE_M, DOWN_VZ, FAILURE_STATES, FINAL_DESCENT_M,  # noqa: E402
+                             HEIGHT_MARGIN_M,
                              LANDING_DEBOUNCE_S, LANDING_VZ, STATES, ConformanceMonitor)
 from utm.strategic_planner import Decision, FlightPlan, Settings, StrategicPlanner  # noqa: E402
 from utm.telemetry import LINK_TIMEOUT_S, Report, TelemetryModel, silent  # noqa: E402
@@ -189,9 +190,9 @@ def test_an_arrived_drone_going_quiet_is_not_lost_link():
 def test_a_drone_that_went_quiet_in_the_air_over_its_goal_is_lost_link_until_closed():
     """Over the goal but high and before the booked arrival: not arrived yet; close() ends doubt."""
     sky, d = sky_and_flight()
-    mon = monitor(sky, noise_m=0.0)                     # exact telemetry: 2 m over the pad is not on it
+    mon = monitor(sky, noise_m=0.0)                     # exact telemetry: 3 m over the pad is not on it
     goal = d.waypoints[-1]
-    last = rep('A', d.arrival - 6.0, (goal[0], goal[1], goal[2] + 2.0))
+    last = rep('A', d.arrival - 6.0, (goal[0], goal[1], goal[2] + 3.0))
     mon.check(d.arrival - 6.0, {}, reports={'A': last})
     assert states(mon) == []
     mon.check(d.arrival - 1.0, {}, reports={'A': last})
@@ -597,3 +598,94 @@ def test_the_arrival_test_averages_the_last_three_reports_and_widens_with_the_no
         exact.check(r.t_sent, {}, reports={'A': r})
     exact.check(d.arrival + 20.0, {}, reports={'A': off[-1]})
     assert exact.state['A'] == 'lost_link'
+
+
+# ------------------------------------------------------------------ I. early landings and the 'landed' status
+@pytest.mark.parametrize('early', [10.0, 20.0])
+@pytest.mark.parametrize('with_landed', [False, True])
+def test_a_drone_landing_early_with_exact_telemetry_is_not_lost_link(early, with_landed):
+    """noise_m = 0: the last reports 2.5 / 2.0 / 1.5 m over the pad (mean 2.0, above goal z + CLIMB_DONE_M)
+    must not make a landed drone lost_link 3 s later, with or without a final 'landed' report."""
+    sky, d = sky_and_flight()
+    mon = monitor(sky, noise_m=0.0)
+    goal = d.waypoints[-1]
+    t0 = d.arrival - early
+    for k, h in enumerate((2.5, 2.0, 1.5)):
+        r = rep('A', t0 + k, (goal[0], goal[1], goal[2] + h), vz=-0.5)
+        mon.check(r.t_sent, {}, reports={'A': r})
+    if with_landed:
+        r = rep('A', t0 + 3, (goal[0], goal[1], goal[2]), status='landed')
+        mon.check(r.t_sent, {}, reports={'A': r})
+    for t in (t0 + 6, t0 + 10, d.arrival, d.arrival + 60):
+        assert mon.check(t, {}, reports={'A': r}) == []
+    assert 'A' not in mon.state and states(mon) == []
+
+
+def test_final_descent_margin_is_what_covers_the_lost_landed_report():
+    sky, d = sky_and_flight()
+    goal = d.waypoints[-1]
+    top = goal[2] + CLIMB_DONE_M + FINAL_DESCENT_M
+    for h, lost in ((top - 0.05, False), (top + 0.2, True)):
+        mon = monitor(sky, noise_m=0.0)
+        r = rep('A', d.arrival - 20.0, (goal[0], goal[1], h))
+        mon.check(r.t_sent, {}, reports={'A': r})
+        mon.check(r.t_sent + 10.0, {}, reports={'A': r})
+        assert (mon.state.get('A') == 'lost_link') is lost
+
+
+def test_landed_at_the_goal_closes_the_flight_at_once():
+    sky, d = sky_and_flight()
+    mon = monitor(sky, noise_m=0.0)
+    goal = d.waypoints[-1]
+    r = rep('A', d.arrival - 30.0, (goal[0] + 0.5, goal[1], goal[2] + 5.0), status='landed')   # z is not judged
+    mon.check(r.t_sent, {}, reports={'A': r})
+    assert 'A' in mon._closed
+    assert mon.check(r.t_sent + 60.0, {}, reports={'A': r}) == [] and 'A' not in mon.state
+
+
+def test_landed_away_from_the_goal_latches_emergency_landing_and_is_never_lost_link():
+    sky, d = sky_and_flight()
+    mon = monitor(sky, noise_m=0.0)
+    t = mid(d)
+    x, y, _ = mon.booked_at('A', t)
+    r = rep('A', t, (x, y, 0.0), status='landed')
+    mon.check(t, {}, reports={'A': r})
+    assert mon.state['A'] == 'emergency_landing' and 'A' not in mon._closed
+    mon.check(t + 60.0, {}, reports={'A': r})
+    assert states(mon) == ['emergency_landing']
+
+
+def test_landed_away_keeps_down():
+    sky, d = sky_and_flight()
+    mon = monitor(sky, noise_m=0.0)
+    t = mid(d)
+    x, y, _ = mon.booked_at('A', t)
+    mon.check(t, {}, reports={'A': rep('A', t, (x, y, 2.0), status='emergency')})
+    mon.check(t + 1, {}, reports={'A': rep('A', t + 1, (x, y, 0.0), status='landed')})
+    mon.check(t + 60, {}, reports={'A': rep('A', t + 1, (x, y, 0.0), status='landed')})
+    assert states(mon) == ['down'] and mon.state['A'] == 'down'
+
+
+def test_landed_does_nothing_with_failures_off():
+    sky, d = sky_and_flight()
+    mon = ConformanceMonitor(sky)
+    t = mid(d)
+    x, y, _ = mon.booked_at('A', t)
+    assert mon.check(t, {}, reports={'A': rep('A', t, (x, y, 0.0), status='landed')}) == []
+    assert mon.state == {} and not mon._closed and not mon._latched
+
+
+@pytest.mark.parametrize('noise', [0.0, 1.0])
+def test_a_drone_going_quiet_mid_route_at_cruise_height_is_lost_link_whatever_the_noise(noise):
+    sky = StrategicPlanner([], ((-60, 60), (-60, 60)), Settings(n_layers=4, layer_penalty=100.0))
+    d = sky.submit(FlightPlan('A', (-50, 0), (50, 0), layer=2))
+    tm = TelemetryModel(noise_m=noise, delay_s=0.0, loss=0.0, seed=20)
+    mon = monitor(sky, noise_m=noise)
+    t0 = d.t_dep + 0.5 * (d.arrival - d.t_dep)
+    for k in range(3):
+        t = float(int(t0) + k)
+        tm.send(t, {'A': (mon.booked_at('A', t), (1.5, 0.0, 0.0), [])})
+        tm.receive(t)
+        mon.check(t, {}, reports=tm.latest)
+    mon.check(t + 5.0, {}, reports=tm.latest)
+    assert mon.state['A'] == 'lost_link'
