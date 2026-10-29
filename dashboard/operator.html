@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operator Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --ground: #f4f3f1; --surface: #ffffff; --raised: #ebe9e5; --border: #dcd9d3;
+  --text: #1a1a1a; --muted: #6b6862; --ink: #1a1a1a;
+  --data: #1d5fbf; --data-soft: #e3ecf8; --danger: #c4242a; --danger-soft: #f8e1e1; --warn: #92400e; --warn-soft: #f6ead9;
+  --font: 'Geist', ui-sans-serif, system-ui, sans-serif; --mono: 'Geist Mono', ui-monospace, monospace;
+  --r-card: 10px; --r-control: 6px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --ground: #000; --surface: #111; --raised: #1c1c1c; --border: #2a2a2a; --text: #ececec; --muted: #8f8f8f; --ink: #ececec;
+  --data: #5b9bff; --data-soft: #12223b; --danger: #ff5a5f; --danger-soft: #3a1214; --warn: #f0a24a; --warn-soft: #33230f; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --ground: #000; --surface: #111; --raised: #1c1c1c; --border: #2a2a2a; --text: #ececec; --muted: #8f8f8f; --ink: #ececec;
+  --data: #5b9bff; --data-soft: #12223b; --danger: #ff5a5f; --danger-soft: #3a1214; --warn: #f0a24a; --warn-soft: #33230f; color-scheme: dark; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--ground); color: var(--text); font: 400 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 980px; margin: 0 auto; padding-block: 24px; padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 16px; }
+header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+header b { font-size: 18px; font-weight: 500; display: block; }
+header span { color: var(--muted); font-size: 13px; }
+header a { color: var(--data); font-size: 13px; text-decoration: none; }
+.grid { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; }
+@media (max-width: 760px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--surface); border-radius: var(--r-card); padding: 14px 16px; display: grid; gap: 10px; min-width: 0; }
+h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0; }
+label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+select, button { font: inherit; height: 36px; border-radius: var(--r-control); }
+select { border: 1px solid var(--border); background: var(--surface); color: var(--text); padding: 0 10px; }
+button { border: 0; background: var(--ink); color: var(--surface); cursor: pointer; font-weight: 500; transition: transform .12s ease; }
+button:active { transform: scale(.98); }
+button.em { background: var(--danger); color: #fff; }
+button:disabled { opacity: .5; cursor: progress; }
+.reply { border-radius: var(--r-control); padding: 10px 12px; font-size: 13px; background: var(--raised); }
+.reply.ok { background: var(--data-soft); color: var(--data); }
+.reply.no { background: var(--danger-soft); color: var(--danger); }
+.reply b { display: block; font-weight: 500; margin-bottom: 2px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 500; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--border); }
+td { padding: 7px 8px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+td.id { font-family: var(--mono); }
+.scroll { overflow-x: auto; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--raised); }
+.pill.flying { background: var(--data-soft); color: var(--data); }
+.pill.crashed, .pill.cancelled { background: var(--danger-soft); color: var(--danger); }
+.feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.feed li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
+.feed time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.feed .bad { color: var(--danger); } .feed .note { color: var(--warn); }
+.empty { color: var(--muted); }
+.clock { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
+:focus-visible { outline: 2px solid var(--data); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div><b id="who">Operator console</b><span id="role">connecting to the UTM&hellip;</span></div>
+    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+      <label style="display:flex;gap:6px;align-items:center">Client node <select id="op"></select></label>
+      <span class="clock" id="clock"></span>
+      <a href="index.html#live" target="_blank" rel="noopener">UTM console &rarr;</a>
+    </div>
+  </header>
+  <div class="grid">
+    <section class="card">
+      <h2 id="formTitle">Request a flight</h2>
+      <label id="fromBox" hidden>From <select id="from"></select></label>
+      <label>To <select id="to"></select></label>
+      <button type="button" id="go">Request flight</button>
+      <div class="reply" id="reply">The UTM's Planner replies with a plan: your pad, the height layer, the take-off time, or why not.</div>
+    </section>
+    <section class="card">
+      <h2>Your flights</h2>
+      <div class="scroll"><table><thead><tr><th>Flight</th><th>Route</th><th>Status</th><th>Take-off</th><th>Arrival</th><th>Height</th><th>Re-plans</th></tr></thead>
+        <tbody id="mine"><tr><td colspan="7" class="empty">No flights yet.</td></tr></tbody></table></div>
+      <h2>Notices from the UTM</h2>
+      <ol class="feed" id="feed"><li class="empty" style="grid-template-columns:1fr">Nothing yet.</li></ol>
+    </section>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+let scene = null, op = new URLSearchParams(location.search).get('op'), since = 0, notes = [], flights = [], busy = false;
+
+async function init() {
+  scene = await (await fetch('api/scene')).json();
+  if (!scene.operators.includes(op)) op = scene.operators[0];
+  $('op').innerHTML = scene.operators.map(o => `<option${o === op ? ' selected' : ''}>${esc(o)}</option>`).join('');
+  $('op').onchange = (e) => { op = e.target.value; history.replaceState(null, '', `?op=${encodeURIComponent(op)}`); notes = []; setup(); };
+  setup(); poll(); setInterval(poll, 1000);
+}
+
+function setup() {
+  const hub = scene.places.find(p => p.kind === 'hub' && p.operator === op);
+  const emergency = !hub;
+  $('who').textContent = `Operator console \u00b7 ${op}`;
+  $('role').textContent = hub ? `Delivery operator, ${hub.name}` : 'Files emergency flights';
+  $('formTitle').textContent = emergency ? 'Request an emergency flight' : 'Request a flight';
+  $('go').textContent = emergency ? 'Request emergency' : 'Request flight';
+  $('go').className = emergency ? 'em' : '';
+  $('fromBox').hidden = !emergency;
+  const dests = scene.places.filter(p => p.kind !== 'hub' || p.operator === op);
+  const opt = (p) => `<option>${esc(p.name)}</option>`;
+  $('to').innerHTML = dests.filter(p => !hub || p.name !== hub.name).map(opt).join('');
+  if (emergency) {
+    $('from').innerHTML = scene.places.filter(p => p.kind !== 'hub').map(opt).join('');
+    const h = scene.places.find(p => p.kind === 'hospital'); if (h) $('from').value = h.name;
+  }
+  render();
+}
+
+$('go').onclick = async () => {
+  const emergency = !scene.places.some(p => p.kind === 'hub' && p.operator === op);
+  const body = emergency ? { operator: op, from: $('from').value, to: $('to').value } : { operator: op, to: $('to').value };
+  $('go').disabled = true; $('reply').className = 'reply'; $('reply').textContent = 'Asking the Planner\u2026';
+  try {
+    const r = await (await fetch(emergency ? 'api/emergency' : 'api/request', { method: 'POST', body: JSON.stringify(body) })).json();
+    if (r.status === 'approved') {
+      $('reply').className = 'reply ok';
+      $('reply').innerHTML = `<b>${esc(r.flight)} approved</b>${esc(r.from)} \u2192 ${esc(r.to)}: take-off ${fmt(r.take_off)}, ${r.layer_m} m layer, arrival ${fmt(r.arrival)}` + (r.delay_s > 0 ? ` (waits ${r.delay_s} s for a free slot)` : '');
+    } else {
+      $('reply').className = 'reply no';
+      $('reply').innerHTML = `<b>Refused</b>${esc(r.reason || 'no plan')}`;
+    }
+  } catch (e) { $('reply').className = 'reply no'; $('reply').textContent = 'The UTM server did not answer.'; }
+  $('go').disabled = false; poll();
+};
+
+async function poll() {
+  if (busy) return;                          // one request at a time: events are taken once
+  busy = true;
+  try {
+    const s = await (await fetch(`api/state?since=${since}`)).json();
+    since = s.n_events; flights = s.flights;
+    notes.push(...s.events);
+    $('clock').textContent = `UTM time ${fmt(s.t)} \u00b7 ${s.free} drones free`;
+    render();
+  } catch (e) { $('clock').textContent = 'UTM server not reachable'; }
+  busy = false;
+}
+
+function render() {
+  const mine = flights.filter(f => f.operator === op).reverse();
+  $('mine').innerHTML = mine.length ? mine.map(f => `<tr><td class="id">${esc(f.id)}</td><td>${esc(f.from)} \u2192 ${esc(f.to)}</td>
+    <td><span class="pill ${f.status}">${f.status === 'waiting' ? 'on its pad' : f.status}</span></td><td>${fmt(f.t_dep)}</td>
+    <td>${fmt(f.arrival)}</td><td>${f.layer_z} m</td><td>${f.replans}</td></tr>`).join('')
+    : '<tr><td colspan="7" class="empty">No flights yet.</td></tr>';
+  const ids = new Set(flights.filter(f => f.operator === op).map(f => f.id));
+  const mineNotes = notes.filter(e => e.node === op || ids.has(e.flight)).slice(-12).reverse();
+  $('feed').innerHTML = mineNotes.length ? mineNotes.map(e => {
+    const k = e.type === 'rejected' || e.type === 'crashed' ? 'bad' : e.type === 'replan' ? 'note' : '';
+    const more = e.later >= 1 ? ` (+${Math.round(e.later)} s)` : '';
+    return `<li><time>${fmt(e.t)}</time><span class="${k}">${esc(e.text)}${more}</span></li>`; }).join('')
+    : '<li class="empty" style="grid-template-columns:1fr">Nothing yet.</li>';
+}
+init().catch(() => { $('role').textContent = 'Start the UTM server: python scripts/utm_server.py scenarios/ecity_rooftops.yaml'; });
+</script>
+</body>
+</html>

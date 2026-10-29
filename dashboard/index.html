@@ -28,6 +28,7 @@
   --scene-ground: #0b0b0b; --scene-building: #2a2a2a; --scene-edge: #474747; --scene-pad: #2a2a2a; --scene-mark: #bdbdbd;
   color-scheme: dark }
 html, body { height: 100%; }
+[hidden] { display: none !important; }
 body { background: var(--ground); color: var(--text); font: 400 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
 .app { height: 100%; display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: var(--gap);
   padding-block: var(--gap); padding-left: max(var(--gap), env(safe-area-inset-left, 0px)); padding-right: max(var(--gap), env(safe-area-inset-right, 0px)); box-sizing: border-box; }
@@ -145,6 +146,7 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
       <select id="scene">
         <option value="ecity_rooftops">Over the rooftops &middot; 15 deliveries</option>
         <option value="ecity_demo">The plaza, low level &middot; 11 deliveries</option>
+        <option value="live">Live &middot; the UTM server (operators book)</option>
       </select>
       <p class="note">Live runs and what-if controls arrive with the UTM server.</p>
     </section>
@@ -225,16 +227,27 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const SCENES = ['ecity_rooftops', 'ecity_demo'];      // dashboard/data/<name>.json, from scripts/export_dashboard.py
-const NAME = SCENES.includes(location.hash.slice(1)) ? location.hash.slice(1) : SCENES[0];
-const D = await (await fetch(`data/${NAME}.json`)).json();
+const SCENES = ['ecity_rooftops', 'ecity_demo', 'live'];   // dashboard/data/<name>.json (scripts/export_dashboard.py);
+const NAME = SCENES.includes(location.hash.slice(1)) ? location.hash.slice(1) : SCENES[0];   // live: scripts/utm_server.py
+const LIVE = NAME === 'live';
+const D = LIVE ? await liveScene() : await (await fetch(`data/${NAME}.json`)).json();
+async function liveScene() {                       // the live UTM's scene, as a recording with no frames yet
+  const s = await (await fetch('api/scene')).json(), off = [0, 0, -50];
+  return { name: 'live', caption: 'Live: the UTM takes bookings from the operator consoles', live: s,
+    map: { bounds: s.bounds, layers: s.layers, buildings: s.buildings }, places: s.places,
+    drones: Array.from({ length: s.slots }, (_, i) => ({ id: '', slot: i, kind: 'flight', operator: '', start: [0, 0], goal: [0, 0],
+      from: '', to: '', t_dep: null, arrival: null })),
+    routes: {}, bookings: {}, hex: { cells: [], radius: 1, angle: 0 }, zones: [], hot: [{ t: 0, high: [] }], events: [], summary: {},
+    frames: { t: [0], pos: [Array.from({ length: s.slots }, () => off)], status: [Array(s.slots).fill(4)] } };
+}
 const $ = (id) => document.getElementById(id);
 $('scene').value = NAME;
 $('scene').onchange = (e) => { location.hash = e.target.value; location.reload(); };
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-const T = D.frames.t, P = D.frames.pos, S = D.frames.status, END = T[T.length - 1];
+const T = D.frames.t, P = D.frames.pos, S = D.frames.status;
+let END = T[T.length - 1];
 const DR = D.drones, N = DR.length, byId = Object.fromEntries(DR.map((d, i) => [d.id, i]));
-const emIdx = DR.findIndex(d => d.kind === 'emergency');
+let emIdx = DR.findIndex(d => d.kind === 'emergency');
 const v3 = (p) => new THREE.Vector3(p[0], p[2], -p[1]);           // world (x, y, z-up) -> three (x, z, -y)
 
 // ---------------------------------------------------------------- theme
@@ -270,7 +283,8 @@ const ROOF = Math.max(0, ...D.map.buildings.map(b => b.z));
 // 760 m map). Camera, fog and shadows frame it; SC scales them from the 50 m plaza the view was made
 // for, DS the drones and pads so they still read from that far.
 const act = [];
-for (const d of DR) { act.push(d.start); if (d.kind !== 'intruder') act.push(d.goal); }
+for (const d of LIVE ? [] : DR) { act.push(d.start); if (d.kind !== 'intruder') act.push(d.goal); }
+for (const p of D.places || []) for (const q of p.pads) act.push(q);
 for (const v of Object.values(D.routes)) for (const x of v) for (const p of x.route) act.push(p);
 const ax0 = Math.min(...act.map(p => p[0])) - 15, ax1 = Math.max(...act.map(p => p[0])) + 15;
 const ay0 = Math.min(...act.map(p => p[1])) - 15, ay1 = Math.max(...act.map(p => p[1])) + 15;
@@ -303,7 +317,8 @@ const placeAt = (xy) => PLACES.find(p => p.pads.some(q => Math.hypot(q[0] - xy[0
 const route = (d) => d.from && d.to ? `${d.from} \u2192 ${d.to}` : '';
 const starts = DR.filter(d => d.kind === 'flight').map(d => d.start.join());
 const pads = new Map();
-for (const d of DR) for (const k of ['start', 'goal']) {
+for (const p of PLACES) for (const q of p.pads) pads.set(q.join(), p.kind === 'hub' ? 'depot' : p.kind === 'hospital' ? 'hospital' : 'drop');
+for (const d of LIVE ? [] : DR) for (const k of ['start', 'goal']) {
   const key = d[k].join();
   const named = placeAt(d[k]);                     // the scenario's places say what a pad is
   const kind = named ? (named.kind === 'hub' ? 'depot' : named.kind === 'hospital' ? 'hospital' : 'drop')
@@ -414,13 +429,14 @@ const zoneFor = (() => { const a = D.zones[0] && D.zones[0].active[0]; if (!a) r
 const emEv = D.events.find(e => e.type === 'replan' && e.why === 'emergency');
 // client nodes: each delivery operator (named by where its hub is) and whoever files the emergency
 const nodeName = (o) => !o || o === 'emergency' ? 'Emergency services' : o;
-const ops = [...new Set(DR.filter(d => d.kind === 'flight').map(d => d.operator))];
+const hubOf = (o) => (PLACES.find(p => p.kind === 'hub' && p.operator === o) || {}).name;
+const ops = LIVE ? D.live.operators.filter(hubOf) : [...new Set(DR.filter(d => d.kind === 'flight').map(d => d.operator))];
 const hubX = (o) => { const s = DR.filter(d => d.kind === 'flight' && d.operator === o).map(d => d.start[0]); return s.reduce((a, b) => a + b, 0) / s.length; };
 ops.sort((a, b) => hubX(a) - hubX(b));
-const hubOf = (o) => (PLACES.find(p => p.kind === 'hub' && p.operator === o) || {}).name;
 const NODES = ops.map((o, k) => ({ id: o, name: o, role: hubOf(o) ? `delivery operator, ${hubOf(o)}`
   : ops.length === 2 ? `delivery operator, ${k ? 'east' : 'west'} hub` : 'delivery operator' }));
-if (emIdx >= 0) NODES.push({ id: DR[emIdx].operator, name: nodeName(DR[emIdx].operator), role: 'files emergency flights' });
+if (LIVE) for (const o of D.live.operators) { if (!hubOf(o)) NODES.push({ id: o, name: o, role: 'files emergency flights' }); }
+else if (emIdx >= 0) NODES.push({ id: DR[emIdx].operator, name: nodeName(DR[emIdx].operator), role: 'files emergency flights' });
 const gaveWay = D.events.filter(e => e.type === 'replan' && e.status === 'approved' && (e.why || '').startsWith('displaced by'));
 const emNode = emIdx >= 0 ? nodeName(DR[emIdx].operator) : '';
 const wayText = gaveWay.length
@@ -606,7 +622,8 @@ function frameCamera(dt) {
 function updatePanels() {
   const f = frameAt(t), st = S[f];
   const fl = st.filter((s, i) => s === 1 && DR[i].kind !== 'intruder').length, wt = st.filter((s, i) => s === 0 && DR[i].kind !== 'intruder').length;
-  const ld = st.filter((s, i) => s === 2 && DR[i].kind !== 'intruder').length, al = hotAt(t).size;
+  const ld = LIVE ? liveFlights.filter(f => f.status === 'landed').length
+    : st.filter((s, i) => s === 2 && DR[i].kind !== 'intruder').length, al = hotAt(t).size;
   const c = `${fl}|${wt}|${ld}|${al}`;
   if (c !== lastCounts) {
     lastCounts = c;
@@ -624,8 +641,10 @@ function updatePanels() {
       return `<li><time>${fmt(e.t)}</time><span class="${k}">${who}${e.text}${more}</span></li>`; }).join('') : '<li class="empty">Flights are taking off on schedule.</li>';
   }
   const nk = NODES.map(n => {
-    const mine = DR.map((d, i) => [d, i]).filter(([d]) => d.operator === n.id && d.kind !== 'intruder');
-    const fly = mine.filter(([, i]) => st[i] === 1).length, done = mine.filter(([, i]) => st[i] === 2).length;
+    const mine = LIVE ? liveFlights.filter(f => f.operator === n.id)
+      : DR.map((d, i) => [d, i]).filter(([d]) => d.operator === n.id && d.kind !== 'intruder');
+    const fly = LIVE ? mine.filter(f => f.status === 'flying').length : mine.filter(([, i]) => st[i] === 1).length;
+    const done = LIVE ? mine.filter(f => f.status === 'landed').length : mine.filter(([, i]) => st[i] === 2).length;
     const rb = D.events.filter(e => e.type === 'replan' && e.status === 'approved' && e.node === n.id && e.why !== 'emergency' && e.t <= t).length;
     const hit = D.events.find(e => e.type === 'replan' && e.node === n.id && (e.why || '').startsWith('displaced by') && e.t <= t && t - e.t < 8);
     return { n, booked: mine.length, fly, done, rb, hit };
@@ -640,8 +659,10 @@ function updatePanels() {
   const ch = chapterAt(t);
   document.querySelectorAll('[data-ch]').forEach(b => b.toggleAttribute('aria-current', +b.dataset.ch === ch));
   document.querySelectorAll('[data-ch]').forEach(b => b.setAttribute('aria-current', +b.dataset.ch === ch ? 'step' : 'false'));
-  if ($('caption').dataset.ch !== String(ch)) { $('caption').dataset.ch = String(ch); $('caption').textContent = chapters[ch].cap; }
-  $('clock').innerHTML = `<b>${fmt(t)}</b> / ${fmt(END)}`;
+  if (LIVE) {
+    if ($('caption').dataset.ch !== 'live') { $('caption').dataset.ch = 'live'; $('caption').textContent = 'Live: drones fly as the operator consoles book them. The Planner books each request, the Monitor watches every flight once a second and the Responder re-plans when something goes wrong.'; }
+  } else if ($('caption').dataset.ch !== String(ch)) { $('caption').dataset.ch = String(ch); $('caption').textContent = chapters[ch].cap; }
+  $('clock').innerHTML = LIVE ? `<b>live</b> ${fmt(END)}` : `<b>${fmt(t)}</b> / ${fmt(END)}`;
   if (document.activeElement !== $('time')) $('time').value = String(t);
   if (selected >= 0) {
     const d = DR[selected], s = st[selected], hot = hotAt(t).has(d.id);
@@ -665,9 +686,47 @@ camera.position.set(acx + 40 * SC, 38 * SC, -acy + 40 * SC); camera.lookAt(look)
 setTheme(theme); resize(); director(0);
 camera.position.copy(wantPos);
 let last = performance.now();
+// ---------------------------------------------------------------- live (scripts/utm_server.py)
+let liveFlights = [], since = 0, lastFollow = '';
+let polling = false;
+async function pollLive() {
+  if (polling) return;                             // one at a time: events and frames are taken once
+  polling = true;
+  try {
+    const s = await (await fetch(`api/state?since=${since}`)).json();
+    since = s.n_events; liveFlights = s.flights; D.events.push(...s.events);
+    const pos = Array.from({ length: N }, () => [0, 0, -50]), st = Array(N).fill(4);
+    for (const f of s.flights) {
+      if (f.slot == null || (f.status !== 'waiting' && f.status !== 'flying')) continue;
+      Object.assign(DR[f.slot], { id: f.id, kind: f.kind, operator: f.operator, from: f.from, to: f.to, t_dep: f.t_dep,
+        arrival: f.arrival, start: f.route[0].slice(0, 2), goal: f.route[f.route.length - 1].slice(0, 2) });
+      D.routes[f.id] = [{ t: 0, route: f.route }];
+      pos[f.slot] = f.pos; st[f.slot] = f.status === 'flying' ? 1 : 0;
+    }
+    T.push(s.t); P.push(pos); S.push(st); END = s.t;
+    if (T.length > 400) { T.splice(0, 200); P.splice(0, 200); S.splice(0, 200); }
+    emIdx = DR.findIndex((d, i) => d.kind === 'emergency' && st[i] === 1);
+    const key = DR.map((d, i) => st[i] < 2 ? d.id : '').join();
+    if (key !== lastFollow) {
+      lastFollow = key;
+      $('follow').innerHTML = DR.map((d, i) => st[i] < 2 ? `<option value="${i}">Follow ${d.id} (${route(d) || kindWord(d)})</option>` : '').join('');
+    }
+  } catch (e) { $('title').innerHTML = '<b>The UTM server is not answering</b>'; }
+  polling = false;
+}
+if (LIVE) {
+  for (const id of ['story', 'run']) $(id).closest('section').hidden = true;
+  document.querySelector('.brand span').textContent = 'E-City, Bengaluru \u00b7 live';
+  document.querySelector('.field .note').textContent = 'Operators book from their consoles (operator.html); this view follows the UTM server.';
+  for (const el of document.querySelectorAll('#play, #speed, .track')) el.hidden = true;
+  $('title').innerHTML = '<b>Live UTM</b> &middot; <a href="operator.html" target="_blank" rel="noopener">open an operator console</a>';
+  setInterval(pollLive, 250);
+}
+
 renderer.setAnimationLoop((now) => {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
-  if (playing) { t += dt * speed; if (t >= END) { t = END; setPlaying(false); } }
+  if (LIVE) t = Math.max(0, END - 0.6);           // just behind the newest state, so motion is interpolated
+  else if (playing) { t += dt * speed; if (t >= END) { t = END; setPlaying(false); } }
   updateWorld(dt); frameCamera(dt); updatePanels();
   renderer.render(scene, camera);
 });
