@@ -155,8 +155,8 @@ def checkpoint_path(path):
                             f"{os.path.abspath(ROOT)}); set sim.checkpoint in the scenario")
 
 
-def run(sc, record=None):
-    """Runs one scenario; returns (results, FlightLog)."""
+def planner_for(sc):
+    """The map (layout, bounds) and E1 with the scenario's utm settings."""
     ns = types.SimpleNamespace(**sc['map'])
     ns.level, ns.seed = sc['map'].get('level', 'medium'), sc['map'].get('seed', 0)
     layout, bounds = load_map(ns)
@@ -173,18 +173,11 @@ def run(sc, record=None):
     if sc['utm']['layers_open'] is not None:
         s.layers_open = tuple(int(k) for k in sc['utm']['layers_open'])
     sky = StrategicPlanner(layout, bounds, s)
-    reqs = requests(sc, layout, bounds, sky)
-    op = {fp.id: fp.operator for fp in reqs}
-    decisions, flights = plans(sky, reqs)
-    for f in flights:
-        f['operator'] = op.get(f['id'], '')
-    window = max((fp.t_earliest for fp in reqs), default=0.0) + 1.0
-    rng = np.random.RandomState(5000 + sc['seed'])
-    dz = sc['disruptions']
-    late, slow = ev.disruptions(rng, flights, types.SimpleNamespace(**dz))
-    extra = extra_drones(sc, sky, rng, window)
-    zones, cuts = make_zones(sc, sky, flights)
+    return layout, bounds, sky
 
+
+def sim_setup(sc):
+    """The simulator config and the flight options (args) the scenario flies with."""
     with open(sc['sim']['config'], encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
     cfg.pop('scenario_mix', None)
@@ -197,10 +190,8 @@ def run(sc, record=None):
     if sc['sim']['hold_engage_m'] is not None:          # goal-hold: engage here, release 0.2 m further out
         e = float(sc['sim']['hold_engage_m'])
         cfg.setdefault('goal_hold', {}).update(engage_dist=e, release_dist=e + 0.2)
-    duration = float(sc['demand'].get('duration_s', sc['demand'].get('window', 30.0)))
-    e7 = system_metrics(sky, reqs, duration)                      # before fly(): E1's decisions as filed
     ckpt = checkpoint_path(sc['sim']['checkpoint']) if sc['sim']['pilot'] == 'learned' else sc['sim']['checkpoint']
-    args = types.SimpleNamespace(checkpoint=ckpt, horizon=20.0, risk=sc['utm']['risk'],
+    return cfg, types.SimpleNamespace(checkpoint=ckpt, horizon=20.0, risk=sc['utm']['risk'],
                                  simulator=sc['sim']['simulator'], land_latch_m=sc['sim']['land_latch_m'],
                                  land_vz_max=sc['sim']['land_vz_max'], land_wait_clear_m=sc['sim']['land_wait_clear_m'],
                                  cruise_z_bias=sc['sim']['cruise_z_bias'], land_step_m=sc['sim']['land_step_m'],
@@ -208,6 +199,26 @@ def run(sc, record=None):
                                  los_below_cruise=sc['sim']['los_below_cruise'] or None,
                                  telemetry=sc['utm']['telemetry'], zone_at=None,
                                  extra_time=60.0 + sum(float(z.get('for') or 60.0) for z in sc['zones']))
+
+
+def run(sc, record=None):
+    """Runs one scenario; returns (results, FlightLog)."""
+    layout, bounds, sky = planner_for(sc)
+    reqs = requests(sc, layout, bounds, sky)
+    op = {fp.id: fp.operator for fp in reqs}
+    decisions, flights = plans(sky, reqs)
+    for f in flights:
+        f['operator'] = op.get(f['id'], '')
+    window = max((fp.t_earliest for fp in reqs), default=0.0) + 1.0
+    rng = np.random.RandomState(5000 + sc['seed'])
+    dz = sc['disruptions']
+    late, slow = ev.disruptions(rng, flights, types.SimpleNamespace(**dz))
+    extra = extra_drones(sc, sky, rng, window)
+    zones, cuts = make_zones(sc, sky, flights)
+
+    duration = float(sc['demand'].get('duration_s', sc['demand'].get('window', 30.0)))
+    e7 = system_metrics(sky, reqs, duration)                      # before fly(): E1's decisions as filed
+    cfg, args = sim_setup(sc)
     rec = FlightLog(sc, progress_s=10.0)
     out = ev.fly(cfg, args, layout, sky, flights, extra, late, slow, sc['utm']['mode'], sc['sim']['pilot'],
                  sc['seed'], rec=rec, zones=zones)
