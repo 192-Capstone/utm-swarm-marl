@@ -69,7 +69,8 @@ def _imports(path):
 
 
 def test_controller_imports_only_controller_and_stdlib():
-    assert _imports(CONTROLLER) == {'math', 'os', 'sys', 'controller', 'envs.cf_velocity_pid', 'envs.radio_msg'}
+    assert _imports(CONTROLLER) == {'ctypes', 'math', 'os', 'sys', 'time', 'controller', 'envs.cf_velocity_pid',
+                                    'envs.radio_msg', 'envs.lidar_msg'}
 
 
 def test_pid_module_is_stdlib_only():

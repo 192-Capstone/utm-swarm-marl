@@ -79,6 +79,8 @@ SwarmEnv's clock for E1 departures). Rebuilt only when the zones change (as the 
 reuse_layout). With the flag off nothing is imported and the world is exactly as without C7.
 """
 
+import ctypes
+import json
 import os
 import time
 
@@ -89,6 +91,9 @@ from envs.cf_velocity_pid import format_command
 from envs.radio_msg import (radio_config, controller_args, decode_report, encode_intent,
                             UPLINK, DOWNLINK)
 from envs.webots_adapter import WebotsAdapter, ROOT, _euler_from_matrix, _note_lag_ignored
+from envs.lidar_msg import format_tag, decode_scan
+from envs.webots_lidar import (lidar_webots_config, device_nodes, controller_args as lidar_controller_args,
+                               pick_rays, analytic_dirs, ScanLog)
 from utm.telemetry import Report
 
 L2_MULTI_WORLD = os.path.join(ROOT, 'webots', 'worlds', 'swarm_l2_multi.wbt')
@@ -114,6 +119,16 @@ DRONE_RADIO_NODE = """DEF DRONE_{i} Crazyflie {{
     }}
   ]
 }}"""
+# C3 Lidar on (webots.lidar, envs/webots_lidar.py): the radio's devices (if on) and the Lidar's
+DRONE_EXT_NODE = """DEF DRONE_{i} Crazyflie {{
+  translation {x} 0 0.015
+  name "drone_{i}"
+  controller "cf_velocity"
+  controllerArgs [ {args} ]
+  extensionSlot [
+    {slot}
+  ]
+}}"""
 DROP_CHECK_STEPS = 16          # control steps after release (0.51 s)
 DROP_LIMIT = 0.3               # m; free fall covers this in 0.25 s
 CF_ERROR = 'cf_velocity ['     # prefix of the controllers' error lines
@@ -129,13 +144,21 @@ def park_spot(i):
     return [PARK_X0 + PARK_DX * i, PARK_Y, PARK_Z]
 
 
-def drone_node(i, rc=None):
+def drone_node(i, rc=None, lc=None, max_range=6.0):
     """The node string of drone i (on the ground at x = 2 i); with the radio on (rc: an enabled
-    radio_config), with its radio devices and controllerArgs."""
-    if rc is None or not rc['enabled']:
-        return DRONE_NODE.format(i=i, x=2.0 * i)
-    args = ' '.join(f'"{a}"' for a in controller_args(rc))
-    return DRONE_RADIO_NODE.format(i=i, x=2.0 * i, args=args, up=UPLINK, down=DOWNLINK, range=rc['range_m'])
+    radio_config), with its radio devices and controllerArgs; with the C3 Lidar on (lc: an enabled
+    lidar_webots_config), with the Lidar and its Emitter (range max_range) as well."""
+    radio = rc is not None and rc['enabled']
+    if lc is None or not lc['enabled']:
+        if not radio:
+            return DRONE_NODE.format(i=i, x=2.0 * i)
+        args = ' '.join(f'"{a}"' for a in controller_args(rc))
+        return DRONE_RADIO_NODE.format(i=i, x=2.0 * i, args=args, up=UPLINK, down=DOWNLINK, range=rc['range_m'])
+    args = (controller_args(rc) if radio else []) + lidar_controller_args()
+    slot = ([f'Emitter {{\n      name "radio_tx"\n      channel {UPLINK}\n      range {rc["range_m"]}\n    }}',
+             f'Receiver {{\n      name "radio_rx"\n      channel {DOWNLINK}\n    }}'] if radio else [])
+    slot += device_nodes(lc, max_range)
+    return DRONE_EXT_NODE.format(i=i, x=2.0 * i, args=' '.join(f'"{a}"' for a in args), slot='\n    '.join(slot))
 
 
 def layout_key(layout):
@@ -148,6 +171,8 @@ def layout_key(layout):
 class WebotsL2MultiAdapter(WebotsAdapter):
     _rx = _tx = None                                        # radio devices: None = radio off
     _zones = None                                           # C7 ZoneDrawer, only with webots.draw_zones
+    _lrx = None                                             # C3 Lidar receiver: None = Lidar off
+    _scan_log = None                                        # C3 ScanLog, only with webots.lidar
 
     def __init__(self, config, gui: bool = False):
         config = dict(config)
@@ -179,6 +204,9 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         self.lidar_cfg = lidar_mod.lidar_config(config)
         _note_lag_ignored(config)
         self.radio = radio_config(w)                        # E2 radio (off by default)
+        self.lidar = lidar_webots_config(w)                 # C3 Lidar (off by default)
+        if self.lidar['enabled'] and not self.lidar_cfg['enabled']:
+            raise ValueError('webots.lidar needs lidar.enabled (the analytic scan it is compared with)')
 
         self._start_webots(gui, w)                          # inherited: own port, writes w['log']
         self.basic_ms = int(round(self.sup.getBasicTimeStep()))
@@ -193,7 +221,7 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         n = self.n_agents
         self.nodes, self._tr, self._rot, self._cd, self.drone_ids = [None] * n, [None] * n, [None] * n, [None] * n, [None] * n
         for i in range(n):                                  # on the ground, 2 m apart, motors off
-            self._drones_root.importMFNodeFromString(-1, drone_node(i, self.radio))
+            self._drones_root.importMFNodeFromString(-1, drone_node(i, self.radio, self.lidar, self.lidar_cfg['range']))
             self._attach(i)
         self._rx = self._tx = None
         self._t0 = 0.0                                      # Webots time of the release (episode t = 0)
@@ -204,6 +232,13 @@ class WebotsL2MultiAdapter(WebotsAdapter):
             self._rx.enable(self.basic_ms)
             self._tx = self.sup.getDevice('utm_tx')
             self._tx.setRange(self.radio['range_m'])
+        self._scan_k = 0                                    # C3: scan tag of the current control step
+        self._scans = [None] * n                            # C3: the scans received for it
+        self._scan_log, self._logged = None, None
+        if self.lidar['enabled']:
+            self._lrx = self.sup.getDevice('lidar_rx')
+            self._lrx.enable(self.basic_ms)
+            self._scan_log = ScanLog(self.lidar['log'])
         self.reimport_log = []                              # (episode about to start, [drones re-imported])
         self._reimported_now = []                           # drones re-imported before this episode
         self.ep = 0
@@ -245,7 +280,7 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         """Remove drone i (its controller is terminated) and import a fresh one."""
         self.nodes[i].remove()
         self.sup.step(self.basic_ms)
-        self._drones_root.importMFNodeFromString(-1, drone_node(i, self.radio))
+        self._drones_root.importMFNodeFromString(-1, drone_node(i, self.radio, self.lidar, self.lidar_cfg['range']))
         self._attach(i)
 
     def reset_world(self, spawn_positions: dict, goal_positions: dict, obstacles=None):
@@ -272,15 +307,26 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         if self._zones is not None:                         # C7: visual only
             self._ep_step = 0
             self._zones.build(self._zone_list)
+        if self._scan_log is not None:
+            self._scan_log.layouts[self.ep] = json.loads(json.dumps(list(obstacles or []), default=float))
         self._cmd[:] = 0.0                                  # L2 103
         # L2 110-114: hold every drone at its spawn while the rotors spin up (2 s, official model)
-        for _ in range(max(1, int(round(self.spinup_hold_s / self.dt)))):
+        n_hold = max(1, int(round(self.spinup_hold_s / self.dt)))
+        tag, tag_at = '', -1
+        if self._lrx is not None:                           # C3: scan in the last basic step before the read
+            self._scan_k += 1
+            n_tag = min(self.n_sub, n_hold + 1)
+            tag, tag_at = ' ' + format_tag(self._scan_k, n_tag), n_hold + 1 - n_tag
+        for h in range(n_hold):
+            if h == tag_at:
+                for i in range(self.n_agents):
+                    self._cd[i].setSFString(hold + tag)
             self.sup.step(self.basic_ms)
             for i, nd in enumerate(self.nodes):
                 self._tr[i].setSFVec3f(starts[i])
                 self._rot[i].setSFRotation([0.0, 0.0, 1.0, 0.0])
                 nd.setVelocity([0.0] * 6)
-        release = format_command(self.ep, 'F', (0.0, 0.0, 0.0))
+        release = format_command(self.ep, 'F', (0.0, 0.0, 0.0)) + tag
         for i in range(self.n_agents):                      # first F: controller sets z_des, prev_gps
             self._cd[i].setSFString(release)
         self.sup.step(self.basic_ms)                        # L2 115
@@ -291,6 +337,8 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         self._pending.clear()
         self._reset_stats()
         self._read_state()                                  # L2 117
+        if self._lrx is not None:
+            self._collect_scans()
         if self._rx is not None:                            # radio: a fresh inbox, episode time from now
             self._inbox = []                                # (the last episode's: not collected, dropped)
             self._t0 = self.sup.getTime()
@@ -330,6 +378,9 @@ class WebotsL2MultiAdapter(WebotsAdapter):
     def place(self, i, pos):
         """Put parked drone i on its pad, still; it takes off in the next control step."""
         i = int(i)
+        if self._lrx is not None and self.lidar['use_for_policy']:
+            raise NotImplementedError('webots_l2_multi: place() with webots.lidar.use_for_policy is not '
+                                      'supported (C3 covers city routes; a placed drone has no scan yet)')
         pos = [float(v) for v in pos]
         self._parked[i] = False
         self._tr[i].setSFVec3f(pos)
@@ -343,6 +394,10 @@ class WebotsL2MultiAdapter(WebotsAdapter):
     # -------------------------------------------------------------- control
     def apply_actions(self, actions: dict):
         """actions: {'drone_i': [vx, vy, vz, yaw_rate]}; yaw rate ignored (always 0, as Level 2)."""
+        tag = ''
+        if self._lrx is not None:                           # C3: every flying drone scans this step
+            self._scan_k += 1
+            tag = ' ' + format_tag(self._scan_k, self.n_sub)
         for i in range(self.n_agents):                      # L2 140-142, per axis as PyBullet
             if self._parked[i]:                             # parked: stays in H, no command
                 self._cmd[i] = 0.0
@@ -350,7 +405,7 @@ class WebotsL2MultiAdapter(WebotsAdapter):
             v = np.clip(np.asarray(actions[f'drone_{i}'][:3], dtype=np.float64), -self.v_max, self.v_max)
             self._cmd[i] = v
             if i not in self._pending:                      # just placed: F after the first basic step
-                self._cd[i].setSFString(format_command(self.ep, 'F', v))
+                self._cd[i].setSFString(format_command(self.ep, 'F', v) + tag)
 
     def step_simulation(self):
         if self._pending:
@@ -369,6 +424,8 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         if self._zones is not None:                         # C7: show / hide on the episode clock
             self._ep_step += 1
             self._zones.update(self._ep_step * self.control_dt)
+        if self._lrx is not None:
+            self._collect_scans()
         win = (self._since_release < DROP_CHECK_STEPS) & ~self._parked
         if win.any():
             start = win & (self._since_release < START_CHECK_STEPS)
@@ -381,6 +438,72 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         self._max_speed = np.maximum(self._max_speed, np.linalg.norm(self._vel, axis=1))
         if self._rx is not None:
             self._drain()
+
+    # ---------------------------------------------------------------- Lidar (C3)
+    def _collect_scans(self):
+        """The scans the drones took for this control step (tag _scan_k), image 4 ms before now."""
+        t0 = time.perf_counter()
+        st, rx = self._scan_log.stats, self._lrx
+        shape = (self.lidar['layers'], self.lidar['horizontal_res'])
+        self._scans = [None] * self.n_agents
+        now = self.sup.getTime()
+        while rx.getQueueLength() > 0:
+            b = ctypes.string_at(rx.data, rx.getDataSize())
+            rx.nextPacket()
+            d = decode_scan(b)
+            if d['ep'] != self.ep or d['k'] != self._scan_k:
+                st['stale'] += 1
+                continue
+            if abs(d['t'] - (now - self.dt)) > 1e-6:
+                st['wrong_time'] += 1
+            d['img'] = np.frombuffer(d['ranges'], dtype=np.float32).reshape(shape)
+            self._scans[d['idx']] = d
+            st['scans'] += 1
+            st['bytes'] += len(b)
+        st['recv_s'] += time.perf_counter() - t0
+
+    def _scan_lidar(self):
+        scans, rings = super()._scan_lidar()                # analytic; also updates the headings
+        if self._lrx is None:
+            return scans, rings
+        t0 = time.perf_counter()
+        log, rng, n_ring = self._scan_log, self.lidar_cfg['range'], self.lidar_cfg['ring_rays']
+        policy = self.lidar['use_for_policy']
+        key = (self.ep, self._scan_k)
+        log_now, self._logged = self._logged != key, key     # get_raw_state may run twice in a step
+        out_s, out_r = [], []
+        for i in range(self.n_agents):
+            sc = self._scans[i]
+            ana = np.asarray(scans[i] + rings[i], dtype=np.float64)
+            heading = self._heading[f'drone_{i}']
+            if self._parked[i] or sc is None:
+                if not self._parked[i]:
+                    if log_now:
+                        log.stats['missing'] += 1
+                    if policy:
+                        raise RuntimeError(f"webots_l2_multi: no Lidar scan from drone_{i} for control "
+                                           f"step {self._scan_k} (episode {self.ep})")
+                lid = np.full(len(ana), rng)
+            else:
+                lid = pick_rays(sc['img'], analytic_dirs(heading, n_ring), np.asarray(sc['pos']), sc['rpy'], rng)
+            if log_now:
+                nan3 = [np.nan] * 3
+                log.add(ep=self.ep, k=self._scan_k, drone=i, t_state=self.sup.getTime(),
+                        t_scan=np.nan if sc is None else sc['t'], pos=self._pos[i].copy(), orn=self._orn[i].copy(),
+                        heading=heading, scan_pos=nan3 if sc is None else list(sc['pos']),
+                        scan_rpy=nan3 if sc is None else list(sc['rpy']),
+                        lidar=lid.astype(np.float32), analytic=ana.astype(np.float32),
+                        all_pos=self._pos.copy(), all_yaw=self._orn[:, 2].copy(),
+                        cpu_send=np.nan if sc is None else sc['cpu'], parked=bool(self._parked[i]))
+            if policy:
+                out_s.append(lid[:self.n_lidar].tolist())
+                out_r.append(lid[self.n_lidar:].tolist())
+        log.stats['pick_s'] += time.perf_counter() - t0
+        return (out_s, out_r) if policy else (scans, rings)
+
+    def lidar_stats(self):
+        """C3: counters and timing of the Lidar scans so far (None with the Lidar off)."""
+        return None if self._scan_log is None else dict(self._scan_log.stats)
 
     # ---------------------------------------------------------------- radio (E2)
     def _drain(self):
@@ -471,4 +594,6 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         if getattr(self, 'proc', None) is None:
             return
         super().close()                                     # quit Webots first: the log is then complete
+        if self._scan_log is not None:
+            self._scan_log.save()
         self._check_controller_log()                        # the last episode
