@@ -1,0 +1,35 @@
+# E6 demo scenario with D5 drone failures, E-City crop (OpenStreetMap buildings near PES). The story:
+#   0 s    two delivery operators fly from their depots (2 depots, 2 pads each) to 6 drop points,
+#          on E1's schedule; some drones are late or slow
+#   10 s   an intruder (no flight plan) crosses the plaza: E4 books a protective volume around it
+#   15 s   a no-fly zone closes the middle of the plaza for 60 s: E4 re-routes flights around it
+#          and holds back the ones still on their pads; the intruder ignores it
+#   25 s   an emergency flight from the hospital pad is filed: E4 gives it the air it needs
+#   + one failure of each type, each while that drone is airborne (failures: below): a comms loss on f0 (18 s),
+#     a motor failure of f6 (50 s) and a forced landing of f8 (66 s), chosen to be airborne in e1 and in e4; E3 detects them from the reports, E4 (mode e4) reacts
+# Fixed positions (zone, hospital, intruder) so every run, video and the dashboard show the same.
+# Run: python scripts/run_scenario.py scenarios/ecity_failures.yaml
+name: ecity_failures
+seed: 20
+map: {map: osm-crop}
+demand:
+  rate: 30
+  duration_s: 40
+  mode: hubs
+  n_hubs: 2
+  n_drops: 6
+  pads_per_hub: 2
+  operators: {op0: 0.5, op1: 0.5}
+disruptions: {p_late: 0.25, late: [5, 15], p_slow: 0.25, slow: 0.6}
+intruders:
+  - {t: 10, start: [20, 8], goal: [-20, 6]}
+zones:
+  - {at: 15, for: 60, polygon: [[-6, 5], [0, 5], [0, 11], [-6, 11]]}
+emergencies:
+  - {t: 25, start: [2, 20], goal: [7, 8], priority: 1}
+utm: {mode: e4, risk: booking, telemetry: null}
+failures:
+  - {flight: f0, t: 18, type: comms}
+  - {flight: f6, t: 50, type: motor}
+  - {flight: f8, t: 66, type: land}
+record: eval_results/scenarios/ecity_failures.json.gz

@@ -169,3 +169,64 @@ def test_requests_from_named_places_use_the_operators_hub_pads():
 def test_bad_places_and_requests_are_refused(bad):
     with pytest.raises(ValueError):
         scenario.load({'name': 'x', 'map': {'map': 'osm-crop'}, **bad})
+
+
+# D5: failures in a scenario file
+def _fsc(**kw):
+    return {'map': {'map': 'city'}, **kw}
+
+
+def test_failures_absent_is_none():
+    assert scenario.load(_fsc()).get('failures') is None
+    assert scenario.load('scenarios/ecity_demo.yaml').get('failures') is None
+    assert 'failures' not in scenario.load(_fsc())          # the recording's scenario block is unchanged
+
+
+def test_failures_both_forms_parse():
+    sc = scenario.load(_fsc(failures={'p': 0.2}))
+    assert sc['failures'] == {'p': 0.2, 'types': ['motor', 'land', 'comms']}
+    sc = scenario.load(_fsc(failures={'p': 1, 'types': ['land']}, utm={'mode': 'e1'}))
+    assert sc['failures']['types'] == ['land']
+    lst = [{'flight': 'f1', 't': 30, 'type': 'motor'}, {'flight': 'f0', 't': 5.5, 'type': 'comms'}]
+    sc = scenario.load(_fsc(failures=lst, requests=[{'t': 0, 'operator': 'a', 'from': [0, 0], 'to': [5, 5]}] * 2))
+    assert sc['failures'] == lst
+    scenario.load(_fsc(failures=lst))                         # no requests: flight ids are checked at run time
+
+
+@pytest.mark.parametrize('bad', [
+    {'failures': {'p': 1.5}},
+    {'failures': {'p': -0.1}},
+    {'failures': {'p': 'x'}},
+    {'failures': {'types': ['motor']}},
+    {'failures': {'p': 0.5, 'types': ['fire']}},
+    {'failures': {'p': 0.5, 'types': []}},
+    {'failures': {'p': 0.5, 'q': 1}},
+    {'failures': 3},
+    {'failures': [{'flight': 'f0', 't': -1, 'type': 'motor'}]},
+    {'failures': [{'flight': 'f0', 't': 5, 'type': 'fire'}]},
+    {'failures': [{'flight': 'f0', 't': 5}]},
+    {'failures': [{'flight': 'f0', 't': 5, 'type': 'motor'}, {'flight': 'f0', 't': 9, 'type': 'land'}]},
+    {'failures': [{'flight': 'f7', 't': 5, 'type': 'motor'}], 'requests': [{'t': 0, 'operator': 'a', 'from': [0, 0], 'to': [5, 5]}]},
+    {'failures': {'p': 0.5}, 'utm': {'mode': 'no_e1'}},
+    {'failures': {'p': 0.5}, 'sim': {'simulator': 'webots_l2_multi'}},
+])
+def test_bad_failures_are_refused(bad):
+    with pytest.raises(ValueError, match='fail'):
+        scenario.load(_fsc(**bad))
+
+
+def test_drawn_failures_follow_the_seed():
+    import sys
+    sys.path.insert(0, 'scripts')
+    import run_scenario as rs
+    flights = [{'id': f'f{k}', 'e1': (3.0 * k, 0), 'arrival': {'e1': 3.0 * k + 20.0}} for k in range(12)]
+    late = [0.0] * 12
+    sc = scenario.load(_fsc(seed=21, failures={'p': 0.5}))
+    a = rs.failure_schedule(sc, flights, late)
+    assert a == rs.failure_schedule(sc, flights, late) and 0 < len(a) < 12
+    assert all(f['type'] in scenario.FAILURE_TYPES for f in a)
+    sc2 = scenario.load(_fsc(seed=22, failures={'p': 0.5}))
+    assert rs.failure_schedule(sc2, flights, late) != a
+    assert rs.failure_schedule(scenario.load(_fsc()), flights, late) is None
+    lst = [{'flight': 'f1', 't': 4, 'type': 'land'}]
+    assert rs.failure_schedule(scenario.load(_fsc(failures=lst)), flights, late) == lst

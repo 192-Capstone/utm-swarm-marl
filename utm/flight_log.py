@@ -17,8 +17,11 @@ dashboard; bump the version when it does.
       "zones":    [{"id", "polygon", "active", "t_on"}],
       "frames":   {"t": [...], "pos": [[x, y, z] per drone] per frame, "status": [code per drone] per frame},
       "ticks":    [{"t", "risk": {id: [state, risk]}, "paths": {id: [[x, y, z], ...]}}],   # 1 Hz, UTM view
-      "events":   [{"t", "type", ...}],                   # alert, replan, zone_on, arrived, crashed
-                                                          #   (arrived / crashed: {"flight"}, when it lands / crashes)
+      "events":   [{"t", "type", ...}],                   # alert, replan, zone_on, arrived, crashed, failure,
+                                                          #   forced_down (arrived / crashed / forced_down: {"flight"},
+                                                          #   when it lands / crashes / is brought down; failure:
+                                                          #   {"flight", "failure_type": motor | land | comms}, when it fires
+                                                          #   (scenario key failures). 'arrived' leaves out forced-down drones)
       "summary":  {...}                                   # the run's results (eval_layered fly())
     }
 
