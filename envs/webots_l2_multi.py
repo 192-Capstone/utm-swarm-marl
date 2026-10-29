@@ -69,6 +69,14 @@ the supervisor (the origin): parked drones (>= 1.4 km away) are out of range as 
 The state SwarmEnv sees is still the TRUE state; the radio is what the UTM hears
 (utm/telemetry.py RadioTelemetry). With it off, the drone nodes, their commands and the
 supervisor's devices are exactly as before.
+
+No-fly zones (C7, off by default): with webots.draw_zones the D2 zones (utm/airspace_zones.py) are
+drawn too, visual only (envs/webots_zones.py): from webots.zones_file + webots.zones_map (GeoJSON,
+wgs84 or local_m) and/or set_zones(zones) (local metres, used from the next reset). Top for zones
+without a ceiling: webots.zones_ceiling_m (default E1's airspace top). Zones with active windows
+are shown only while active, on the episode clock (control steps since the reset * control_dt,
+SwarmEnv's clock for E1 departures). Rebuilt only when the zones change (as the buildings, with
+reuse_layout). With the flag off nothing is imported and the world is exactly as without C7.
 """
 
 import os
@@ -139,6 +147,7 @@ def layout_key(layout):
 
 class WebotsL2MultiAdapter(WebotsAdapter):
     _rx = _tx = None                                        # radio devices: None = radio off
+    _zones = None                                           # C7 ZoneDrawer, only with webots.draw_zones
 
     def __init__(self, config, gui: bool = False):
         config = dict(config)
@@ -208,8 +217,20 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         self._parked = np.zeros(n, dtype=bool)
         self._pending = set()                               # placed, F not yet sent
         self._reset_stats()
+        self._zones, self._zone_list = None, []             # C7 no-fly zones (webots.draw_zones)
+        if w.get('draw_zones'):
+            from envs.webots_zones import ZoneDrawer, zones_from_config
+            self._zone_list = zones_from_config(w)
+            self._ep_step = 0
+            self._zones = ZoneDrawer(self.sup, self.sup.getFromDef('VIEW'), w.get('zones_ceiling_m'),
+                                     self.reuse_layout)
 
     # ---------------------------------------------------------------- world
+    def set_zones(self, zones):
+        """D2 zones (utm/airspace_zones.Zone, local metres) to draw from the next reset on;
+        replaces the config's zones. Does nothing visible unless webots.draw_zones is on."""
+        self._zone_list = list(zones)
+
     def _attach(self, i):
         nd = self.sup.getFromDef(f'DRONE_{i}')
         self.nodes[i], self._tr[i], self._rot[i] = nd, nd.getField('translation'), nd.getField('rotation')
@@ -248,6 +269,9 @@ class WebotsL2MultiAdapter(WebotsAdapter):
             self.goals[f'drone_{i}'] = np.array(goal_positions[f'drone_{i}'], dtype=np.float32)
         self._heading = {}                                  # L2 98-99
         self._build_obstacles(obstacles or [])
+        if self._zones is not None:                         # C7: visual only
+            self._ep_step = 0
+            self._zones.build(self._zone_list)
         self._cmd[:] = 0.0                                  # L2 103
         # L2 110-114: hold every drone at its spawn while the rotors spin up (2 s, official model)
         for _ in range(max(1, int(round(self.spinup_hold_s / self.dt)))):
@@ -342,6 +366,9 @@ class WebotsL2MultiAdapter(WebotsAdapter):
         elif self.sup.step(self.step_ms) == -1:             # the controllers run n_sub basic steps
             raise RuntimeError("Webots terminated")
         self._read_state()
+        if self._zones is not None:                         # C7: show / hide on the episode clock
+            self._ep_step += 1
+            self._zones.update(self._ep_step * self.control_dt)
         win = (self._since_release < DROP_CHECK_STEPS) & ~self._parked
         if win.any():
             start = win & (self._since_release < START_CHECK_STEPS)
