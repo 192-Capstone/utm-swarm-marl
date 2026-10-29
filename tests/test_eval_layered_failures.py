@@ -310,6 +310,8 @@ def test_fly_with_failures_end_to_end():
         assert rows[flights[0]['id']]['status'] == 'fired' and rows[flights[1]['id']]['status'] == 'fired'
         assert r['forced_down'] == 1 and rows[flights[0]['id']]['outcome'] == 'forced_down'
         kinds = [(k, kw['flight']) for k, kw in rec.events]
+        assert all('type' not in kw for _, kw in rec.events)     # would overwrite the event's own type
+        assert 'land' in {kw.get('failure_type') for k, kw in rec.events if k == 'failure'}
         assert ('failure', flights[0]['id']) in kinds and ('forced_down', flights[0]['id']) in kinds
         assert ('arrived', flights[0]['id']) not in kinds
         assert r['arrived'] <= len(flights) - 1
@@ -390,6 +392,13 @@ def test_cli_failures_one_schedule_per_seed_for_every_mode(monkeypatch, tmp_path
     ev.main()
     assert len(seen) == 4 and all(s[2] is seen[0][2] or s[2] == seen[0][2] for s in seen)
     assert len(seen[0][2]) == 6 and {f['type'] for f in seen[0][2]} <= {'land', 'comms'}
+
+
+def test_failure_event_keeps_its_type_in_a_real_flight_log():
+    from utm.flight_log import FlightLog
+    log = FlightLog()
+    log.event(12.0, 'failure', flight='a', failure_type='motor')
+    assert log.log['events'] == [{'t': 12.0, 'type': 'failure', 'flight': 'a', 'failure_type': 'motor'}]
 
 
 @pytest.mark.parametrize('extra', [['--modes', 'no_e1', 'e1'], ['--simulator', 'webots_l2_multi', '--modes', 'e1',

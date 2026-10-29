@@ -435,7 +435,7 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
                 rec.event(t, 'crashed', flight=ids[i])
             if feed is not None:
                 for kind, i, what in feed.new_events():
-                    rec.event(t, kind, flight=ids[i], **({'type': what} if what else {}))
+                    rec.event(t, kind, flight=ids[i], **({'failure_type': what} if what else {}))
             was_landed, was_crashed = env.landed.copy(), env.crashed.copy()
         if (step + 1) % every == 0:
             here, paths = {ids[i]: pos[i] for i in air}, None
