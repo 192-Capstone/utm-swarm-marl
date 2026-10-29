@@ -732,7 +732,7 @@ class SwarmEnv:
                 self.adapter.set_falling(i)
             elif f['type'] == 'land':
                 x, y, _ = self.adapter.get_positions()[i]
-                roof = disturbances.roof_under(self.layout, x, y, scenario_manager.DRONE_RADIUS + 0.3)
+                roof = disturbances.roof_under(self.layout, x, y)
                 self._forced[i] = True
                 self._forced_target[i] = (x, y, roof + self.failure_cfg['land_z'])
                 self._landing[i] = False

@@ -35,6 +35,10 @@ CONFIG = os.path.join(os.path.dirname(__file__), '..', 'configs', 'config_stage2
 SPAWNS = {'drone_0': [0.0, 0.0, 4.0], 'drone_1': [6.0, 0.0, 4.0]}
 GOALS = {'drone_0': [0.0, 6.0, 4.0], 'drone_1': [6.0, -6.0, 4.0]}
 BOX = {'type': 'box', 'center': [0.0, 1.5, 0.0], 'half': (1.0, 1.0), 'height': 2.5, 'yaw': 0.0}
+# a 12 m wall whose face is 0.3 m east of drone_0's track (x = 0, y 0 -> 6)
+WALL = {'type': 'box', 'center': [0.8, 3.0, 0.0], 'half': (0.5, 3.0), 'height': 12.0, 'yaw': 0.0}
+# a long thin building turned 45 degrees, under drone_0's track at y ~ 1
+ROT = {'type': 'box', 'center': [0.0, 1.0, 0.0], 'half': (1.5, 0.3), 'height': 2.0, 'yaw': np.pi / 4}
 
 
 def make_env(failures=True, crash_mode='remove', schedule=False, **fcfg):
@@ -119,7 +123,10 @@ def test_emergency_report_probability(p):
 
 
 # ---------------------------------------------------------------- forced landing
-@pytest.mark.parametrize('layout, z_land', [([], 1.0), ([BOX], 3.5)])
+@pytest.mark.parametrize('layout, z_land', [([], 1.0),          # open ground
+                                            ([BOX], 3.5),       # over a roof: on the roof
+                                            ([WALL], 1.0),      # 0.3 m beside a 12 m wall: the ground
+                                            ([ROT], 3.0)])      # over a rotated building: its roof
 def test_forced_landing_where_it_is(layout, z_land):
     env = make_env(land_vz=0.5)
     env.start_episode(SPAWNS, GOALS, obstacles=layout, failures=[{'drone': 'drone_0', 't': 1.0, 'type': 'land'}])
@@ -274,10 +281,26 @@ def test_draw_failures_is_seeded_and_mid_flight():
 
 
 def test_roof_under():
-    assert dist.roof_under([BOX], 0.0, 1.5, 0.45) == 2.5
-    assert dist.roof_under([BOX], 1.3, 1.5, 0.45) == 2.5      # 0.3 m off the edge
-    assert dist.roof_under([BOX], 2.0, 1.5, 0.45) == 0.0
-    assert dist.roof_under([], 0.0, 0.0, 0.45) == 0.0
+    assert dist.roof_under([BOX], 0.0, 1.5) == 2.5
+    assert dist.roof_under([BOX], 0.99, 1.5) == 2.5             # just inside the edge
+    assert dist.roof_under([BOX], 1.3, 1.5) == 0.0              # 0.3 m beside it: the ground
+    assert dist.roof_under([], 0.0, 0.0) == 0.0
+    assert dist.roof_under([WALL], 0.0, 3.0) == 0.0             # 0.3 m beside a 12 m wall (review, PR #39)
+    assert dist.roof_under([WALL], 0.25, 3.0) == 0.0            # 0.05 m beside it
+    assert dist.roof_under([WALL], 0.35, 3.0) == 12.0           # 0.05 m inside it
+    assert dist.roof_under([WALL, BOX], 0.5, 1.5) == 12.0       # on both footprints: the higher roof
+    pillar = {'type': 'pillar', 'center': [5.0, 5.0, 0.0], 'radius': 1.0, 'height': 6.0}
+    assert dist.roof_under([pillar], 5.7, 5.7) == 6.0           # 0.99 m from the axis
+    assert dist.roof_under([pillar], 5.8, 5.8) == 0.0           # 1.13 m
+
+
+def test_roof_under_rotated_building():
+    """ROT turned 45 degrees: a point on its long diagonal is inside although the unturned box
+    would not contain it, and a point the unturned box would contain is outside."""
+    assert dist.roof_under([ROT], 1.0, 2.0) == 2.0              # (1, 1) from the centre, along its length
+    assert dist.roof_under([ROT], 1.4, 1.0) == 0.0              # (1.4, 0): inside the unturned box only
+    assert dist.roof_under([ROT], -0.9, 0.1) == 2.0
+    assert dist.roof_under([ROT], 0.9, 0.1) == 0.0
 
 
 # ---------------------------------------------------------------- telemetry

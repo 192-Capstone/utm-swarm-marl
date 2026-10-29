@@ -83,11 +83,13 @@ def draw_failures(rng, flights, p, types=FAILURE_TYPES, frac=(0.2, 0.8)):
     return out
 
 
-def roof_under(layout, x, y, margin):
-    """Height of the highest obstacle within margin (m) of (x, y) horizontally, 0 if none."""
+def roof_under(layout, x, y):
+    """Height of the roof under (x, y): the highest obstacle whose footprint contains the point
+    (rotated boxes in their own axes, pillars by radius), 0 (the ground) if none. Only the
+    footprint counts: a drone beside a wall, however close, lands on the ground next to it."""
     from envs.scenario_manager import surface_distance
     top = 0.0
     for ob in layout:
-        if surface_distance(ob, (x, y, 0.0)) < margin:
+        if surface_distance(ob, (x, y, 0.0)) <= 0.0:
             top = max(top, float(ob['height']))
     return top
