@@ -71,7 +71,12 @@ def parse_controller_args(argv):
     """The radio settings from a controller's argv (sys.argv[1:]), or None: no radio."""
     if '--radio' not in argv:
         return None
-    kv = dict(a.split('=', 1) for a in argv[argv.index('--radio') + 1:] if '=' in a)
+    mine = []                                       # the radio's k=v, up to the next flag (C3: --lidar)
+    for a in argv[argv.index('--radio') + 1:]:
+        if a.startswith('--'):
+            break
+        mine.append(a)
+    kv = dict(a.split('=', 1) for a in mine if '=' in a)
     if set(kv) != set(SENDER_KEYS):
         raise ValueError(f"radio controller args {argv!r}: expected {SENDER_KEYS}")
     return {'period_s': float(kv['period_s']), 'noise_m': float(kv['noise_m']), 'seed': int(kv['seed'])}

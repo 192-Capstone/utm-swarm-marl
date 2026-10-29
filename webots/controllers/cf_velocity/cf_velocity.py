@@ -23,11 +23,19 @@ the drone also has an Emitter "radio_tx" and a Receiver "radio_rx" (in its exten
 basic step it reads the intents the UTM sent, and while flying (F) it reports its own GPS
 position, velocity and intent once per period (RadioSender). Without the argument none of this
 runs and no device is looked up.
+
+C3 Lidar (webots.lidar.enabled, envs/lidar_msg.py): started with controllerArgs "--lidar", the drone
+also has a Lidar "lidar" and an Emitter "lidar_tx". The supervisor then appends a scan tag to every
+command; ScanTimer switches the Lidar on for one basic step and the next one reads it and sends the
+range image as raw float32 bytes with the drone's GPS / IMU pose. Without the argument none of this
+runs, no device is looked up and a tagged command is an error.
 """
 
+import ctypes
 import math
 import os
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, ROOT)
@@ -35,7 +43,8 @@ sys.path.insert(0, ROOT)
 from controller import Robot                                            # noqa: E402
 from envs.cf_velocity_pid import (VelocityPID, HOVER_RAD_S, HOVER_INTEGRATOR,   # noqa: E402
                                   ControllerState, parse_command)
-from envs.radio_msg import RadioSender, parse_controller_args          # noqa: E402
+from envs.radio_msg import RadioSender, parse_controller_args, drone_index   # noqa: E402
+from envs.lidar_msg import ARG as LIDAR_ARG, ScanTimer, split_tag, encode_scan   # noqa: E402
 
 
 def set_motors(motors, m):
@@ -69,15 +78,33 @@ def main():
         rx.enable(basic_ms)
         sender = RadioSender(robot.getName(), radio, dt)
 
+    lidar_on = LIDAR_ARG in sys.argv[1:]                                # C3 Lidar: off unless the flag
+    if lidar_on:
+        lidar, ltx = robot.getDevice('lidar'), robot.getDevice('lidar_tx')
+        timer, idx = ScanTimer(), drone_index(robot.getName())
+        n_bytes = 4 * lidar.getHorizontalResolution() * lidar.getNumberOfLayers()
+
     while robot.step(basic_ms) != -1:
         try:
-            cmd = parse_command(robot.getCustomData())
+            raw, tag = split_tag(robot.getCustomData()) if lidar_on else (robot.getCustomData(), None)
+            cmd = parse_command(raw)
         except ValueError as e:
             print(f"cf_velocity [{robot.getName()}]: {e}", file=sys.stderr, flush=True)
             set_motors(motors, [0.0] * 4)
             sys.exit(1)
 
         act = state.update(cmd)
+        if lidar_on:                                                    # before hold / idle: they scan too
+            what = timer.step(tag)
+            if what == 'enable':
+                lidar.enable(basic_ms)
+            elif what == 'read':
+                t0 = time.perf_counter()
+                img = ctypes.string_at(lidar.range_image, n_bytes)
+                lidar.disable()
+                pose, rpy = gps.getValues(), imu.getRollPitchYaw()
+                ltx.send(encode_scan(idx, cmd[0], tag[0], robot.getTime(), pose, rpy,
+                                     time.perf_counter() - t0, img))
         if radio is not None:
             while rx.getQueueLength() > 0:                              # intents from the UTM
                 try:

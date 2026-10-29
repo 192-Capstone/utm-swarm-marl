@@ -27,6 +27,12 @@ Each mode runs in its OWN subprocess (one Webots connection per Python process; 
 drawn again there from the same seeds). Besides the summary (<out>), the per-flight rows go to
 <out stem>.<mode>.rows.json (seed, episode, drone, scenario_id, outcome, cross-track numbers;
 Webots: max tilt and true speed), for scripts/c5_compare.py.
+
+C3 (Webots Lidar, envs/webots_lidar.py; needs --simulator webots_l2_multi):
+    --lidar compare   the drones carry a Lidar, the policy still flies on the analytic scan; both
+                      scans are logged to <out stem>.<mode>.lidar.npz
+    --lidar policy    the policy flies on the Lidar scan (logged the same way)
+Without --lidar nothing changes (the option is not even recorded in the args).
 """
 
 import argparse
@@ -199,11 +205,15 @@ def main():
     ap.add_argument('--out', default=None)
     ap.add_argument('--simulator', choices=['pybullet', 'webots_l2_multi'], default='pybullet')
     ap.add_argument('--modes', nargs='+', choices=['direct', 'route'], default=['direct', 'route'])
+    ap.add_argument('--lidar', choices=['compare', 'policy'], default=argparse.SUPPRESS,
+                    help='C3: Webots Lidar on the drones (default: off)')
     ap.add_argument('--worker-mode', default=None, help=argparse.SUPPRESS)
     ap.add_argument('--worker-out', default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
     if any(10 <= s <= 19 for s in args.seeds):
         ap.error('seeds 10-19 are reserved for test runs')
+    if hasattr(args, 'lidar') and args.simulator != 'webots_l2_multi':
+        ap.error('--lidar needs --simulator webots_l2_multi')
     worker = (args.worker_mode, args.worker_out)
     del args.worker_mode, args.worker_out
     path = args.out or os.path.join('eval_results', 'city_routes',
@@ -222,6 +232,9 @@ def main():
         if args.simulator != 'pybullet':
             cfg['environment']['simulator'] = args.simulator
             cfg['webots'] = {'log': os.path.abspath(f'{stem}.{mode}.webots.log')}
+            if hasattr(args, 'lidar'):
+                cfg['webots']['lidar'] = {'enabled': True, 'use_for_policy': args.lidar == 'policy',
+                                          'log': os.path.abspath(f'{stem}.{mode}.lidar.npz')}
         episodes = draw_episodes(args)
         np.random.seed(args.seeds[0]); torch.manual_seed(args.seeds[0])
         rows = run(cfg, args, episodes, mode == 'route')

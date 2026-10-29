@@ -4,7 +4,8 @@
 # runtime, each with controller "cf_velocity" (webots/controllers/cf_velocity: Bitcraze's velocity
 # PID onboard, commands via customData). Same real sky, grass and buildings (visual only, no
 # bounding objects: LiDAR and crash checks stay analytic). Assets are fetched by Webots from
-# cyberbotics/webots R2025a. The supervisor carries the UTM's radio (E2, off unless enabled).
+# cyberbotics/webots R2025a. The supervisor carries the UTM's radio (E2, off unless enabled) and the
+# receiver of the drones' Lidar scans (C3, off unless enabled).
 
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
@@ -50,6 +51,11 @@ DEF SUPERVISOR Robot {
     Emitter {
       name "utm_tx"
       channel 101
+    }
+    # C3 Lidar (envs/webots_lidar.py): the drones' scans; inert unless webots.lidar.enabled
+    Receiver {
+      name "lidar_rx"
+      channel 102
     }
   ]
 }
