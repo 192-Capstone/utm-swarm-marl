@@ -39,20 +39,89 @@ released, it never takes off) only if that fails. A flight is re-planned at most
     # departure time and waypoints to send to that drone; 'why' ending in '-> cancelled' means
     # the flight must not take off
 
-Lost link (no position from a drone) is not handled yet (stretch goal).
+Drone failures (opt-in: ContingencyManager(planner, monitor, failures=True); the monitor must have
+failures=True too, E3: utm/conformance.py; off, nothing below runs). A drone in a failure state
+can no longer follow a new route (SwarmEnv.set_route refuses it), so it is never re-planned
+(_replan refuses it) and the others are moved instead:
+
+    alert                       reaction
+    lost_link                   it can't hear: keep its booking ("continue as filed") and book, once,
+                                  at onset, a protective volume 'lostlink:<id>': LOSTLINK_RADIUS_M
+                                  around where its booking has the drone, along the whole remaining
+                                  route up to its booked arrival + LOSTLINK_RELEASE_MARGIN_S, on the
+                                  layers it is in or passing between, each cell's window widened by
+                                  max(LOSTLINK_TIME_SLACK_S, how late/early its last report was);
+                                  plus the air around its last heard position for `intruder_horizon`
+                                  s. Clashing flights are re-planned then, once. Everything is
+                                  released after the booked arrival + margin, or when the link is
+                                  restored (the monitor goes back to ok)
+    down                        release its remaining booking (and any volumes), log it
+    emergency_landing           release its route booking and book a column 'landing:<id>' under
+                                  its last position on every layer down to the floor, for the
+                                  descent time + LANDING_HOLD_S; clashing flights are re-planned
+Volumes are owned by exactly one live state: lost_link -> emergency_landing -> down hands over
+(each handler drops the volumes of the one before) and nothing is left behind. These actions
+are log entries only: {'kind': 'log', 'decision': Decision(status 'logged')} (they change no
+route and are not rejections: a consumer counting re-plans skips kind == 'log'); the re-plans
+they cause are ordinary actions.
 """
 
+import numpy as np
+
 from utm.airspace_zones import ZONE_PREFIX, zone_keys
-from utm.strategic_planner import FlightPlan
+from utm.conformance import FAILURE_STATES
+from utm.strategic_planner import Decision, FlightPlan
 
 IMMEDIATE = ('intrusion',)
 PERSISTENT = ('late', 'off_route')            # re-planned only when E3 rates them high risk
 
+LOSTLINK_RADIUS_M = 4.2           # m: 2 x the safety radius; the drone is not steered, so its track is unsure
+LOSTLINK_RELEASE_MARGIN_S = 7.0   # s after its booked arrival (Settings.pad_after: p99 of settling)
+LANDING_HOLD_S = 7.0              # s a landing column is held after the descent (same settling margin)
+LOSTLINK_TIME_SLACK_S = 5.0       # s: each cell of the volume is held this long before and after its booked time
+LOSTLINK_STEP_S = 1.0             # s between the booked positions the volume is built from
+
+
+def _merge_windows(intervals):
+    out = []
+    for lo, hi in sorted(intervals):
+        if out and lo <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], hi)
+        else:
+            out.append([lo, hi])
+    return [tuple(iv) for iv in out]
+
+
+def cells_within(planner, x, y, radius):
+    """H3 cells that come within `radius` of (x, y) (StrategicPlanner.cells_near for any radius)."""
+    sky = planner.sky
+    reach = radius + planner._edge
+    out = []
+    for c in sky.disk(sky.cell(x, y), sky.k_for_radius(radius)):
+        if c not in planner._centres:
+            planner._centres[c] = sky.center(c)
+        cx, cy = planner._centres[c]
+        if (cx - x) ** 2 + (cy - y) ** 2 <= reach * reach:
+            out.append(c)
+    return out
+
 
 class ContingencyManager:
     def __init__(self, planner, monitor=None, persist=3.0, grace=2.0, cooldown=5.0, intruder_horizon=10.0,
-                 refile_wait=180.0, max_wait=1800.0):
+                 refile_wait=180.0, max_wait=1800.0, failures=False, landing_descent_ms=0.5):
+        if failures and (monitor is None or not getattr(monitor, 'failures', False)):
+            raise ValueError('failures=True needs a ConformanceMonitor with failures=True')
+        if landing_descent_ms <= 0:
+            raise ValueError('landing_descent_ms must be > 0')
         self.p, self.mon = planner, monitor
+        self.failures = bool(failures)
+        # m/s: a forced landing's descent (envs/disturbances.py land_vz, 0.5 by default; swarm_env.py
+        # clips the commanded vz to it); the column is held for the slower of this and v_climb
+        self.landing_descent_ms = float(landing_descent_ms)
+        self._owners = {}                 # lostlink: / landing: volume owner now in the ledger -> its flight id
+        self._lost_done = {}              # lost-link flights whose volume was released after their arrival
+        self._handled = {}                # flight -> failure state whose one-off handler has run
+        self._landing_end = {}            # flight -> when its landing column ends
         self.persist, self.grace, self.cooldown, self.horizon = persist, grace, cooldown, intruder_horizon
         self.refile_wait, self.max_wait = refile_wait, max_wait
         self.last = {}                    # flight id -> time of its last re-plan
@@ -62,7 +131,12 @@ class ContingencyManager:
     def _airborne(self, fid, t, positions):
         return fid in positions
 
+    def _failed(self, fid):
+        return self.failures and self.mon.state.get(fid) in FAILURE_STATES
+
     def _replan(self, fid, t, positions, why, wait=None):
+        if self._failed(fid):
+            return None                             # it can't follow a new route (lost link, down, landing)
         if t - self.last.get(fid, -1e9) < self.cooldown:
             return None
         if self._airborne(fid, t, positions):
@@ -103,12 +177,17 @@ class ContingencyManager:
         return sorted(out)
 
     # ------------------------------------------------------------------ alerts
-    def step(self, t, positions, paths=None):
+    def step(self, t, positions, paths=None, reports=None):
         """Run E3 on the positions (if a monitor is attached; paths: the predicted paths for its
-        risk='intent', E2) and react to its alerts."""
+        risk='intent', E2; reports: {flight: Report} for its drone failures) and react to its
+        alerts. Drones in a failure state are not in `positions` (a lost link) or are not
+        re-planned; they are handled first, so the others are re-planned around them."""
         if self.mon is not None:
-            self.mon.check(t, positions, paths)
-        out = []
+            if self.failures:
+                self.mon.check(t, positions, paths, reports)
+            else:
+                self.mon.check(t, positions, paths)
+        out = self._failures(t, positions) if self.failures else []
         for fid, pos in positions.items():
             if fid not in self.p.plans:             # unknown: an intruder
                 out += self._intruder(fid, pos, t, positions)
@@ -143,6 +222,12 @@ class ContingencyManager:
                 other = e['other'] if e['state'] == 'intrusion' else None
                 break
         out = []
+        if self._failed(fid):                       # the intruder can't be moved: the other flight can
+            if other in self.p.plans and not self._failed(other):
+                a = self._replan(other, t, positions, f'intrusion by {fid}')
+                return [a] if a else []
+            return [self._note(t, fid, f'intrusion by failed {fid}: neither flight re-planned'
+                               if other in self.p.plans else f'intrusion by failed {fid}: nobody to re-plan')]
         if other in self.p.plans:
             a = self._replan(other, t, positions, f'intrusion by {fid}')
             if a:
@@ -154,17 +239,138 @@ class ContingencyManager:
             out.append(a)
         return out
 
-    def _intruder(self, iid, pos, t, positions):
-        owner = 'intruder:' + str(iid)
-        self.p.release(owner, -float('inf'))       # move the protective volume with the drone
-        layer = self.p.layer_of(pos[2])
-        self.p._book(owner, {(c, layer): [(t, t + self.horizon)] for c in self.p.cells_near(pos[0], pos[1])})
+    def _protect(self, owner, volume, t, positions, why, skip=None):
+        """Book `volume` ({key: [(t0, t1)]}) as `owner`, replacing what it booked before (it moves
+        with the drone), and re-plan every flight whose booking now clashes with it (not `skip`)."""
+        self.p.release(owner, -float('inf'))
+        self.p._book(owner, volume)
         out = []
         for fid in self._future_clashes(owner, t):
-            a = self._replan(fid, t, positions, f'intruder {iid}')
+            if fid == skip:
+                continue
+            a = self._replan(fid, t, positions, why)
             if a:
                 out.append(a)
         return out
+
+    def _intruder(self, iid, pos, t, positions):
+        layer = self.p.layer_of(pos[2])
+        volume = {(c, layer): [(t, t + self.horizon)] for c in self.p.cells_near(pos[0], pos[1])}
+        return self._protect('intruder:' + str(iid), volume, t, positions, f'intruder {iid}')
+
+    # ------------------------------------------------------------------ drone failures
+    @staticmethod
+    def _owner(kind, fid):
+        """Ledger owner of a failure volume (flight ids may be any type: the name uses str(fid))."""
+        return kind + ':' + str(fid)
+
+    def _note(self, t, fid, why):
+        """A log entry: no route changes and it is not a rejection (kind 'log', Decision 'logged')."""
+        a = {'t': float(t), 'flight': fid, 'why': why, 'kind': 'log',
+             'decision': Decision(fid, 'logged', reason=why)}
+        self.actions.append(a)
+        return a
+
+    def _unbook(self, owner):
+        if owner in self._owners:
+            self.p.release(owner, -float('inf'))
+            del self._owners[owner]
+
+    def _failures(self, t, positions):
+        """Handle every drone the monitor holds in a failure state, and drop the volumes of those
+        that no longer are (link restored)."""
+        out = []
+        failed = {f: s for f, s in self.mon.state.items() if s in FAILURE_STATES}
+        # insertion order, never sorted: flight ids need not be comparable
+        for fid in dict.fromkeys([*failed, *self._owners.values(), *self._handled, *self._lost_done]):
+            state = failed.get(fid)
+            if state is None:                       # ok again: nothing of its is left booked
+                self._unbook(self._owner('lostlink', fid))
+                self._unbook(self._owner('landing', fid))
+                self._handled.pop(fid, None)
+                self._landing_end.pop(fid, None)
+                self._lost_done.pop(fid, None)
+            elif state == 'lost_link':
+                out += self._lost_link(fid, t, positions)
+            elif state == 'emergency_landing':
+                out += self._emergency_landing(fid, t, positions)
+            else:
+                out += self._down(fid, t)
+        return out
+
+    def _cells_at(self, x, y, layers, window, volume, radius=LOSTLINK_RADIUS_M):
+        for c in cells_within(self.p, x, y, radius):
+            for layer in layers:
+                volume.setdefault((c, layer), []).append(window)
+
+    def _lost_link(self, fid, t, positions):
+        """Keep its booking; at onset hold the air along its whole remaining booked route (once)."""
+        d, last = self.mon.booked(fid), self.mon.last_report(fid)
+        owner = self._owner('lostlink', fid)
+        if d is None or last is None or fid in self._lost_done:
+            return []
+        self._unbook(self._owner('landing', fid))
+        end = d.arrival + LOSTLINK_RELEASE_MARGIN_S
+        if t > end:                                 # it should be down by now: free the air
+            self._unbook(owner)
+            self._lost_done[fid] = t
+            self._handled.pop(fid, None)
+            return [self._note(t, fid, 'lost link: released after its booked arrival')]
+        if owner in self._owners:
+            return []                               # booked at onset; nothing moves
+        self._handled[fid] = 'lost_link'
+        # how far off its booking it was at its last report (late +, early -); the volume is wide in time by that
+        slack = max(LOSTLINK_TIME_SLACK_S, abs(last.t_sent - self.mon.booked_time_at(fid, last.pos)))
+        p, volume = self.p, {}
+        start = max(t - slack, d.t_dep)             # where a drone `slack` late is now, onwards
+        taus = list(np.arange(start, end, LOSTLINK_STEP_S)) or [start]
+        for lo in taus:
+            hi = min(lo + LOSTLINK_STEP_S, end)
+            a, b = self.mon.booked_at(fid, lo), self.mon.booked_at(fid, hi)
+            layers = range(p.layer_of(min(a[2], b[2])), p.layer_of(max(a[2], b[2])) + 1)
+            self._cells_at(a[0], a[1], layers, (lo - slack, hi + slack), volume)
+        self._cells_at(b[0], b[1], layers, (end - slack, end + slack), volume)
+        x, y, z = (float(v) for v in last.pos)
+        self._cells_at(x, y, [p.layer_of(z)], (t, t + self.horizon), volume)      # and where it was last heard
+        self._owners[owner] = fid
+        out = [self._note(t, fid, 'lost link: keeps its booking, airspace held')]
+        return out + self._protect(owner, {k: _merge_windows(v) for k, v in volume.items()}, t, positions,
+                                   f'lost link {fid}', skip=fid)
+
+    def _emergency_landing(self, fid, t, positions):
+        """Release its route; hold a column under it on every layer down to the floor."""
+        owner = self._owner('landing', fid)
+        if self._handled.get(fid) == 'emergency_landing':
+            if t > self._landing_end.get(fid, -np.inf):
+                self._unbook(owner)                 # the column has served its time
+            return []
+        last = self.mon.last_report(fid)
+        if last is None:
+            return []
+        self._unbook(self._owner('lostlink', fid))
+        self.p.release(fid, t)
+        x, y, z = (float(v) for v in last.pos)
+        s = self.p.s
+        descent = max(0.0, z - s.layer_floor) / min(s.v_climb, self.landing_descent_ms)
+        self._landing_end[fid] = t + descent + LANDING_HOLD_S
+        volume = {}
+        self._cells_at(x, y, range(0, self.p.layer_of(z) + 1), (t, self._landing_end[fid]), volume, s.radius)
+        self._handled[fid] = 'emergency_landing'
+        self._owners[owner] = fid
+        out = [self._note(t, fid, 'emergency landing: route released, column held')]
+        return out + self._protect(owner, {k: _merge_windows(v) for k, v in volume.items()}, t, positions,
+                                   f'landing {fid}', skip=fid)
+
+    def _down(self, fid, t):
+        """It is falling or fell: its booking and any volumes of earlier states are released."""
+        if self._handled.get(fid) == 'down':
+            return []
+        self._unbook(self._owner('lostlink', fid))
+        self._unbook(self._owner('landing', fid))
+        self._landing_end.pop(fid, None)
+        self.p.release(fid, t)
+        self._handled[fid] = 'down'
+        return [self._note(t, fid, 'down: booking released')]
 
     # ------------------------------------------------------------------ zones and emergencies
     def add_zone(self, zone, t, positions):
