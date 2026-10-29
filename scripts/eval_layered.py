@@ -84,7 +84,7 @@ from record_rollout import disable_all_collision_physics           # noqa: E402
 from utm.airspace_zones import Zone, tile_blocks, zone_keys        # noqa: E402
 from utm.conformance import FAILURE_STATES, ConformanceMonitor                     # noqa: E402
 from utm.contingency import ContingencyManager                     # noqa: E402
-from utm.intent import predicted_path, route_intent                # noqa: E402
+from utm.intent import INTENT_VZ, predicted_path, profile_intent, route_intent   # noqa: E402
 from utm.strategic_planner import FlightPlan, StrategicPlanner     # noqa: E402
 from utm.telemetry import TelemetryModel, silent                   # noqa: E402
 
@@ -353,9 +353,27 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
     tm = None                                     # E2: the UTM hears reports, not the truth
     if mode in ('e1', 'e4') and (on or args.telemetry is not None or args.risk == 'intent'):
         tm = TelemetryModel(*(args.telemetry or (0.0, 0.0, 0.0)), seed=9000 + seed)
-    monitor = (ConformanceMonitor(sky, risk=args.risk, **({'failures': True, 'noise_m': tm.noise} if on else {}))
+    monitor = (ConformanceMonitor(sky, risk=args.risk, blind_margin=float(getattr(args, 'blind_margin', 0.0) or 0.0),
+                                  **({'failures': True, 'noise_m': tm.noise} if on else {}))
                if mode in ('e1', 'e4') else None)
     feed = FailureFeed(env, tm, ids, failures) if on else None
+    full = bool(getattr(args, 'intent_profile', False))   # E2 option D: intent with the climb and landing
+    vz_down = float(getattr(args, 'land_vz_max', None) or INTENT_VZ)   # a landing cap, if on, sets the descent
+
+    def phase(i, p):
+        """A planned drone's flight phase for its intent ('climb' / 'cruise' / 'land'), None without a route."""
+        if not (env.followers and i < n_f and key[i] in env.followers):
+            return None
+        if not env._climbed.get(key[i], False):
+            return 'climb'
+        return 'land' if env._landing[i] or np.hypot(*(p[:2] - env.goals[i][:2])) < LAND_RADIUS_M else 'cruise'
+
+    def intent_of(i, p, vel, t):
+        ph = phase(i, p)
+        if full:
+            return [] if ph is None else profile_intent(env.followers[key[i]], p, np.hypot(*vel[:2]), t, ph,
+                                                        env.goals[i][2], sky.s.v_cruise, INTENT_VZ, vz_down)
+        return route_intent(env.followers[key[i]], p, np.hypot(*vel[:2]), t) if ph == 'cruise' else []
     prev = {}                                     # drone -> true position a report period ago
     every_frame = None
 
@@ -445,10 +463,7 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
                     if feed is not None and feed.reported_now(i, t):
                         continue
                     vel = (pos[i] - prev[i]) / (every * dt) if i in prev else np.zeros(3)
-                    f = env.followers.get(key[i]) if env.followers and i < n_f else None
-                    cruising = (f is not None and env._climbed.get(key[i], False) and not env._landing[i]
-                                and np.hypot(*(pos[i][:2] - env.goals[i][:2])) >= LAND_RADIUS_M)
-                    states[ids[i]] = (pos[i], vel, route_intent(f, pos[i], np.hypot(*vel[:2]), t) if cruising else [],
+                    states[ids[i]] = (pos[i], vel, intent_of(i, pos[i], vel, t),
                                       *([feed.status(i)] if feed is not None else []))
                 tm.send(t, states)
                 tm.receive(t)
@@ -457,6 +472,7 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
                 here = {fid: r.pos for fid, r in tm.latest.items()}
                 if args.risk == 'intent':
                     paths = {fid: predicted_path(r, t) for fid, r in tm.latest.items()}
+                    monitor.blind = {fid for fid in tm.latest if fid not in monitor.plans}   # no flight plan: intruders
             prev = {i: pos[i].copy() for i in air}
             acts_e4 = []
             for k, (t_on, z) in enumerate(zones):
@@ -575,6 +591,10 @@ def main():
     ap.add_argument('--zone-place', choices=['busiest', 'random'], default='busiest',
                     help='where: the tile that cuts the most routes, or a random tile that cuts one')
     ap.add_argument('--risk', choices=['booking', 'intent'], default='booking', help="E3's risk rule (intent: E2)")
+    ap.add_argument('--intent-profile', action='store_true',
+                    help='E2 option D: intents include the climb and the landing')
+    ap.add_argument('--blind-margin', type=float, default=0.0,
+                    help='E2 option B (small): extra m of radius for pairs with a drone that has no flight plan')
     ap.add_argument('--simulator', choices=['pybullet', 'webots_l2_multi'], default='pybullet',
                     help='webots_l2_multi: one run per command (one seed, mode and pilot), one Webots per process')
     ap.add_argument('--land-latch-m', type=float, default=None, help='C5 landing option (default: off)')
