@@ -64,9 +64,13 @@ class Settings:
     layer_floor: float = 1.0
     layer_height: float = 2.0
     n_layers: int = 2
+    layers_open: tuple = None         # layers flights may use (None: all); e.g. not the ones among the roofs
     start_z: float = 1.0              # pad hover height (the policy never learned to take off)
     v_cruise: float = 1.5             # m/s
     v_climb: float = 0.5              # m/s
+    v_descent: float = None           # m/s down (None: v_climb); the last slow_band_m when the next is set
+    v_descent_high: float = None      # m/s descending while higher than slow_band_m over the pad
+    slow_band_m: float = 3.0          # m: the last metres down at v_descent (a gentle touchdown, C5)
     dt: float = 0.25                  # s between profile samples
     radius: float = 2.1               # m: separation 2 m / 2 + tracking margin 1.1 m (D7 p99 cross-track)
     buffer_base: float = 1.0          # s
@@ -79,6 +83,11 @@ class Settings:
                                       # settling after the planned arrival (E1 v2 runs: p50 0.9, p95 4.6, p99 6.5 s)
     delay_step: float = 0.5           # s
     layer_penalty: float = 4.0        # s per layer away from the preferred one
+    traffic_detour: bool = False      # also try a same-layer route around the cells other flights have
+                                      # booked at the times this one would pass them (_detour)
+    detour_margin_s: float = 5.0      # s: a detour keeps this much more time from other traffic than
+                                      # the booking buffer (flown timing drifts by more than 1-3 s; on
+                                      # the same layer that is all that keeps two drones apart)
     grid_res: float = 0.25            # m, route planner grid
     inflate: float = DRONE_RADIUS + 0.35
 
@@ -107,6 +116,7 @@ class Decision:
     reservation: dict = field(default_factory=dict)     # (cell, layer) -> [(t0, t1), ...]
     reason: str = ''
     around_zones: bool = False        # flies the route around the no-fly zones
+    around_traffic: bool = False      # flies a same-layer detour around other flights' booked air
     blockers: list = field(default_factory=list)        # 'blocked' / 'zone:<id>' that were in the way
     displaced: list = field(default_factory=list)       # airborne flights an emergency took air from (E4)
 
@@ -160,28 +170,65 @@ class StrategicPlanner:
                                             min_height=lo)
         return self._grids[layer]
 
+    def _detour(self, fp, layer, route, avoid, z_start, snap, tries=6):
+        """A same-layer route around other flights' booked air, or None (none needed or none found).
+        Time-aware: a cell counts only if someone else has it booked when this flight (leaving at
+        t_earliest) would pass it; cells near its own pads don't (a delay handles those). Those cells
+        become obstacles and the route is planned again, up to `tries` times as the new route meets
+        other traffic; the usual conflict check then judges the result like any other option."""
+        near_pads = set(self.cells_near(*fp.start)) | set(self.cells_near(*fp.goal))
+        base = self._zone_grid(layer, avoid) if avoid else self._grid(layer)
+        cells, r = set(), route
+        for _ in range(tries):
+            prof, total = self.profile(r, layer, z_start)
+            res = self._absolute(self._relative_reservation(prof), fp.t_earliest, [], [], total)
+            busy = {c for (c, k), ivs in res.items()
+                    if k == layer and c not in near_pads
+                    and self._traffic((c, k), [(lo - self.s.detour_margin_s, hi + self.s.detour_margin_s)
+                                               for lo, hi in ivs], fp.id)}
+            if not busy - cells:
+                return r if cells else None
+            cells |= busy
+            g = self._block_cells(base, cells, layer)
+            p = plan(g, fp.start, fp.goal, snap)
+            if p is None:
+                return None
+            r = simplify(g, p)                    # straightened around the traffic too
+        return None
+
+    def _traffic(self, key, ivs, fid):
+        """Another flight (not a zone, not blocked air, not one fid may enter) has key booked in ivs."""
+        skip = set(self.exempt.get(fid, ())) | {fid}
+        return any(owner not in skip and not str(owner).startswith('zone:') and lo < hi2 and lo2 < hi
+                   for lo2, hi2, owner in self.ledger.get(key, ()) for lo, hi in ivs)
+
     def _zone_grid(self, layer, zones):
         """The layer's map with the zones' cells added as obstacles: every grid point whose
         reservation (cells_near) would reach one of their cells on this layer, plus one grid step
         for the samples between grid points."""
         cache = (layer, zones)
         if cache not in self._grids:
-            g = self._grid(layer)
-            occ = g.occ.copy()
-            reach = self.s.radius + self._edge + g.res
             cells = {c for z in zones for c, k in self.zone_keys[z] if k == layer}
-            for c in cells:
-                if c not in self._centres:
-                    self._centres[c] = self.sky.center(c)
-                cx, cy = self._centres[c]
-                ix0, ix1 = np.searchsorted(g.xs, cx - reach), np.searchsorted(g.xs, cx + reach, side='right')
-                iy0, iy1 = np.searchsorted(g.ys, cy - reach), np.searchsorted(g.ys, cy + reach, side='right')
-                if ix0 >= ix1 or iy0 >= iy1:
-                    continue
-                gx, gy = np.meshgrid(g.xs[ix0:ix1], g.ys[iy0:iy1])
-                occ[iy0:iy1, ix0:ix1] |= (gx - cx) ** 2 + (gy - cy) ** 2 <= reach * reach
-            self._grids[cache] = Grid(occ, g.xs, g.ys, g.res)
+            self._grids[cache] = self._block_cells(self._grid(layer), cells, layer)
         return self._grids[cache]
+
+    def _block_cells(self, g, cells, layer):
+        """Grid g with these H3 cells (on `layer`) added as obstacles: every grid point whose
+        reservation (cells_near) would reach one of them, plus one grid step for the samples between
+        grid points."""
+        occ = g.occ.copy()
+        reach = self.s.radius + self._edge + g.res
+        for c in cells:
+            if c not in self._centres:
+                self._centres[c] = self.sky.center(c)
+            cx, cy = self._centres[c]
+            ix0, ix1 = np.searchsorted(g.xs, cx - reach), np.searchsorted(g.xs, cx + reach, side='right')
+            iy0, iy1 = np.searchsorted(g.ys, cy - reach), np.searchsorted(g.ys, cy + reach, side='right')
+            if ix0 >= ix1 or iy0 >= iy1:
+                continue
+            gx, gy = np.meshgrid(g.xs[ix0:ix1], g.ys[iy0:iy1])
+            occ[iy0:iy1, ix0:ix1] |= (gx - cx) ** 2 + (gy - cy) ** 2 <= reach * reach
+        return Grid(occ, g.xs, g.ys, g.res)
 
     def route(self, start, goal, layer, avoid=frozenset(), snap=1.0):
         """Simplified D7 route (x, y) on the layer's map, or None. avoid: zone owners
@@ -191,6 +238,13 @@ class StrategicPlanner:
         g = self._zone_grid(layer, avoid) if avoid else self._grid(layer)
         p = plan(g, start, goal, snap)
         return None if p is None else simplify(g, p)
+
+    def _clear_below(self, xy, layer):
+        """A drone at xy may descend straight to this layer: no building of that layer's map (grown by
+        the planner's margin) under it. Re-planned mid-air onto a lower layer, the route starts with that
+        drop where the drone is; over a roof it would land on it (E-City, f14 at 15 m over a 12 m roof)."""
+        g = self._grid(layer)
+        return not g.inside(xy) or g.free(g.to_cell(xy))
 
     def cells_near(self, x, y):
         """H3 cells that come within `radius` of (x, y): the disk around the drone's cell, keeping
@@ -213,7 +267,11 @@ class StrategicPlanner:
         z0 = s.start_z if z_start is None else float(z_start)
         zl = self.layer_z(layer)
         climb = abs(zl - z0) / s.v_climb
-        descent = abs(zl - s.start_z) / s.v_climb
+        drop = abs(zl - s.start_z)
+        high = 0.0 if s.v_descent_high is None else max(0.0, drop - s.slow_band_m)   # m descended fast
+        slow_v = s.v_climb if s.v_descent is None else s.v_descent
+        fast = high / s.v_descent_high if high else 0.0
+        descent = fast + (drop - high) / slow_v
         pts = np.asarray(route_xy, dtype=float)
         seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
         cum = np.concatenate([[0.0], np.cumsum(seg)])
@@ -230,7 +288,9 @@ class StrategicPlanner:
                 x, y = pts[k] + t * (pts[k + 1] - pts[k])
                 z = zl
             else:
-                x, y, z = pts[-1, 0], pts[-1, 1], zl + (s.start_z - zl) * (tau - climb - cruise) / descent
+                u = tau - climb - cruise                  # s into the descent: fast, then slow
+                down = u * s.v_descent_high if u < fast else high + (u - fast) * slow_v
+                x, y, z = pts[-1, 0], pts[-1, 1], zl - np.sign(zl - s.start_z) * min(down, drop)
             out.append((float(tau), float(x), float(y), float(z)))
         return out, total
 
@@ -309,10 +369,14 @@ class StrategicPlanner:
         max_delay = s.max_delay if max_delay is None else max_delay
         options = {}
         avoid = frozenset(self.zone_keys) - self.exempt.get(fp.id, set())
-        for layer in range(s.n_layers):
+        for layer in (range(s.n_layers) if s.layers_open is None else s.layers_open):
+            if z_start is not None and self.layer_z(layer) < z_start - 1e-6 and not self._clear_below(fp.start, layer):
+                continue                  # mid-air: never step down onto a roof (the drop is straight down)
             direct = self.route(fp.start, fp.goal, layer, snap=snap)
             around = self.route(fp.start, fp.goal, layer, avoid, snap) if avoid else None
-            for kind, r in ((0, direct), (1, around)):
+            swerve = (self._detour(fp, layer, around or direct, avoid, z_start, snap)
+                      if s.traffic_detour and layer == fp.layer and (around or direct) is not None else None)
+            for kind, r in ((0, direct), (1, around), (2, swerve)):
                 if r is None or (kind == 1 and r == direct):
                     continue
                 prof, total = self.profile(r, layer, z_start)
@@ -348,7 +412,8 @@ class StrategicPlanner:
                 wps = ([(r[0][0], r[0][1], z0)] + [(x, y, zl) for x, y in r]
                        + [(r[-1][0], r[-1][1], s.start_z)])
                 d = Decision(fp.id, 'approved', layer, t_dep, delay, t_dep + total, float(cost),
-                             wps, res, around_zones=bool(kind), displaced=moved)
+                             wps, res, around_zones=kind == 1 or (kind == 2 and bool(avoid)),
+                             around_traffic=kind == 2, displaced=moved)
                 self.decisions.append(d)
                 self.current[fp.id] = d
                 return d

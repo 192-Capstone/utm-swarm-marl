@@ -1,0 +1,674 @@
+<title>UTM E-City Console</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* Layout: an open-plane console. A labelled sidebar on the ground, the 3D city filling the rest,
+   camera modes and theme on the stage, the timeline along its foot. Light = an architect's white
+   model on stone; dark = true black, colour only on data. One data hue for booked air and routes. */
+:root {
+  --ground: #f4f3f1; --surface: #ffffff; --raised: #ecebe8; --border: #e4e2dd; --text: #0a0a0a;
+  --muted: #6b6b6b; --ink: #141414; --data: #1d5fbf; --danger: #c4242a; --warn: #92400e;
+  --data-soft: #e3ecf8; --danger-soft: #fbe9e9; --warn-soft: #fbf1e3;
+  --scene-ground: #e9e7e1; --scene-building: #fbfaf7; --scene-edge: #c9c6bd; --scene-pad: #ffffff; --scene-mark: #3d3d3d;
+  --font: "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --r-card: 8px; --r-control: 6px; --gap: 12px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --ground: #000000; --surface: #111111; --raised: #222222; --border: #1d1d1d; --text: #ffffff;
+  --muted: #a8a8a8; --ink: #ffffff; --data: #5b9bff; --danger: #ff5a5f; --warn: #e5a93b;
+  --data-soft: #0f1d33; --danger-soft: #2c1517; --warn-soft: #2b2414;
+  --scene-ground: #0b0b0b; --scene-building: #2a2a2a; --scene-edge: #474747; --scene-pad: #2a2a2a; --scene-mark: #bdbdbd;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --ground: #000000; --surface: #111111; --raised: #222222; --border: #1d1d1d; --text: #ffffff;
+  --muted: #a8a8a8; --ink: #ffffff; --data: #5b9bff; --danger: #ff5a5f; --warn: #e5a93b;
+  --data-soft: #0f1d33; --danger-soft: #2c1517; --warn-soft: #2b2414;
+  --scene-ground: #0b0b0b; --scene-building: #2a2a2a; --scene-edge: #474747; --scene-pad: #2a2a2a; --scene-mark: #bdbdbd;
+  color-scheme: dark }
+html, body { height: 100%; }
+body { background: var(--ground); color: var(--text); font: 400 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+.app { height: 100%; display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: var(--gap);
+  padding-block: var(--gap); padding-left: max(var(--gap), env(safe-area-inset-left, 0px)); padding-right: max(var(--gap), env(safe-area-inset-right, 0px)); box-sizing: border-box; }
+.side { display: flex; flex-direction: column; gap: 22px; overflow-y: auto; padding: 8px 8px 8px 4px; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand svg { flex: none; }
+.brand b { font-size: 16px; font-weight: 500; display: block; }
+.brand span { color: var(--muted); font-size: 12px; }
+h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
+.field select { width: 100%; height: 36px; border-radius: var(--r-control); border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); font: inherit; padding: 0 10px; }
+.note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+.story { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.story button { width: 100%; text-align: left; display: grid; gap: 2px; padding: 8px 10px; border: 0; border-radius: var(--r-control);
+  background: transparent; color: var(--text); font: inherit; cursor: pointer; transition: background .16s ease; }
+.story button:hover { background: var(--raised); }
+.story button[aria-current="step"] { background: var(--surface); }
+.story .when { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.story .what { font-weight: 500; }
+.caption { background: var(--surface); border-radius: var(--r-card); padding: 12px 14px; font-size: 14px; line-height: 1.5; min-height: 64px; }
+.counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--surface); border-radius: var(--r-card); }
+.counts div { padding: 10px 12px; display: grid; gap: 2px; }
+.counts div + div { box-shadow: inset 1px 0 0 var(--border); }
+.counts b { font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.counts span { color: var(--muted); font-size: 12px; }
+.counts .bad b { color: var(--danger); }
+.feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.feed li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; font-size: 13px; animation: in .28s ease-out both; }
+.feed time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.feed .k-zone, .feed .k-emergency { color: var(--danger); }
+.feed .k-alert { color: var(--warn); }
+.feed .empty { color: var(--muted); grid-template-columns: 1fr; }
+.feed .who { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-right: 6px; }
+.feed .more { color: var(--muted); white-space: nowrap; }
+.nodes { background: var(--surface); border-radius: var(--r-card); padding: 4px 0; display: grid; }
+.nodes .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1px 10px; padding: 7px 12px; transition: box-shadow .2s ease; }
+.nodes .row + .row { border-top: 1px solid var(--border); }
+.nodes .row b { font-weight: 500; font-size: 13px; }
+.nodes .row small { color: var(--muted); font-size: 12px; }
+.nodes .row .n { grid-row: span 2; align-self: center; text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.nodes .row .n b { color: var(--text); font-size: 13px; }
+.nodes .row.hit { box-shadow: inset 3px 0 0 var(--danger); }
+.nodes .row.hit small { color: var(--danger); }
+.sel { background: var(--surface); border-radius: var(--r-card); padding: 12px 14px; display: grid; gap: 8px; }
+.sel dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+.sel dt { color: var(--muted); }
+.sel dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.sel .id { font-family: var(--mono); font-size: 13px; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--raised); color: var(--text); }
+.pill.data { background: var(--data-soft); color: var(--data); }
+.pill.danger { background: var(--danger-soft); color: var(--danger); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.run { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.run div { display: grid; gap: 2px; }
+.run b { font-size: 16px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.run span { color: var(--muted); font-size: 12px; }
+.stage { position: relative; min-width: 0; min-height: 0; border-radius: var(--r-card); overflow: hidden; background: var(--scene-ground); }
+.stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.bar { position: absolute; left: 12px; right: 12px; display: flex; gap: 8px; align-items: center; pointer-events: none; }
+.bar > * { pointer-events: auto; }
+.bar.top { top: 12px; justify-content: space-between; flex-wrap: wrap; }
+.seg { display: inline-flex; background: var(--surface); border-radius: var(--r-control); padding: 3px; gap: 2px; }
+.seg button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 4px; cursor: pointer; transition: background .14s ease, color .14s ease; }
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--raised); color: var(--text); }
+.pick { height: 34px; border-radius: var(--r-control); border: 0; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; padding: 0 10px; cursor: pointer; }
+.title { background: var(--surface); border-radius: var(--r-control); padding: 6px 12px; font-size: 13px; }
+.title b { font-weight: 500; }
+.bar.bottom { bottom: 12px; background: var(--surface); border-radius: var(--r-card); padding: 8px 12px; gap: 12px; }
+.play { width: 34px; height: 34px; flex: none; border-radius: 999px; border: 0; background: var(--ink); color: var(--surface); cursor: pointer; display: grid; place-items: center; transition: transform .12s ease; }
+.play:active { transform: scale(.94); }
+.play svg { width: 14px; height: 14px; fill: currentColor; }
+.speed { border: 0; background: var(--raised); color: var(--text); font: inherit; font-size: 12px; border-radius: var(--r-control); height: 28px; padding: 0 8px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.track { position: relative; flex: 1; min-width: 0; height: 34px; display: flex; align-items: center; }
+.track input { width: 100%; margin: 0; accent-color: var(--ink); position: relative; z-index: 1; }
+.marks { position: absolute; left: 7px; right: 7px; top: 3px; height: 8px; pointer-events: none; }
+.marks i { position: absolute; width: 2px; height: 8px; border-radius: 1px; background: var(--data); transform: translateX(-1px); }
+.marks i.zone, .marks i.emergency { background: var(--danger); width: 3px; height: 9px; }
+.marks i.alert { background: var(--warn); height: 5px; top: 3px; }
+.clock { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.clock b { color: var(--text); font-weight: 500; }
+.labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.tag { position: absolute; transform: translate(10px, -50%); background: var(--surface); color: var(--text); font-size: 12px; padding: 2px 7px;
+  border-radius: 4px; white-space: nowrap; transition: opacity .2s ease; }
+.tag.emergency { background: var(--danger); color: #fff; }
+.tag.intruder { background: var(--ink); color: var(--surface); }
+.tag.e4 { background: var(--data); color: #fff; }
+.tag.sel { outline: 1.5px solid var(--ink); }
+.place { position: absolute; transform: translate(-50%, 6px); font-size: 11px; color: var(--muted); white-space: nowrap;
+  pointer-events: none; text-shadow: 0 0 3px var(--scene-ground), 0 0 3px var(--scene-ground); }
+.place.hub { color: var(--text); font-weight: 500; font-size: 12px; }
+.place.hospital { color: var(--danger); font-weight: 500; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 14px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+:focus-visible { outline: 2px solid var(--data); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@keyframes in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .feed li { animation: none; } * { transition: none !important; } }
+@media (max-width: 860px) {
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 62svh auto; height: auto; min-height: 100%; }
+  .stage { order: -1; }
+  .side { overflow: visible; }
+  .bar.top .title { display: none; }
+}
+</style>
+
+<div class="app">
+  <aside class="side" aria-label="Console">
+    <div class="brand">
+      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><polygon points="17,2 30,9.5 30,24.5 17,32 4,24.5 4,9.5" fill="none" stroke="var(--ink)" stroke-width="1.6"/><polygon points="17,9 23.5,12.75 23.5,20.25 17,24 10.5,20.25 10.5,12.75" fill="var(--data)" fill-opacity=".18" stroke="var(--data)" stroke-width="1.2"/><circle cx="17" cy="16.5" r="2.3" fill="var(--ink)"/></svg>
+      <div><b>UTM console</b><span>E-City, Bengaluru &middot; replay</span></div>
+    </div>
+    <section class="field">
+      <h2><label for="scene">Scene</label></h2>
+      <select id="scene">
+        <option value="ecity_rooftops">Over the rooftops &middot; 15 deliveries</option>
+        <option value="ecity_demo">The plaza, low level &middot; 11 deliveries</option>
+      </select>
+      <p class="note">Live runs and what-if controls arrive with the UTM server.</p>
+    </section>
+    <section>
+      <h2>Story</h2>
+      <ol class="story" id="story"></ol>
+    </section>
+    <section>
+      <div class="caption" id="caption" aria-live="polite"></div>
+    </section>
+    <section>
+      <h2>Right now</h2>
+      <div class="counts" id="counts"></div>
+    </section>
+    <section>
+      <h2>Client nodes</h2>
+      <div class="nodes" id="nodes"></div>
+    </section>
+    <section id="selbox" hidden>
+      <h2>Selected drone</h2>
+      <div class="sel" id="sel"></div>
+    </section>
+    <section>
+      <h2>What the UTM did</h2>
+      <ol class="feed" id="feed"></ol>
+    </section>
+    <section>
+      <h2>This run</h2>
+      <div class="run" id="run"></div>
+    </section>
+    <section>
+      <div class="legend">
+        <span><i style="background: var(--ink)"></i>Delivery drone</span>
+        <span><i style="background: var(--data); opacity: .55"></i>Booked airspace</span>
+        <span><i style="background: var(--danger)"></i>Zone, emergency, alert</span>
+      </div>
+    </section>
+  </aside>
+
+  <main class="stage" id="stage">
+    <canvas id="gl" aria-label="3D view of E-City with the drones, their routes and booked airspace"></canvas>
+    <div class="labels" id="labels"></div>
+    <div class="bar top">
+      <div class="title" id="title"></div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <div class="seg" role="group" aria-label="Camera">
+          <button type="button" data-cam="director" aria-pressed="true">Director</button>
+          <button type="button" data-cam="orbit" aria-pressed="false">Orbit</button>
+          <button type="button" data-cam="overhead" aria-pressed="false">Overhead</button>
+          <button type="button" data-cam="follow" aria-pressed="false">Follow</button>
+        </div>
+        <label class="sr-only" for="follow">Drone to follow</label>
+        <select id="follow" class="pick" hidden></select>
+        <div class="seg" role="group" aria-label="Theme">
+          <button type="button" data-theme-set="light" aria-pressed="true">Light</button>
+          <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+        </div>
+      </div>
+    </div>
+    <div class="bar bottom">
+      <button type="button" class="play" id="play" aria-label="Pause"><svg viewBox="0 0 14 14"><rect x="2" y="1" width="3.5" height="12"/><rect x="8.5" y="1" width="3.5" height="12"/></svg></button>
+      <button type="button" class="speed" id="speed" aria-label="Playback speed">2&times;</button>
+      <div class="track">
+        <div class="marks" id="marks"></div>
+        <label class="sr-only" for="time">Time</label>
+        <input type="range" id="time" min="0" max="1" step="0.01" value="0">
+      </div>
+      <div class="clock" id="clock"></div>
+    </div>
+  </main>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const SCENES = ['ecity_rooftops', 'ecity_demo'];      // dashboard/data/<name>.json, from scripts/export_dashboard.py
+const NAME = SCENES.includes(location.hash.slice(1)) ? location.hash.slice(1) : SCENES[0];
+const D = await (await fetch(`data/${NAME}.json`)).json();
+const $ = (id) => document.getElementById(id);
+$('scene').value = NAME;
+$('scene').onchange = (e) => { location.hash = e.target.value; location.reload(); };
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const T = D.frames.t, P = D.frames.pos, S = D.frames.status, END = T[T.length - 1];
+const DR = D.drones, N = DR.length, byId = Object.fromEntries(DR.map((d, i) => [d.id, i]));
+const emIdx = DR.findIndex(d => d.kind === 'emergency');
+const v3 = (p) => new THREE.Vector3(p[0], p[2], -p[1]);           // world (x, y, z-up) -> three (x, z, -y)
+
+// ---------------------------------------------------------------- theme
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let theme = 'light';
+try { theme = localStorage.getItem('utm-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch { }
+function setTheme(t) {
+  theme = t; document.documentElement.dataset.theme = t;
+  try { localStorage.setItem('utm-theme', t); } catch { }
+  document.querySelectorAll('[data-theme-set]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.themeSet === t)));
+  paint();
+}
+
+// ---------------------------------------------------------------- scene
+const canvas = $('gl'), stage = $('stage');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 600);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.enabled = false; controls.maxPolarAngle = Math.PI * 0.47;
+const hemi = new THREE.HemisphereLight(0xffffff, 0xcfcac0, 1.25); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(-40, 70, 30); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -45, right: 45, top: 45, bottom: -45, near: 1, far: 200 });
+sun.shadow.bias = -0.0005; scene.add(sun);
+
+const [[bx0, bx1], [by0, by1]] = D.map.bounds;
+const cx = (bx0 + bx1) / 2, cy = (by0 + by1) / 2, span = Math.max(bx1 - bx0, by1 - by0);
+const ROOF = Math.max(0, ...D.map.buildings.map(b => b.z));
+// the action: where the pads and routes are (on the full E-City map that is a few hundred metres of a
+// 760 m map). Camera, fog and shadows frame it; SC scales them from the 50 m plaza the view was made
+// for, DS the drones and pads so they still read from that far.
+const act = [];
+for (const d of DR) { act.push(d.start); if (d.kind !== 'intruder') act.push(d.goal); }
+for (const v of Object.values(D.routes)) for (const x of v) for (const p of x.route) act.push(p);
+const ax0 = Math.min(...act.map(p => p[0])) - 15, ax1 = Math.max(...act.map(p => p[0])) + 15;
+const ay0 = Math.min(...act.map(p => p[1])) - 15, ay1 = Math.max(...act.map(p => p[1])) + 15;
+const acx = (ax0 + ax1) / 2, acy = (ay0 + ay1) / 2, aspan = Math.max(ax1 - ax0, ay1 - ay0, 50);
+const SC = aspan / 65, DS = Math.min(3, Math.max(1, SC * 0.55)), PS = Math.min(2.2, DS);
+camera.far = Math.max(600, aspan * 5); camera.updateProjectionMatrix();
+Object.assign(sun.shadow.camera, { left: -aspan * 0.7, right: aspan * 0.7, top: aspan * 0.7, bottom: -aspan * 0.7, far: aspan * 4 + 200 });
+sun.position.set(acx - 40 * SC, 70 * SC, -acy + 30 * SC); sun.target.position.set(acx, 0, -acy); scene.add(sun.target);
+const groundMat = new THREE.MeshStandardMaterial({ roughness: 1 });
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(span * 4, span * 4), groundMat);
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; ground.position.set(cx, 0, -cy); scene.add(ground);
+const plotMat = new THREE.MeshStandardMaterial({ roughness: 1 });
+const plot = new THREE.Mesh(new THREE.PlaneGeometry(bx1 - bx0, by1 - by0), plotMat);
+plot.rotation.x = -Math.PI / 2; plot.position.set(cx, 0.005, -cy); plot.receiveShadow = true; scene.add(plot);
+
+const bMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0 });
+const eMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.55 });
+for (const b of D.map.buildings) {
+  const g = new THREE.BoxGeometry(2 * b.h[0], b.z, 2 * b.h[1]);
+  const m = new THREE.Mesh(g, bMat); m.castShadow = m.receiveShadow = true;
+  m.position.set(b.c[0], b.z / 2, -b.c[1]); m.rotation.y = b.yaw; scene.add(m);
+  const e = new THREE.LineSegments(new THREE.EdgesGeometry(g), eMat); e.position.copy(m.position); e.rotation.copy(m.rotation); scene.add(e);
+}
+
+// pads: depots (several flights start there) larger, the hospital with a cross
+const padMat = new THREE.MeshStandardMaterial({ roughness: 1 }), markMat = new THREE.MeshBasicMaterial();
+const dangerMat = new THREE.MeshBasicMaterial();
+const PLACES = D.places || [];
+const placeAt = (xy) => PLACES.find(p => p.pads.some(q => Math.hypot(q[0] - xy[0], q[1] - xy[1]) < 0.5));
+const route = (d) => d.from && d.to ? `${d.from} \u2192 ${d.to}` : '';
+const starts = DR.filter(d => d.kind === 'flight').map(d => d.start.join());
+const pads = new Map();
+for (const d of DR) for (const k of ['start', 'goal']) {
+  const key = d[k].join();
+  const named = placeAt(d[k]);                     // the scenario's places say what a pad is
+  const kind = named ? (named.kind === 'hub' ? 'depot' : named.kind === 'hospital' ? 'hospital' : 'drop')
+    : d.kind === 'emergency' && k === 'start' ? 'hospital' : starts.filter(s => s === key).length >= 2 ? 'depot' : pads.get(key) || 'drop';
+  pads.set(key, kind);
+}
+for (const [key, kind] of pads) {
+  const [x, y] = key.split(',').map(Number), r = (kind === 'depot' ? 1.15 : 0.75) * PS;
+  const pad = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.06, 40), padMat);
+  pad.position.set(x, 0.03, -y); pad.receiveShadow = true; scene.add(pad);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(r * 0.78, r * 0.86, 40), kind === 'hospital' ? dangerMat : markMat);
+  ring.rotation.x = -Math.PI / 2; ring.position.set(x, 0.065, -y); scene.add(ring);
+  const bars = kind === 'hospital' ? [[0.16, 0.7, 0], [0.7, 0.16, 0]] : [[0.1, 0.62, -0.2], [0.1, 0.62, 0.2], [0.42, 0.1, 0]];
+  for (const [w, h, dx] of bars) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w * r, h * r), kind === 'hospital' ? dangerMat : markMat);
+    m.rotation.x = -Math.PI / 2; m.position.set(x + dx * r, 0.07, -y); scene.add(m);
+  }
+}
+
+// booked airspace: one instanced hexagon prism per (cell, layer), shown while booked near now
+const HX = D.hex.cells, hexMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.16, depthWrite: false });
+const hexGeo = new THREE.CylinderGeometry(D.hex.radius * 0.94, D.hex.radius * 0.94, 0.9, 6, 1);
+hexGeo.rotateY(D.hex.angle);
+const hexes = new THREE.InstancedMesh(hexGeo, hexMat, HX.length);
+hexes.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(hexes);
+const zero = new THREE.Matrix4().makeScale(0, 0, 0), mtx = new THREE.Matrix4();
+for (let i = 0; i < HX.length; i++) hexes.setMatrixAt(i, zero);
+const layerZ = D.map.layers;
+
+// routes (each re-plan replaces the line from its time on)
+const routeOf = (id, t) => { const v = D.routes[id] || []; let r = v[0]; for (const x of v) if (x.t <= t) r = x; return r; };
+const routeMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.85 });
+const routeEm = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.9 });
+const routeIn = new THREE.LineDashedMaterial({ dashSize: 0.6 * SC, gapSize: 0.5 * SC, transparent: true, opacity: 0.7 });
+const routes = DR.map(() => { const l = new THREE.Line(new THREE.BufferGeometry(), routeMat); l.visible = false; scene.add(l); return { line: l, ver: null }; });
+
+// drones: a small quadcopter, drawn ~5x real size so it reads from 60 m
+const droneMat = { flight: new THREE.MeshStandardMaterial({ roughness: 0.5 }), emergency: new THREE.MeshStandardMaterial({ roughness: 0.5 }),
+  intruder: new THREE.MeshStandardMaterial({ roughness: 0.5 }) };
+const rotorMat = new THREE.MeshStandardMaterial({ transparent: true, opacity: 0.55, roughness: 0.6 });
+const ringMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.9, side: THREE.DoubleSide });
+const selMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+const drones = DR.map((d, i) => {
+  const s = d.kind === 'emergency' ? 1.35 : 1, g = new THREE.Group(), mat = droneMat[d.kind];
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.34 * s, 0.1 * s, 0.34 * s), mat); body.castShadow = true; g.add(body);
+  for (const a of [Math.PI / 4, -Math.PI / 4]) { const arm = new THREE.Mesh(new THREE.BoxGeometry(0.95 * s, 0.04 * s, 0.06 * s), mat); arm.rotation.y = a; g.add(arm); }
+  const rotors = [];
+  for (const [x, z] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+    const r = new THREE.Mesh(new THREE.CylinderGeometry(0.17 * s, 0.17 * s, 0.015, 20), rotorMat);
+    r.position.set(0.34 * s * x, 0.06 * s, 0.34 * s * z); g.add(r); rotors.push(r);
+  }
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.75, 0.84, 48), ringMat); ring.rotation.x = -Math.PI / 2; ring.visible = false; g.add(ring);
+  const sel = new THREE.Mesh(new THREE.RingGeometry(0.62, 0.68, 48), selMat); sel.rotation.x = -Math.PI / 2; sel.visible = false; g.add(sel);
+  const hit = new THREE.Mesh(new THREE.SphereGeometry(1.3, 12, 8), new THREE.MeshBasicMaterial({ visible: false }));
+  hit.userData.idx = i; g.add(hit);
+  body.userData.idx = i; g.scale.setScalar(DS); g.visible = false; scene.add(g);
+  const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.35 }));
+  scene.add(trail);
+  return { g, body, hit, rotors, ring, sel, trail };
+});
+
+// no-fly zones: a translucent column with a solid outline, rising when it closes the area
+const zoneMat = new THREE.MeshStandardMaterial({ transparent: true, opacity: 0.16, depthWrite: false, roughness: 1 });
+const zoneEdge = new THREE.LineBasicMaterial();
+const zones = D.zones.map(z => {
+  const xy = z.polygon, x0 = Math.min(...xy.map(p => p[0])), x1 = Math.max(...xy.map(p => p[0]));
+  const y0 = Math.min(...xy.map(p => p[1])), y1 = Math.max(...xy.map(p => p[1])), h = Math.max(...layerZ) + 1.5;
+  const geo = new THREE.BoxGeometry(x1 - x0, h, y1 - y0);
+  const g = new THREE.Group(); g.position.set((x0 + x1) / 2, 0, -(y0 + y1) / 2);
+  const m = new THREE.Mesh(geo, zoneMat); m.position.y = h / 2; g.add(m);
+  const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo), zoneEdge); e.position.y = h / 2; g.add(e);
+  g.visible = false; scene.add(g);
+  return { z, g, h, centre: [(x0 + x1) / 2, (y0 + y1) / 2] };
+});
+const zoneOn = (z, t) => z.t_on != null && t >= z.t_on && (!z.active.length || z.active.some(([a, b]) => a <= t && t < b));
+
+function paint() {
+  scene.background = new THREE.Color(css('--scene-ground'));
+  scene.fog = new THREE.Fog(css('--scene-ground'), 90 * SC, 220 * SC);
+  groundMat.color.set(css('--scene-ground')); plotMat.color.set(css('--scene-ground')).offsetHSL(0, 0, theme === 'dark' ? 0.02 : 0.015);
+  bMat.color.set(css('--scene-building')); eMat.color.set(css('--scene-edge'));
+  padMat.color.set(css('--scene-pad')); markMat.color.set(css('--scene-mark')); dangerMat.color.set(css('--danger'));
+  hexMat.color.set(css('--data')); hexMat.opacity = theme === 'dark' ? 0.2 : 0.14;
+  routeMat.color.set(css('--data')); routeEm.color.set(css('--danger')); routeIn.color.set(css('--muted'));
+  droneMat.flight.color.set(css('--ink')); droneMat.emergency.color.set(css('--danger')); droneMat.intruder.color.set(css('--warn'));
+  rotorMat.color.set(theme === 'dark' ? '#9a9a9a' : '#bdbdbd'); ringMat.color.set(css('--danger')); selMat.color.set(css('--data'));
+  zoneMat.color.set(css('--danger')); zoneEdge.color.set(css('--danger'));
+  drones.forEach((d, i) => d.trail.material.color.set(DR[i].kind === 'emergency' ? css('--danger') : css('--ink')));
+  hemi.intensity = theme === 'dark' ? 0.55 : 1.25; sun.intensity = theme === 'dark' ? 1.1 : 1.6;
+  hemi.groundColor.set(theme === 'dark' ? '#050505' : '#cfcac0');
+}
+
+// ---------------------------------------------------------------- data at time t
+const frameAt = (t) => { let lo = 0, hi = T.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (T[m] <= t) lo = m; else hi = m - 1; } return lo; };
+function posAt(i, t) {
+  const f = frameAt(t), g = Math.min(f + 1, T.length - 1), a = P[f][i], b = P[g][i];
+  const u = g === f ? 0 : Math.min(1, Math.max(0, (t - T[f]) / (T[g] - T[f])));
+  return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
+}
+const statusAt = (i, t) => S[frameAt(t)][i];
+const hotAt = (t) => { let h = D.hot[0]; for (const x of D.hot) { if (x.t <= t) h = x; else break; } return new Set(h ? h.high : []); };
+const bookAt = (id, t) => { const v = D.bookings[id] || []; let b = null; for (const x of v) if (x.t <= t) b = x; return b; };
+const recentTags = (t) => { const m = {}; for (const e of D.events) if (e.type === 'replan' && e.flight && e.t <= t && t - e.t < 4) m[e.flight] = e.tag; return m; };
+
+// ---------------------------------------------------------------- story
+const firstIntr = DR.find(d => d.kind === 'intruder'), zoneEv = D.events.find(e => e.type === 'zone_on');
+const zoneFor = (() => { const a = D.zones[0] && D.zones[0].active[0]; if (!a) return 'Until further notice'; const s = a[1] - a[0]; return s >= 120 ? `For ${Math.round(s / 60)} minutes` : `For ${Math.round(s)} seconds`; })();
+const emEv = D.events.find(e => e.type === 'replan' && e.why === 'emergency');
+// client nodes: each delivery operator (named by where its hub is) and whoever files the emergency
+const nodeName = (o) => !o || o === 'emergency' ? 'Emergency services' : o;
+const ops = [...new Set(DR.filter(d => d.kind === 'flight').map(d => d.operator))];
+const hubX = (o) => { const s = DR.filter(d => d.kind === 'flight' && d.operator === o).map(d => d.start[0]); return s.reduce((a, b) => a + b, 0) / s.length; };
+ops.sort((a, b) => hubX(a) - hubX(b));
+const hubOf = (o) => (PLACES.find(p => p.kind === 'hub' && p.operator === o) || {}).name;
+const NODES = ops.map((o, k) => ({ id: o, name: o, role: hubOf(o) ? `delivery operator, ${hubOf(o)}`
+  : ops.length === 2 ? `delivery operator, ${k ? 'east' : 'west'} hub` : 'delivery operator' }));
+if (emIdx >= 0) NODES.push({ id: DR[emIdx].operator, name: nodeName(DR[emIdx].operator), role: 'files emergency flights' });
+const gaveWay = D.events.filter(e => e.type === 'replan' && e.status === 'approved' && (e.why || '').startsWith('displaced by'));
+const emNode = emIdx >= 0 ? nodeName(DR[emIdx].operator) : '';
+const wayText = gaveWay.length
+  ? ` ${gaveWay.map(e => `${e.flight} (${e.node})`).join(', ')} had booked that air: the UTM re-books ${gaveWay.length > 1 ? 'them' : 'it'} and ${gaveWay.length > 1 ? 'they move' : 'it moves'} aside.`
+  : ' Nobody had booked the air it needs, so no one has to move.';
+const landAll = (() => { for (let f = 0; f < T.length; f++) if (S[f].every(s => s >= 2)) return T[f]; return END; })();
+const flights = DR.filter(d => d.kind === 'flight').length;
+const back = D.summary.returned || 0;               // sent back to their start (E4: a zone in the way)
+const chapters = [
+  { t: 0, what: 'The Planner books every delivery', cap: `${flights} deliveries from two operators each take off in the slot the Planner booked for them. The blue hexagons are the air each flight reserved, just ahead of it.` },
+  firstIntr && { t: Math.max(0, firstIntr.t_dep - 1), what: 'An intruder appears', cap: 'A drone with no flight plan crosses the area. The Responder reserves a safety bubble ahead of it and re-books the flights in its way.', focus: byId[firstIntr.id] },
+  zoneEv && { t: Math.max(0, zoneEv.t - 1.5), what: 'A no-fly zone closes an area', cap: `${zoneFor} part of the area is closed. The Responder re-routes flights around it and plans the next ones around it. The intruder ignores it.`, zone: true },
+  emEv && { t: Math.max(0, emEv.t - 1), what: `${emNode} files an emergency`, cap: `${emNode} files a medical flight from its own client node. The Responder gives it priority: it is cleared at once and takes off within seconds.${wayText}`, focus: emIdx },
+  { t: Math.max(0, landAll - 4), what: back ? 'The last drones land' : 'Every delivery lands',
+    cap: `${D.summary.arrived ?? flights} of ${flights} deliveries arrived${back ? `, ${back} turned back to where ${back > 1 ? 'they' : 'it'} started (no way past the closed area)` : ''}, `
+      + `with ${D.summary.crashed ?? 0} crashes. The UTM handled an intruder, a closed zone and an emergency on the way.` },
+].filter(Boolean);
+$('story').innerHTML = chapters.map((c, k) => `<li><button type="button" data-ch="${k}"><span class="when">${fmt(c.t)}</span><span class="what">${c.what}</span></button></li>`).join('');
+function fmt(t) { const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, '0')}`; }
+const chapterAt = (t) => { let k = 0; chapters.forEach((c, i) => { if (c.t <= t + 0.01) k = i; }); return k; };
+
+// ---------------------------------------------------------------- timeline marks
+$('time').max = String(END);
+$('marks').innerHTML = D.events.filter(e => e.type !== 'alert' || e.risk === 'high').map(e => {
+  const cls = e.type === 'zone_on' ? 'zone' : e.why === 'emergency' ? 'emergency' : e.type === 'alert' ? 'alert' : '';
+  return `<i class="${cls}" style="left:${(100 * e.t / END).toFixed(2)}%" title="${fmt(e.t)} ${e.text.replace(/"/g, '')}"></i>`;
+}).join('');
+const e7 = D.summary.e7 || {};
+$('run').innerHTML = [
+  [`${D.summary.arrived ?? '\u2013'}/${flights}`, 'arrived'], [`${(e7.delay_mean_s ?? 0).toFixed(1)} s`, 'mean wait'], [`${(e7.fairness_jain ?? 1).toFixed(2)}`, 'fairness'],
+].map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join('');
+$('title').innerHTML = `<b>${D.caption.replace('UTM demo: ', '')}</b>`;
+
+// ---------------------------------------------------------------- playback state
+let t = 0, playing = true, speed = 2, cam = 'director', selected = -1, orbitAng = 0.6;
+const speeds = [1, 2, 4];
+function setPlaying(p) {
+  playing = p; $('play').setAttribute('aria-label', p ? 'Pause' : 'Play');
+  $('play').innerHTML = p ? '<svg viewBox="0 0 14 14"><rect x="2" y="1" width="3.5" height="12"/><rect x="8.5" y="1" width="3.5" height="12"/></svg>' : '<svg viewBox="0 0 14 14"><path d="M3 1l10 6-10 6z"/></svg>';
+}
+function seek(x) { t = Math.max(0, Math.min(END, x)); }
+function setCam(c) {
+  if (c === 'orbit') { controls.target.copy(look); controls.update(); }
+  cam = c; controls.enabled = c === 'orbit';
+  document.querySelectorAll('[data-cam]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.cam === c)));
+  $('follow').hidden = c !== 'follow';
+  if (c === 'follow' && selected < 0) select(emIdx >= 0 ? emIdx : 0);
+}
+function select(i) {
+  selected = i; drones.forEach((d, k) => d.sel.visible = k === i); $('selbox').hidden = i < 0;
+  if (i >= 0) $('follow').value = String(i);
+}
+const kindWord = (d) => d.kind === 'emergency' ? `emergency, ${nodeName(d.operator)}` : d.kind === 'intruder' ? 'intruder' : `delivery, ${d.operator}`;
+$('follow').innerHTML = DR.map((d, i) => `<option value="${i}">Follow ${d.id} (${route(d) || kindWord(d)})</option>`).join('');
+$('follow').onchange = (e) => select(+e.target.value);
+
+$('play').onclick = () => setPlaying(!playing);
+$('speed').onclick = () => { speed = speeds[(speeds.indexOf(speed) + 1) % speeds.length]; $('speed').textContent = `${speed}\u00d7`; };
+$('time').oninput = (e) => { seek(+e.target.value); };
+$('story').onclick = (e) => { const b = e.target.closest('[data-ch]'); if (!b) return; const c = chapters[+b.dataset.ch]; seek(c.t); setCam('director'); setPlaying(true); };
+document.querySelectorAll('[data-cam]').forEach(b => b.onclick = () => setCam(b.dataset.cam));
+document.querySelectorAll('[data-theme-set]').forEach(b => b.onclick = () => setTheme(b.dataset.themeSet));
+addEventListener('keydown', (e) => {
+  if (e.target.closest('input, select')) return;
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+  if (e.key === 'ArrowRight') seek(t + 5); if (e.key === 'ArrowLeft') seek(t - 5);
+  const m = { 1: 'director', 2: 'orbit', 3: 'overhead', 4: 'follow' }[e.key]; if (m) setCam(m);
+});
+let downAt = null;                                 // a drag or a scroll on the view: the viewer takes the camera
+canvas.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
+canvas.addEventListener('pointermove', (e) => {
+  if (downAt && cam !== 'orbit' && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) setCam('orbit');
+});
+addEventListener('pointerup', () => { downAt = null; });
+canvas.addEventListener('wheel', () => { if (cam !== 'orbit') setCam('orbit'); }, { passive: true });
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+canvas.addEventListener('click', (e) => {
+  const r = canvas.getBoundingClientRect(); ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects(drones.filter(d => d.g.visible).map(d => d.hit))[0];
+  if (hit) { select(hit.object.userData.idx); if (cam !== 'orbit') setCam('follow'); }
+});
+
+// ---------------------------------------------------------------- per-frame updates
+const look = new THREE.Vector3(acx, 2, -acy), wantPos = new THREE.Vector3(), wantLook = new THREE.Vector3();
+let hexClock = -1, lastFeed = '', lastSel = '', lastCounts = '', lastNodes = '';
+const labels = $('labels'), tagEls = DR.map(() => { const el = document.createElement('div'); el.className = 'tag'; el.hidden = true; labels.appendChild(el); return el; });
+const placeEls = PLACES.map(p => { const el = document.createElement('div'); el.className = `place ${p.kind}`; el.textContent = p.name;
+  const c = p.pads.reduce((a, q) => [a[0] + q[0] / p.pads.length, a[1] + q[1] / p.pads.length], [0, 0]);
+  labels.appendChild(el); return { el, at: new THREE.Vector3(c[0], 0.2, -c[1]) }; });
+
+function updateHexes() {
+  const live = new Set();
+  for (let i = 0; i < N; i++) {
+    const d = DR[i], s = statusAt(i, t);
+    if (d.kind === 'intruder' || s === 2 || s === 3 || s === 4) continue;
+    const b = bookAt(d.id, t); if (!b) continue;
+    for (const [k, t0, t1] of b.cells) if (t0 <= t + 6 && t1 >= t) live.add(k);
+  }
+  for (let k = 0; k < HX.length; k++) {
+    if (live.has(k)) { const [x, y, L] = HX[k]; mtx.makeTranslation(x, layerZ[L] ?? 2, -y); hexes.setMatrixAt(k, mtx); }
+    else hexes.setMatrixAt(k, zero);
+  }
+  hexes.instanceMatrix.needsUpdate = true;
+}
+
+function updateWorld(dt) {
+  const hot = hotAt(t), tags = recentTags(t);
+  for (let i = 0; i < N; i++) {
+    const d = DR[i], s = statusAt(i, t), dr = drones[i], flying = s === 1;
+    dr.g.visible = flying;
+    if (flying) {
+      dr.g.position.copy(v3(posAt(i, t)));
+      if (!reduce) dr.rotors.forEach((r, k) => r.rotation.y += (k % 2 ? 1 : -1) * dt * 40);
+      dr.ring.visible = hot.has(d.id);
+      if (dr.ring.visible) { const p = 1 + 0.12 * Math.sin(performance.now() / 180); dr.ring.scale.set(p, p, p); }
+      const pts = []; for (let k = 16; k >= 0; k--) { const tk = t - k * 0.25; if (tk >= 0 && statusAt(i, tk) === 1) pts.push(v3(posAt(i, tk))); }
+      dr.trail.geometry.setFromPoints(pts); dr.trail.visible = pts.length > 1;
+    } else dr.trail.visible = false;
+    const r = routes[i], rv = routeOf(d.id, t), show = (flying || (s === 0 && d.t_dep != null && d.t_dep - t < 8)) && rv;
+    r.line.visible = !!show;
+    if (show && r.ver !== rv) {
+      r.ver = rv; r.line.geometry.setFromPoints(rv.route.map(v3));
+      r.line.material = d.kind === 'emergency' ? routeEm : d.kind === 'intruder' ? routeIn : routeMat;
+      if (d.kind === 'intruder') r.line.computeLineDistances();
+    }
+    const el = tagEls[i];
+    const text = d.kind === 'emergency' ? 'Emergency' : d.kind === 'intruder' ? 'Intruder, no plan' : tags[d.id] ? `${d.id} ${tags[d.id]}` : i === selected ? d.id : '';
+    if (flying && text) {
+      const p = dr.g.position.clone().project(camera), r = stage.getBoundingClientRect();
+      const x = (p.x + 1) / 2 * r.width, y = (1 - p.y) / 2 * r.height;
+      el.hidden = !(p.z < 1 && x > -40 && x < r.width + 40 && y > 0 && y < r.height);
+      el.style.left = `${x}px`; el.style.top = `${y}px`; el.textContent = text;
+      el.className = 'tag' + (d.kind === 'emergency' ? ' emergency' : d.kind === 'intruder' ? ' intruder' : tags[d.id] ? ' e4' : '') + (i === selected ? ' sel' : '');
+    } else el.hidden = true;
+  }
+  const rect = stage.getBoundingClientRect();
+  for (const pl of placeEls) {                     // place names on the ground, under their pads
+    const q = pl.at.clone().project(camera), x = (q.x + 1) / 2 * rect.width, y = (1 - q.y) / 2 * rect.height;
+    pl.el.hidden = !(q.z < 1 && x > 0 && x < rect.width && y > 0 && y < rect.height);
+    pl.el.style.left = `${x}px`; pl.el.style.top = `${y}px`;
+  }
+  for (const zz of zones) {
+    const on = zoneOn(zz.z, t); zz.g.visible = on;
+    if (on) { const k = reduce ? 1 : Math.min(1, (t - zz.z.t_on) / 1.2); zz.g.scale.set(1, 0.02 + 0.98 * (1 - Math.pow(1 - k, 3)), 1); }
+  }
+  if (Math.floor(t * 4) !== hexClock) { hexClock = Math.floor(t * 4); updateHexes(); }
+}
+
+function director(dt) {
+  // the camera goes where the story is: the zone as it closes, the emergency as it flies, an intruder, else a slow orbit
+  let focus = null, dist = 72 * SC, pitch = 0.86;
+  const zz = zones.find(z => z.z.t_on != null && t >= z.z.t_on - 1 && t < z.z.t_on + 7);
+  if (emIdx >= 0 && statusAt(emIdx, t) === 1) { focus = v3(posAt(emIdx, t)); dist = 30 * DS; pitch = 0.95; }
+  else if (zz) { focus = new THREE.Vector3(zz.centre[0], 1.5, -zz.centre[1]); dist = 40 * DS; pitch = 0.98; }
+  else { const intr = DR.findIndex((d, i) => d.kind === 'intruder' && statusAt(i, t) === 1 && t - d.t_dep < 6); if (intr >= 0) { focus = v3(posAt(intr, t)); dist = 38 * DS; pitch = 0.98; } }
+  if (!reduce && focus) orbitAng += dt * 0.05;
+  const c = focus || new THREE.Vector3(acx, 1, -acy);
+  wantLook.copy(c);
+  wantPos.set(c.x + Math.cos(orbitAng) * dist * Math.cos(pitch), Math.max(c.y + dist * Math.sin(pitch), ROOF + 8), c.z + Math.sin(orbitAng) * dist * Math.cos(pitch));
+}
+
+function frameCamera(dt) {
+  if (cam === 'orbit') { controls.update(); look.copy(controls.target); return; }
+  if (cam === 'director') director(dt);
+  if (cam === 'overhead') { wantLook.set(acx, 0, -acy); wantPos.set(acx, aspan * 1.35, -acy + 0.01); }
+  if (cam === 'follow') {
+    const i = selected >= 0 ? selected : emIdx, st = statusAt(i, t);
+    if (st !== 1) {                               // on its pad or landed: watch the pad until it flies
+      const pad = st === 0 ? DR[i].start : DR[i].goal, p = new THREE.Vector3(pad[0], 0.4, -pad[1]);
+      if (!reduce) orbitAng += dt * 0.12;
+      wantLook.copy(p); wantPos.set(p.x + Math.cos(orbitAng) * 14 * DS, ROOF * 0.9 + 4 * DS, p.z + Math.sin(orbitAng) * 14 * DS);
+    } else {
+      const p = v3(posAt(i, t)), q = v3(posAt(i, Math.max(0, t - 0.6)));
+      const dir = p.clone().sub(q); dir.y = 0; if (dir.lengthSq() < 1e-4) dir.set(1, 0, 0); dir.normalize();
+      wantLook.copy(p).addScaledVector(dir, 4 * DS); wantPos.copy(p).addScaledVector(dir, -9 * DS); wantPos.y += 7 * DS;
+    }
+  }
+  const k = reduce ? 1 : 1 - Math.exp(-dt * (cam === 'follow' ? 4 : 1.6));
+  camera.position.lerp(wantPos, k); look.lerp(wantLook, k); camera.lookAt(look);
+}
+
+function updatePanels() {
+  const f = frameAt(t), st = S[f];
+  const fl = st.filter((s, i) => s === 1 && DR[i].kind !== 'intruder').length, wt = st.filter((s, i) => s === 0 && DR[i].kind !== 'intruder').length;
+  const ld = st.filter((s, i) => s === 2 && DR[i].kind !== 'intruder').length, al = hotAt(t).size;
+  const c = `${fl}|${wt}|${ld}|${al}`;
+  if (c !== lastCounts) {
+    lastCounts = c;
+    $('counts').innerHTML = [[fl, 'flying'], [wt, 'on pad'], [ld, 'landed'], [al, 'alerts', al ? 'bad' : '']]
+      .map(([v, l, cls]) => `<div class="${cls || ''}"><b>${v}</b><span>${l}</span></div>`).join('');
+  }
+  const ev = D.events.filter(e => e.t <= t && (e.type !== 'alert' || e.risk === 'high')).slice(-7).reverse();
+  const key = ev.map(e => e.t + e.text).join();
+  if (key !== lastFeed) {
+    lastFeed = key;
+    $('feed').innerHTML = ev.length ? ev.map(e => {
+      const k = e.type === 'zone_on' ? 'k-zone' : e.why === 'emergency' ? 'k-emergency' : e.type === 'alert' ? 'k-alert' : '';
+      const who = e.node ? `<span class="who">${nodeName(e.node)}</span>` : '';
+      const more = e.later >= 1 ? ` <span class="more">+${Math.round(e.later)} s</span>` : '';
+      return `<li><time>${fmt(e.t)}</time><span class="${k}">${who}${e.text}${more}</span></li>`; }).join('') : '<li class="empty">Flights are taking off on schedule.</li>';
+  }
+  const nk = NODES.map(n => {
+    const mine = DR.map((d, i) => [d, i]).filter(([d]) => d.operator === n.id && d.kind !== 'intruder');
+    const fly = mine.filter(([, i]) => st[i] === 1).length, done = mine.filter(([, i]) => st[i] === 2).length;
+    const rb = D.events.filter(e => e.type === 'replan' && e.status === 'approved' && e.node === n.id && e.why !== 'emergency' && e.t <= t).length;
+    const hit = D.events.find(e => e.type === 'replan' && e.node === n.id && (e.why || '').startsWith('displaced by') && e.t <= t && t - e.t < 8);
+    return { n, booked: mine.length, fly, done, rb, hit };
+  });
+  const nkey = nk.map(x => [x.fly, x.done, x.rb, x.hit && x.hit.flight].join()).join('|');
+  if (nkey !== lastNodes) {
+    lastNodes = nkey;
+    $('nodes').innerHTML = nk.map(x => `<div class="row${x.hit ? ' hit' : ''}"><b>${x.n.name}</b>
+      <span class="n"><b>${x.booked}</b> booked<br>${x.fly} flying &middot; ${x.done} landed</span>
+      <small>${x.hit ? `${x.hit.flight} re-booked for the emergency` : x.rb ? `${x.n.role} &middot; ${x.rb} re-booked` : x.n.role}</small></div>`).join('');
+  }
+  const ch = chapterAt(t);
+  document.querySelectorAll('[data-ch]').forEach(b => b.toggleAttribute('aria-current', +b.dataset.ch === ch));
+  document.querySelectorAll('[data-ch]').forEach(b => b.setAttribute('aria-current', +b.dataset.ch === ch ? 'step' : 'false'));
+  if ($('caption').dataset.ch !== String(ch)) { $('caption').dataset.ch = String(ch); $('caption').textContent = chapters[ch].cap; }
+  $('clock').innerHTML = `<b>${fmt(t)}</b> / ${fmt(END)}`;
+  if (document.activeElement !== $('time')) $('time').value = String(t);
+  if (selected >= 0) {
+    const d = DR[selected], s = st[selected], hot = hotAt(t).has(d.id);
+    const word = ['On its pad', 'Flying', 'Landed', 'Crashed', 'Cancelled'][s];
+    const cls = s === 3 ? 'danger' : hot ? 'danger' : s === 1 ? 'data' : '';
+    const nre = D.events.filter(e => e.flight === d.id && e.type === 'replan' && e.t <= t).length;
+    const html = `<div style="display:flex;justify-content:space-between;align-items:center"><span class="id">${d.id}</span><span class="pill ${cls}">${hot && s === 1 ? 'High-risk alert' : word}</span></div>
+      <dl><dt>Kind</dt><dd>${d.kind === 'flight' ? 'Delivery, ' + d.operator : d.kind === 'emergency' ? 'Emergency, ' + nodeName(d.operator) : 'Intruder, no plan'}</dd>
+      ${route(d) ? `<dt>Route</dt><dd>${route(d)}</dd>` : ''}
+      <dt>Departs</dt><dd>${d.t_dep != null ? fmt(d.t_dep) : 'when filed'}</dd>
+      <dt>Planned arrival</dt><dd>${d.arrival != null ? fmt(d.arrival) : '\u2013'}</dd>
+      <dt>Re-plans so far</dt><dd>${nre}</dd></dl>`;
+    if (html !== lastSel) { lastSel = html; $('sel').innerHTML = html; }
+  }
+}
+
+function resize() { const r = stage.getBoundingClientRect(); renderer.setSize(r.width, r.height, false); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
+new ResizeObserver(resize).observe(stage);
+
+camera.position.set(acx + 40 * SC, 38 * SC, -acy + 40 * SC); camera.lookAt(look);
+setTheme(theme); resize(); director(0);
+camera.position.copy(wantPos);
+let last = performance.now();
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (playing) { t += dt * speed; if (t >= END) { t = END; setPlaying(false); } }
+  updateWorld(dt); frameCamera(dt); updatePanels();
+  renderer.render(scene, camera);
+});
+</script>

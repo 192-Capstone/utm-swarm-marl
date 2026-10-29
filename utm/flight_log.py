@@ -28,6 +28,8 @@ Positions are rounded to mm. Paths in ticks are the UTM's predicted paths (E2), 
 
 import gzip
 import json
+import sys
+import time
 
 import numpy as np
 
@@ -55,8 +57,10 @@ def _r(a, digits=3):
 class FlightLog:
     """Collects one run; fly() calls start / frame / tick / event, then save()."""
 
-    def __init__(self, scenario=None, frame_dt=0.25):
+    def __init__(self, scenario=None, frame_dt=0.25, progress_s=None):
         self.frame_dt = float(frame_dt)
+        self.progress_s = progress_s                  # print a progress line every this many sim seconds
+        self._next_progress, self._wall0 = 0.0, time.time()
         self.log = {'schema': SCHEMA, 'scenario': _plain(scenario or {}), 'sim': {}, 'map': {},
                     'drones': [], 'cells': {}, 'bookings': {}, 'zones': [],
                     'frames': {'t': [], 'pos': [], 'status': []}, 'ticks': [], 'events': [], 'summary': {}}
@@ -89,6 +93,12 @@ class FlightLog:
         self.log['frames']['t'].append(round(float(t), 3))
         self.log['frames']['pos'].append(_r(pos))
         self.log['frames']['status'].append([int(s) for s in status])
+        if self.progress_s and t >= self._next_progress:
+            self._next_progress = t + self.progress_s
+            n = np.bincount(np.asarray(status, dtype=int), minlength=5)
+            m, sec = divmod(int(time.time() - self._wall0), 60)
+            print(f't={t:5.0f}s  flying {n[1]}  landed {n[2]}  waiting {n[0]}  crashed {n[3]}  (wall {m}m{sec:02d}s)',
+                  file=sys.stderr, flush=True)
 
     def tick(self, t, monitor=None, paths=None):
         """The UTM's view at a 1 Hz tick: E3 state and risk per drone, E2 predicted paths."""
@@ -105,6 +115,8 @@ class FlightLog:
     def replan(self, t, flight, why, decision):
         """An E4 re-plan: the new route and booking (if approved)."""
         extra = {'flight': flight, 'why': why, 'status': decision.status, 'reason': decision.reason}
+        if getattr(decision, 'around_traffic', False):
+            extra['around_traffic'] = True          # a same-layer detour around other flights' air
         if decision.status == 'approved':
             extra.update(route=_r(decision.waypoints), t_dep=float(decision.t_dep), arrival=float(decision.arrival),
                          booking=self._keys(decision.reservation))

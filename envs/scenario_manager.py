@@ -87,11 +87,37 @@ def footprint_radius(ob):
     return ob['radius'] if ob['type'] == 'pillar' else float(np.hypot(*ob['half']))
 
 
+# id(layout) -> (layout, centres, footprint radii), for the nearest-first scan. Keyed on the list's
+# identity (and checked for the same object and length): a layout edited in place without changing
+# its length would get stale centres. Layouts are built once per episode and never edited.
+_FOOTPRINTS = {}
+
+
+def _footprints(layout):
+    hit = _FOOTPRINTS.get(id(layout))
+    if hit is None or hit[0] is not layout or len(hit[1]) != len(layout):
+        if len(_FOOTPRINTS) > 64:
+            _FOOTPRINTS.clear()
+        hit = (layout, np.array([ob['center'][:2] for ob in layout], dtype=float).reshape(-1, 2),
+               np.array([footprint_radius(ob) for ob in layout], dtype=float))
+        _FOOTPRINTS[id(layout)] = hit
+    return hit[1], hit[2]
+
+
 def distance_to_obstacles(layout, point):
     """Smallest 3D clearance from a point to any obstacle (inf when none).
-    Above an obstacle's top, the vertical gap counts too."""
+    Above an obstacle's top, the vertical gap counts too. Obstacles are scanned
+    nearest-first by footprint circle and the scan stops once no remaining one
+    can be closer (same answer as checking them all; a big map is much faster)."""
     best = np.inf
-    for ob in layout:
+    if not layout:
+        return float(best)
+    centres, radii = _footprints(layout)
+    bound = np.hypot(centres[:, 0] - point[0], centres[:, 1] - point[1]) - radii   # <= the true distance
+    for k in np.argsort(bound):
+        if bound[k] >= best:
+            break
+        ob = layout[k]
         horiz = surface_distance(ob, point)
         above = point[2] - ob['height']
         if above > 0:

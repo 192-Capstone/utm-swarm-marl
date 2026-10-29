@@ -144,7 +144,8 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
     n = n_f + len(extra)
     cfg = json.loads(json.dumps(cfg))
     sch = {'enabled': True}
-    for k in ('land_latch_m', 'land_vz_max', 'land_wait_clear_m'):   # landing options (absent = off)
+    for k in ('land_latch_m', 'land_vz_max', 'land_wait_clear_m', 'cruise_z_bias', 'land_step_m',
+              'land_vz_high', 'land_slow_m', 'los_below_cruise'):   # flight options (absent = off)
         if getattr(args, k, None) is not None:
             sch[k] = getattr(args, k)
     cfg['environment'].update(n_agents=n, crash_mode='remove', schedule=sch, route_follow={'enabled': True})
@@ -198,7 +199,7 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
         every_frame = max(1, int(round(rec.frame_dt / dt)))
         rec.start(sky, layout, dt, [
             {'id': ids[i], 'kind': 'flight' if i < n_f else ('emergency' if i in calls else 'intruder'),
-             'operator': flights[i].get('operator', '') if i < n_f else '',
+             'operator': flights[i].get('operator', '') if i < n_f else calls[i].get('operator', 'emergency') if i in calls else '',
              'start': starts[i], 'goal': goals[i], 't_dep': deps[i] if np.isfinite(deps[i]) else None,
              'route': [] if i in calls else routes[i],
              'arrival': flights[i]['arrival'][plan] if i < n_f else None,
@@ -258,7 +259,8 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
                         acts_e4 += e4.add_zone(z, t, here)
             for i, x in calls.items():
                 if ids[i] not in called and t >= x['t']:
-                    fp = FlightPlan(ids[i], tuple(x['start']), tuple(x['goal']), 0, t, int(x.get('priority', 1)), 'emergency')
+                    fp = FlightPlan(ids[i], tuple(x['start']), tuple(x['goal']), int(x.get('layer', 0)), t, int(x.get('priority', 1)),
+                                    x.get('operator', 'emergency'))
                     got = (e4.emergency(fp, t, here) if e4 is not None      # first: the emergency itself
                            else [{'t': t, 'flight': fp.id, 'why': 'emergency', 'decision': sky.submit(fp, now=t)}])
                     acts_e4 += got

@@ -531,3 +531,14 @@ def test_depot_pads_that_dont_fit_show_in_the_report():
     assert sum(d.report['depot_pads']) == d.report['pads_placed']['hub'] < 30
     assert all(1 <= n < 10 for n in d.report['depot_pads'])
     assert check_demand(d, Region(layer0_grid(layout, bounds)), layout=layout) == []
+
+
+def test_a_hub_pad_with_an_operator_gives_its_flights_to_that_operator():
+    """Fixed hub pads (x, y, 'hub', operator): every flight from or to a depot is its operator's."""
+    pads = [(-15.0, 0.0, 'hub', 'west'), (15.0, 0.0, 'hub', 'east'), (0.0, 12.0, 'drop'), (0.0, -12.0, 'drop')]
+    s = DemandSettings(rate=40, duration_s=30, mode='hubs', operators={'west': 0.5, 'east': 0.5})
+    plans = generate_demand([], ((-25, 25), (-25, 25)), s, seed=20, pads=pads).plans
+    assert len(plans) > 5
+    for p in plans:
+        hub_x = p.start[0] if abs(p.start[0]) == 15.0 else p.goal[0]
+        assert p.operator == ('west' if hub_x < 0 else 'east')

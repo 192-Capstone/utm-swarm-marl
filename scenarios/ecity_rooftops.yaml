@@ -1,0 +1,63 @@
+# E-City over the rooftops: the full E-City map (OpenStreetMap buildings near PES, ~760 x 700 m).
+# Two delivery operators (client nodes op0, op1), each with its hub of two pads, book deliveries to
+# six named drop points 80-220 m away; the Hospital books an emergency flight.
+# Short trips (under 105 m) fly at 6 / 8 m, below the 9-12 m roofs, and follow the streets around
+# the buildings; longer ones climb to 14 / 16 m and fly straight over the roofs (the layers at roof
+# height and the lowest ones are closed). The story:
+#   0 s    deliveries leave their hubs on the Planner's schedule
+#   60 s   a no-fly zone closes a block on the route to the south drop points for 4 min: drones
+#          already on that route re-route around it, later ones are planned around it
+#   75 s   the Hospital files an emergency flight across a busy corridor: it gets priority and a
+#          delivery already booked through that air is re-booked to make way
+#   55 s   an intruder (no flight plan) takes off and flies head-on down a delivery's route at
+#          its height: the Responder re-books the delivery and the drones keep clear of each other
+# Flying this high and this far needs five flight settings, set under sim (utm/scenario.py says why).
+# Run: python scripts/run_scenario.py scenarios/ecity_rooftops.yaml
+name: ecity_rooftops
+seed: 20
+map: {map: osm-full}
+places:
+  West Hub:      {kind: hub, operator: op0, pads: [[-28.8, 13.7], [-22.8, 13.7]]}   # op0's depot
+  East Hub:      {kind: hub, operator: op1, pads: [[155.2, 6.0], [149.2, 6.0]]}     # op1's depot
+  City Hospital: {kind: hospital, at: [72.7, -78.6]}
+  Apartments:    {kind: drop, at: [-41.6, -88.0]}
+  School:        {kind: drop, at: [1.7, -142.0]}
+  Clinic:        {kind: drop, at: [20.9, -59.3]}
+  Market:        {kind: drop, at: [35.4, 90.7]}
+  Pharmacy:      {kind: drop, at: [52.9, 28.5]}
+  Tech Park:     {kind: drop, at: [60.4, -183.3]}
+  Incident Site: {kind: drop, at: [38.2, -6.4]}
+requests:                        # the client nodes' bookings: from a free pad of their hub unless from:
+  - {t: 3.2,  operator: op0, to: Market}
+  - {t: 3.3,  operator: op0, to: West Hub, from: Tech Park}
+  - {t: 10.5, operator: op1, to: Market}
+  - {t: 17.4, operator: op0, to: School}
+  - {t: 24.5, operator: op1, to: Market}
+  - {t: 34.1, operator: op1, to: Apartments}
+  - {t: 46.7, operator: op1, to: Market}
+  - {t: 59.2, operator: op1, to: Pharmacy}
+  - {t: 62.3, operator: op1, to: Clinic}
+  - {t: 64.7, operator: op0, to: Clinic}
+  - {t: 69.8, operator: op0, to: Market}
+  - {t: 70.5, operator: op0, to: Market}
+  - {t: 73.4, operator: op1, to: East Hub, from: School}
+  - {t: 76.5, operator: op0, to: School}
+  - {t: 80.2, operator: op0, to: West Hub, from: School}
+demand:                          # only the height rule for the requests (and E7's 90 s window)
+  duration_s: 90
+  layers: [6, 7]                 # long trips: 14 / 16 m, over the roofs
+  short_trip_m: 105
+  short_layers: [2, 3]           # short trips: 6 / 8 m, below the roofs, around the buildings
+disruptions: {p_late: 0.2, late: [5, 15], p_slow: 0.0, slow: 0.6}
+intruders:
+  - {t: 55, start: [-18.9, -53.2], goal: [-44.3, 69.2], layer: 6}   # head-on down op0's f13 route
+zones:
+  - {at: 60, for: 240, polygon: [[-13, -132], [67, -132], [67, -78], [-13, -78]]}
+emergencies:
+  - {t: 75, from: City Hospital, to: Incident Site, priority: 1, layer: 7, operator: Hospital}   # across op1's f5 at 16 m
+utm: {mode: e4, risk: booking, telemetry: null, layer_floor: 1, n_layers: 8, layers_open: [2, 3, 6, 7],
+      layer_penalty: 30, max_delay: 120, traffic_detour: true, v_climb: 1.0, v_descent: 0.5,
+      v_descent_high: 1.0, slow_band_m: 3.0}
+sim: {cruise_z_bias: 0.9, altitude_cap: 3.5, land_step_m: 2.0, position_origin: goal,
+      hold_engage_m: 1.0, land_vz_high: 1.0, land_slow_m: 3.0, los_below_cruise: true}
+record: eval_results/scenarios/ecity_rooftops.json.gz

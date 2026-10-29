@@ -138,3 +138,34 @@ def test_checkpoint_path_is_found_from_the_repo_root_or_named_clearly(tmp_path, 
     assert run_scenario.checkpoint_path('scripts/run_scenario.py').endswith('run_scenario.py')   # repo-relative
     with pytest.raises(FileNotFoundError, match='checkpoint not found'):
         run_scenario.checkpoint_path('no/such.pth')
+
+
+def test_requests_from_named_places_use_the_operators_hub_pads():
+    """Client-node requests: a delivery leaves from the pad of its operator's hub used longest ago,
+    a place name works anywhere a point does, short trips prefer the short layers."""
+    import sys
+    sys.path.insert(0, 'scripts')
+    import run_scenario
+    sc = scenario.load({
+        'name': 'req', 'map': {'map': 'osm-crop'},
+        'places': {'Depot': {'kind': 'hub', 'operator': 'op0', 'pads': [[-10, 0], [-7, 0]]},
+                   'Shop': {'kind': 'drop', 'at': [8, 5]}, 'Far': {'kind': 'drop', 'at': [8, 18]}},
+        'requests': [{'t': 5, 'operator': 'op0', 'to': 'Shop'}, {'t': 1, 'operator': 'op0', 'to': 'Far'},
+                     {'t': 9, 'operator': 'op0', 'to': 'Depot', 'from': 'Shop'}],
+        'demand': {'layers': [1], 'short_trip_m': 20, 'short_layers': [0]}})
+    p = run_scenario.booked_requests(sc)
+    assert [q.t_earliest for q in p] == [1.0, 5.0, 9.0] and [q.id for q in p] == ['f0', 'f1', 'f2']
+    assert p[0].start == (-10.0, 0.0) and p[1].start == (-7.0, 0.0)      # the other pad next
+    assert p[2].start == (8.0, 5.0) and p[2].goal == (-10.0, 0.0)         # back to the pad free longest
+    assert (p[0].layer, p[1].layer) == (1, 0) and {q.operator for q in p} == {'op0'}
+
+
+@pytest.mark.parametrize('bad', [
+    {'places': {'H': {'kind': 'hub', 'pads': [[0, 0]]}}, 'requests': [{'t': 1, 'operator': 'a', 'to': [1, 1]}]},
+    {'places': {}, 'requests': [{'t': 1, 'operator': 'a', 'to': 'Nowhere', 'from': [0, 0]}]},
+    {'places': {}, 'requests': [{'t': 1, 'operator': 'a', 'to': [1, 1]}]},          # no hub, no from
+    {'emergencies': [{'t': 5, 'from': 'Nowhere', 'to': [1, 1]}]},                   # unknown emergency place
+])
+def test_bad_places_and_requests_are_refused(bad):
+    with pytest.raises(ValueError):
+        scenario.load({'name': 'x', 'map': {'map': 'osm-crop'}, **bad})

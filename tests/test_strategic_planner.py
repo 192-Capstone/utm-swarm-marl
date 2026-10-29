@@ -100,17 +100,15 @@ def test_pad_modes():
 
 def test_every_key_is_in_a_real_layer():
     """Climb and descent start and end exactly on the floor (start_z); rounding must not book
-    anything in layer -1 or above the top layer, where nobody else would check it."""
+    anything in layer -1 or above the top layer, where nobody else would check it. (The descent
+    used to dip a hair under start_z through rounding; it now ends on it exactly.)"""
     import numpy as np
     sky = StrategicPlanner([], B)
     rng = np.random.RandomState(0)
-    dipping = []                      # flights whose profile height rounds to just under the floor
-    while len(dipping) < 3:
+    for i in range(6):
         a, b = tuple(rng.uniform(-20, 20, 2)), tuple(rng.uniform(-20, 20, 2))
         prof, _ = sky.profile([a, b], 1)
-        if min(z for *_, z in prof) < sky.s.start_z:
-            dipping.append((a, b))
-    for i, (a, b) in enumerate(dipping):
+        assert min(z for *_, z in prof) >= sky.s.start_z - 1e-9
         assert sky.submit(FlightPlan(f'd{i}', a, b, layer=1, t_earliest=60.0 * i)).status == 'approved'
     layers = {layer for (_, layer) in sky.ledger}
     assert layers <= set(range(sky.s.n_layers)), layers
@@ -140,3 +138,39 @@ def test_deterministic():
         out = [sky.submit(FlightPlan(f'f{i}', (-15, -10 + 4 * i), (15, 10 - 4 * i))) for i in range(6)]
         return [(d.status, d.layer, d.t_dep) for d in out]
     assert run() == run()
+
+
+def test_a_mid_air_replan_never_steps_down_onto_a_roof():
+    """Over a 12 m building at 15 m, a re-plan may not drop the drone to a layer below the roof
+    there (the drop is straight down); in the open it may."""
+    roof = {'type': 'box', 'center': (0.0, 0.0), 'half': (4.0, 4.0), 'height': 12.0, 'yaw': 0.0}
+    sky = StrategicPlanner([roof], ((-30, 30), (-30, 30)),
+                           Settings(layer_floor=1.0, n_layers=8, layers_open=(2, 7), layer_penalty=0.0))
+    assert not sky._clear_below((0.0, 0.0), 2) and sky._clear_below((20.0, 0.0), 2)
+    assert sky._clear_below((0.0, 0.0), 7)                         # 16 m: over the roof
+    over = sky._submit(FlightPlan('a', (0.0, 0.0), (25.0, 25.0), layer=2), z_start=15.0, pad_start=False)
+    assert over.status == 'approved' and over.layer == 7
+
+
+def test_traffic_detour_swerves_on_the_same_layer_instead_of_changing_layer():
+    """A crossing flight that may not wait (as mid-air) gets a same-layer detour around the air the
+    first one has booked when it passes, rather than another layer; off, it changes layer."""
+    for detour in (False, True):
+        sky = StrategicPlanner([], B, Settings(traffic_detour=detour, layer_penalty=30.0))
+        a = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+        b = sky._submit(FlightPlan('B', (0, -15), (0, 15)), max_delay=0.0)
+        assert a.status == b.status == 'approved'
+        if detour:
+            assert (b.layer, b.delay, b.around_traffic) == (0, 0.0, True)
+            assert max(abs(x) for x, _, _ in b.waypoints) > 2.0            # it really went round
+        else:
+            assert b.layer == 1 and not b.around_traffic
+        no_double_booking(sky)
+
+
+def test_traffic_detour_ignores_air_booked_at_other_times():
+    """A cell someone else uses long before or after doesn't count: the route stays straight."""
+    sky = StrategicPlanner([], B, Settings(traffic_detour=True))
+    sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+    b = sky.submit(FlightPlan('B', (0, -15), (0, 15), t_earliest=300.0))
+    assert (b.layer, b.delay, b.around_traffic) == (0, 0.0, False)
