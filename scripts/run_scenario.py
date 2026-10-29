@@ -44,27 +44,69 @@ from utm.airspace_zones import Zone                                # noqa: E402
 from utm.demand import DemandSettings, generate_demand             # noqa: E402
 from utm.flight_log import FlightLog                               # noqa: E402
 from utm.metrics import safety_per_flight_hour, system_metrics     # noqa: E402
-from utm.strategic_planner import Settings, StrategicPlanner       # noqa: E402
+from utm.strategic_planner import FlightPlan, Settings, StrategicPlanner   # noqa: E402
+
+
+def where(sc, v):
+    """(x, y) of a place name (a hub: its first pad) or of [x, y]."""
+    if isinstance(v, str):
+        p = sc['places'][v]
+        return tuple(map(float, p['pads'][0] if p.get('kind') == 'hub' else p['at']))
+    return tuple(map(float, v[:2]))
+
+
+def booked_requests(sc):
+    """FlightPlans for the client nodes' requests (scenario requests), in time order. A hub end is
+    the pad of that hub used longest ago (or the request's pad); the preferred layer follows the
+    demand block's rule (layers; short_layers for trips under short_trip_m)."""
+    hub_of = {p['operator']: name for name, p in sc['places'].items() if p.get('kind') == 'hub'}
+    last = {}                                     # (hub, pad index) -> time of its last request
+    d = sc['demand']
+    layers, short_m, short_layers = d.get('layers', [0]), d.get('short_trip_m'), d.get('short_layers')
+
+    def end(v, pad, t):
+        if isinstance(v, str) and sc['places'][v].get('kind') == 'hub':
+            pads = sc['places'][v]['pads']
+            k = int(pad) if pad is not None else min(range(len(pads)), key=lambda j: (last.get((v, j), -1e9), j))
+            last[v, k] = t
+            return tuple(map(float, pads[k]))
+        return where(sc, v)
+
+    out = []
+    for k, r in enumerate(sorted(sc['requests'], key=lambda r: float(r['t']))):
+        t = float(r['t'])
+        a = end(r.get('from', hub_of.get(r['operator'])), r.get('pad'), t)
+        b = end(r['to'], None, t)
+        short = short_m is not None and short_layers and np.hypot(b[0] - a[0], b[1] - a[1]) < float(short_m)
+        layer = int(r.get('layer', (short_layers if short else layers)[k % len(short_layers if short else layers)]))
+        out.append(FlightPlan(f'f{k}', a, b, layer=layer, t_earliest=t, operator=str(r['operator'])))
+    return out
 
 
 def requests(sc, layout, bounds, sky):
-    """FlightPlans for the scenario's demand: D4, or E1's random requests (flights + window)."""
+    """FlightPlans for the scenario's demand: the client nodes' requests, D4, or E1's random
+    requests (flights + window)."""
+    if sc['requests']:
+        return booked_requests(sc)
     d = sc['demand']
     if 'flights' in d:
         return random_requests(np.random.RandomState(sc['seed']), sky, int(d['flights']),
                                window=float(d.get('window', 30.0)))
+    d = dict(d)
+    pads = d.pop('pads', None)                    # fixed pads: [x, y, kind] (kind hub / drop)
     keys = {f.name for f in dataclasses.fields(DemandSettings)}
     unknown = set(d) - keys
     if unknown:
         raise ValueError(f'demand: unknown settings {sorted(unknown)} (see utm/demand.py DemandSettings)')
-    return generate_demand(layout, bounds, DemandSettings(**d), seed=sc['seed']).plans
+    pads = None if pads is None else [tuple(p) for p in pads]
+    return generate_demand(layout, bounds, DemandSettings(**d), seed=sc['seed'], pads=pads).plans
 
 
-def _layer0_route(sky, start, goal, what):
-    r = sky.route(tuple(start), tuple(goal), 0)
+def _layer_route(sky, start, goal, what, layer=0):
+    r = sky.route(tuple(start), tuple(goal), layer)
     if r is None:
         raise ValueError(f'{what}: no route from {start} to {goal}')
-    z0, zl = sky.s.start_z, sky.layer_z(0)
+    z0, zl = sky.s.start_z, sky.layer_z(layer)
     return [(r[0][0], r[0][1], z0)] + [(a, b, zl) for a, b in r] + [(r[-1][0], r[-1][1], z0)]
 
 
@@ -74,12 +116,16 @@ def extra_drones(sc, sky, rng, window):
     if isinstance(ix, int):
         out = ev.intruders(rng, sky, ix, window)
     else:
-        out = [{'id': f'intruder_{k}', 'start': tuple(x['start']), 'goal': tuple(x['goal']), 't': float(x['t']),
-                'route': _layer0_route(sky, x['start'], x['goal'], f'intruder {k}')} for k, x in enumerate(ix)]
+        out = [{'id': f'intruder_{k}', 'start': where(sc, x['start']), 'goal': where(sc, x['goal']), 't': float(x['t']),
+                'route': _layer_route(sky, where(sc, x['start']), where(sc, x['goal']), f'intruder {k}',
+                                      int(x.get('layer', 0)))}
+               for k, x in enumerate(ix)]
     for k, e in enumerate(sc['emergencies']):
+        e = {**e, 'start': where(sc, e.get('from', e.get('start'))), 'goal': where(sc, e.get('to', e.get('goal')))}
         out.append({'id': f'emergency_{k}', 'start': tuple(e['start']), 'goal': tuple(e['goal']),
                     't': float(e['t']), 'priority': int(e.get('priority', 1)), 'emergency': True,
-                    'route': _layer0_route(sky, e['start'], e['goal'], f'emergency {k}')})   # until filed
+                    'layer': int(e.get('layer', 0)), 'operator': e.get('operator', 'emergency'),   # its client node
+                    'route': _layer_route(sky, e['start'], e['goal'], f'emergency {k}', int(e.get('layer', 0)))})   # until filed
     return out
 
 
@@ -114,7 +160,19 @@ def run(sc, record=None):
     ns = types.SimpleNamespace(**sc['map'])
     ns.level, ns.seed = sc['map'].get('level', 'medium'), sc['map'].get('seed', 0)
     layout, bounds = load_map(ns)
-    sky = StrategicPlanner(layout, bounds, Settings(pad_after=float(sc['utm']['pad_after'])))
+    s = Settings(pad_after=float(sc['utm']['pad_after']), layer_floor=float(sc['utm']['layer_floor']))
+    if sc['utm']['max_delay'] is not None:
+        s.max_delay = float(sc['utm']['max_delay'])
+    s.n_layers = int(sc['utm']['n_layers'])
+    if sc['utm']['layer_penalty'] is not None:
+        s.layer_penalty = float(sc['utm']['layer_penalty'])
+    s.traffic_detour = bool(sc['utm']['traffic_detour'])
+    for k in ('v_climb', 'v_descent', 'v_descent_high', 'slow_band_m'):     # the flight profile E1 books (null: E1's)
+        if sc['utm'][k] is not None:
+            setattr(s, k, float(sc['utm'][k]))
+    if sc['utm']['layers_open'] is not None:
+        s.layers_open = tuple(int(k) for k in sc['utm']['layers_open'])
+    sky = StrategicPlanner(layout, bounds, s)
     reqs = requests(sc, layout, bounds, sky)
     op = {fp.id: fp.operator for fp in reqs}
     decisions, flights = plans(sky, reqs)
@@ -132,15 +190,25 @@ def run(sc, record=None):
     cfg.pop('scenario_mix', None)
     cfg['environment']['collision_physics'] = False
     cfg.setdefault('obstacles', {})['enabled'] = False
+    if sc['sim']['altitude_cap'] is not None:
+        cfg.setdefault('observation', {})['altitude_cap'] = float(sc['sim']['altitude_cap'])
+    if sc['sim']['position_origin'] is not None:
+        cfg.setdefault('observation', {})['position_origin'] = sc['sim']['position_origin']
+    if sc['sim']['hold_engage_m'] is not None:          # goal-hold: engage here, release 0.2 m further out
+        e = float(sc['sim']['hold_engage_m'])
+        cfg.setdefault('goal_hold', {}).update(engage_dist=e, release_dist=e + 0.2)
     duration = float(sc['demand'].get('duration_s', sc['demand'].get('window', 30.0)))
     e7 = system_metrics(sky, reqs, duration)                      # before fly(): E1's decisions as filed
     ckpt = checkpoint_path(sc['sim']['checkpoint']) if sc['sim']['pilot'] == 'learned' else sc['sim']['checkpoint']
     args = types.SimpleNamespace(checkpoint=ckpt, horizon=20.0, risk=sc['utm']['risk'],
                                  simulator=sc['sim']['simulator'], land_latch_m=sc['sim']['land_latch_m'],
                                  land_vz_max=sc['sim']['land_vz_max'], land_wait_clear_m=sc['sim']['land_wait_clear_m'],
+                                 cruise_z_bias=sc['sim']['cruise_z_bias'], land_step_m=sc['sim']['land_step_m'],
+                                 land_vz_high=sc['sim']['land_vz_high'], land_slow_m=sc['sim']['land_slow_m'],
+                                 los_below_cruise=sc['sim']['los_below_cruise'] or None,
                                  telemetry=sc['utm']['telemetry'], zone_at=None,
                                  extra_time=60.0 + sum(float(z.get('for') or 60.0) for z in sc['zones']))
-    rec = FlightLog(sc)
+    rec = FlightLog(sc, progress_s=10.0)
     out = ev.fly(cfg, args, layout, sky, flights, extra, late, slow, sc['utm']['mode'], sc['sim']['pilot'],
                  sc['seed'], rec=rec, zones=zones)
     out.update(requested=len(reqs), approved=len(flights), zone_cuts=cuts)
