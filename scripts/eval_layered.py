@@ -144,7 +144,8 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
     n = n_f + len(extra)
     cfg = json.loads(json.dumps(cfg))
     sch = {'enabled': True}
-    for k in ('land_latch_m', 'land_vz_max', 'land_wait_clear_m'):   # landing options (absent = off)
+    for k in ('land_latch_m', 'land_vz_max', 'land_wait_clear_m', 'cruise_z_bias', 'land_step_m',
+              'land_vz_high', 'land_slow_m', 'los_below_cruise'):   # flight options (absent = off)
         if getattr(args, k, None) is not None:
             sch[k] = getattr(args, k)
     cfg['environment'].update(n_agents=n, crash_mode='remove', schedule=sch, route_follow={'enabled': True})

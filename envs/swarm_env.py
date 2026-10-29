@@ -42,6 +42,7 @@ from envs import disturbances
 # within its 2.1 m radius, so a landing that starts 1.2 m off-centre stays inside).
 CLIMB_DONE_M = 0.6
 LAND_RADIUS_M = 1.2
+ROOF_CLEAR_M = 1.0         # line of sight: a roof this far below a drone's cruise height hides nothing from it
 
 
 class SwarmEnv:
@@ -104,7 +105,26 @@ class SwarmEnv:
         sch = config['environment'].get('schedule') or {}
         self.land_latch_m = None if sch.get('land_latch_m') is None else float(sch['land_latch_m'])
         self.land_vz_max = None if sch.get('land_vz_max') is None else float(sch['land_vz_max'])
+        # land_vz_high (m/s, off by default): while landing more than land_slow_m over the pad, vz is
+        # clipped to this instead of land_vz_max: only the last metres are slow (the gentle touchdown
+        # C5 needs), so a landing from a high layer does not crawl down the whole way
+        self.land_vz_high = None if sch.get('land_vz_high') is None else float(sch['land_vz_high'])
+        self.land_slow_m = 3.0 if sch.get('land_slow_m') is None else float(sch['land_slow_m'])
+        # los_below_cruise (off by default): a drone's line of sight ignores roofs more than
+        # ROOF_CLEAR_M below its own cruise height (one flying over a roof is not hidden behind it).
+        # Off, every building blocks it, as before (E1-flown runs unchanged).
+        self.los_below_cruise = bool(sch.get('los_below_cruise', False))
         self.land_wait_clear_m = None if sch.get('land_wait_clear_m') is None else float(sch['land_wait_clear_m'])
+        # cruise_z_bias: the carrot's height during the climb and the cruise is raised by this much. The
+        # policy settles ~0.8 m below a height target at every height tested (2-18 m), so aiming that
+        # much higher makes it fly at the height E1 booked; without it a drone whose sag exceeds
+        # CLIMB_DONE_M never counts as climbed and hovers over its pad (seen at 14 m and 18 m).
+        self.cruise_z_bias = float(sch.get('cruise_z_bias') or 0.0)
+        # land_step_m: while landing, the carrot sits at most this far below the drone (over the pad),
+        # sliding down with it, instead of on the pad itself. From a high cruise the pad is far straight
+        # below, which the policy never saw in training (landings from 3-4 m): it drifted sideways out of
+        # the landing radius and climbed back, over and over (14 m and 18 m in scripts/altitude_test.py).
+        self.land_step_m = None if sch.get('land_step_m') is None else float(sch['land_step_m'])
         if self.land_latch_m is not None and self.land_latch_m < LAND_RADIUS_M:
             raise ValueError(f"schedule.land_latch_m ({self.land_latch_m}) must be >= LAND_RADIUS_M ({LAND_RADIUS_M})")
         if self.land_vz_max is not None and self.land_vz_max < 0:
@@ -419,10 +439,25 @@ class SwarmEnv:
             pts = np.vstack([pts, np.asarray(ob['center'], dtype=float)[None, :2]])
         lo, hi = pts.min(axis=0) - 10.0, pts.max(axis=0) + 10.0
         # line of sight = not hidden behind a building: walls grown by the drone's own radius only
-        # (the planner's extra 0.35 m margin is for choosing routes, not for seeing)
-        self._los_grid = build_grid(self.layout, ((lo[0], hi[0]), (lo[1], hi[1])), 0.25,
-                                    scenario_manager.DRONE_RADIUS)
+        # (the planner's extra 0.35 m margin is for choosing routes, not for seeing). Per drone, by
+        # its cruise height: a building over 1 m below it hides nothing (a drone held behind a roof
+        # it flies over waits for ever), so high and low flights each see their own buildings
+        # (schedule.los_below_cruise; off, every drone sees every building, as before)
+        self._los_bounds, self._los_cache = ((lo[0], hi[0]), (lo[1], hi[1])), {}
+        self._los_grid = self._los(None)
+        self._los_for = {key: self._los(self._cruise.get(key)) for key in followers}
         return followers
+
+    def _los(self, zc):
+        """Line-of-sight grid for a drone cruising at zc (None: every building), cached by the
+        set of buildings it keeps."""
+        from envs.route_planner import build_grid
+        low = zc is not None and self.los_below_cruise
+        seen = tuple(k for k, ob in enumerate(self.layout) if not low or ob['height'] > zc - ROOF_CLEAR_M)
+        if seen not in self._los_cache:
+            self._los_cache[seen] = build_grid([self.layout[k] for k in seen], self._los_bounds, 0.25,
+                                               scenario_manager.DRONE_RADIUS)
+        return self._los_cache[seen]
 
     def set_route(self, i, route, departure=None):
         """Give drone i a new route (3D waypoints, E1 profile) mid-episode (E4 re-planning): a
@@ -441,6 +476,8 @@ class SwarmEnv:
         self._landing[i] = False                  # C5: a re-routed drone is not latched onto its old goal
         self.followers[key] = RouteFollower(np.column_stack([xy, np.full(len(xy), self._cruise[key])]),
                                             lookahead=self.route_lookahead)
+        if getattr(self, '_los_cache', None) is not None:      # a re-plan may change its layer
+            self._los_for[key] = self._los(self._cruise[key])
         self.goals[i, :2] = xy[-1]
         if departure is not None and self.departures is not None and self.waiting[i]:
             self.departures[i] = float(departure)
@@ -464,16 +501,16 @@ class SwarmEnv:
             if self.waiting[i] or self.landed[i] or self.crashed[i]:
                 self._landing[i] = False          # (all False unless a landing option is on)
                 continue                          # parked: not flying
-            carrot = f.visible_target(positions[i], self._los_grid, min_dist=self.route_min_target)
+            carrot = f.visible_target(positions[i], self._los_for.get(key, self._los_grid), min_dist=self.route_min_target)
             if key in self._cruise:               # E1 profile: vertical climb and landing at the pads
                 zc, goal = self._cruise[key], self.goals[i]
                 if not self._climbed[key] and positions[i][2] >= zc - CLIMB_DONE_M:
                     self._climbed[key] = True
                 if not self._climbed[key]:
-                    carrot = np.array([f.w[0, 0], f.w[0, 1], zc])
+                    carrot = np.array([f.w[0, 0], f.w[0, 1], zc + self.cruise_z_bias])
                 elif self._pad_busy(i, goal, zc, positions):   # wait above until the pad is clear
                     self._landing[i] = False
-                    carrot = np.array([goal[0], goal[1], zc])
+                    carrot = np.array([goal[0], goal[1], zc + self.cruise_z_bias])
                 elif self.land_latch_m is None and self.land_vz_max is None:   # default (unchanged)
                     if np.hypot(*(positions[i][:2] - goal[:2])) < LAND_RADIUS_M:
                         carrot = goal
@@ -485,6 +522,10 @@ class SwarmEnv:
                         self._landing[i] = False
                     if self._landing[i]:
                         carrot = goal
+                if self.land_step_m is not None and carrot is goal and positions[i][2] - goal[2] > self.land_step_m:
+                    carrot = np.array([goal[0], goal[1], positions[i][2] - self.land_step_m])   # step down to the pad
+                if self.cruise_z_bias and self._climbed[key] and abs(float(carrot[2]) - zc) < 1e-6:
+                    carrot = np.array([carrot[0], carrot[1], zc + self.cruise_z_bias])   # cruising: aim higher
             self.adapter.goals[key] = np.asarray(carrot, dtype=np.float32)
 
     def _pad_busy(self, i, goal, zc, positions):
@@ -500,9 +541,12 @@ class SwarmEnv:
     def step(self, actions_dict):
         if self.land_vz_max is not None and self._landing.any():   # E1 landing: limit vz
             actions_dict = dict(actions_dict)
+            z = self.adapter.get_positions()[:, 2] if self.land_vz_high is not None else None
             for i in np.flatnonzero(self._landing):
                 a = np.array(actions_dict[f'drone_{i}'], dtype=np.float32)
-                a[2] = np.clip(a[2], -self.land_vz_max, self.land_vz_max)
+                cap = (self.land_vz_high if z is not None and z[i] - self.goals[i][2] > self.land_slow_m
+                       else self.land_vz_max)
+                a[2] = np.clip(a[2], -cap, cap)
                 actions_dict[f'drone_{i}'] = a
         # 1. apply actions + advance the simulator
         if self._forced.any():                    # D5 forced landing: limit vz

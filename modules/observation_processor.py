@@ -187,6 +187,19 @@ class ObservationProcessor:
         # distance ~4 m), so converted v1 actors see the same values below
         # them. Beyond the cap the goal vector keeps its direction (v1 clipped
         # each axis separately, which bent the direction of far goals).
+        # altitude_cap (schemas v2/v3, off by default): the drone's own height input is read as at most
+        # this many metres. The policy was trained near 1-4 m; above ~8 m its unseen height input made it
+        # settle ~2 m short of its goal and never land (scripts/altitude_test.py). Only the own-height
+        # feature is capped: the goal vector and neighbours' relative positions keep the true heights.
+        cap = obs_cfg.get('altitude_cap')
+        self.altitude_cap = None if cap is None else float(cap)
+        # position_origin (schemas v2/v3, off by default): 'goal' reads the drone's own x, y input
+        # relative to its current goal (the route carrot) instead of the map centre. The policy was
+        # trained in a 50 m arena; on a bigger map an own position many arenas out made it stop short
+        # of its goal. The goal vector, LiDAR and neighbours are relative already and do not change.
+        self.position_origin = obs_cfg.get('position_origin')
+        if self.position_origin not in (None, 'goal'):
+            raise ValueError(f"observation.position_origin must be 'goal' or unset, not {self.position_origin!r}")
         self.goal_vector_cap   = float(obs_cfg.get('goal_vector_cap', 2.5))
         self.goal_distance_cap = float(obs_cfg.get('goal_distance_cap', 4.0))
         self._prev_prox = None    # v2: last step's LiDAR proximity, per drone
@@ -347,6 +360,10 @@ class ObservationProcessor:
         N = raw.shape[0]
         obs = np.zeros((N, 42), dtype=np.float32)
         obs[:, 0:3]   = raw[:, 0:3] / self.position_scale
+        if self.altitude_cap is not None:
+            obs[:, 2] = np.minimum(raw[:, 2], self.altitude_cap) / self.position_scale[2]
+        if self.position_origin == 'goal':                    # raw[:, 9:12] = goal - position
+            obs[:, 0:2] = -raw[:, 9:11] / self.position_scale[:2]
         obs[:, 3:6]   = raw[:, 3:6] / self.velocity_scale
         obs[:, 6:9]   = raw[:, 6:9] / np.pi
         dist          = raw[:, 12:13]
