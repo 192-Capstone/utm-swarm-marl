@@ -32,6 +32,10 @@ an older alert is not a warning for it); and the other way round, the share
 of alerts followed by a close pass of that drone within --horizon seconds (alert precision); the
 same two for the high-risk alerts only (what E4 acts on).
 
+Webots (C5): --simulator webots_l2_multi flies one run (one seed, mode and pilot) per command;
+--land-latch-m / --land-vz-max: C5's landing options (both off by default; scenario runs use
+2.4 / 0.5, scripts/run_scenario.py).
+
 E2 (intent): --risk intent rates E3's alerts by where the drones are going (each drone shares its
 planned next 10 s along its route, utm/intent.py) instead of by the bookings; --telemetry N D L
 makes the UTM see the drones only through their reports (utm/telemetry.py: GPS noise N m, delay
@@ -71,8 +75,8 @@ from utm.airspace_zones import Zone, tile_blocks, zone_keys        # noqa: E402
 from utm.conformance import ConformanceMonitor                     # noqa: E402
 from utm.contingency import ContingencyManager                     # noqa: E402
 from utm.intent import predicted_path, route_intent                # noqa: E402
-from utm.strategic_planner import StrategicPlanner                 # noqa: E402
-from utm.telemetry import TelemetryModel                           # noqa: E402
+from utm.strategic_planner import FlightPlan, StrategicPlanner     # noqa: E402
+from utm.telemetry import TelemetryModel, silent                   # noqa: E402
 
 
 class SimplePilot:
@@ -128,23 +132,41 @@ def place_zone(sky, flights, bounds, place='busiest', rng=None, active=None, siz
     return cut[rng.randint(len(cut))][::-1]
 
 
-def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, zone=None):
+def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, zone=None, rec=None, zones=None):
+    """One run. rec: an optional utm.flight_log.FlightLog that records it for the dashboard (E6).
+    zones: [(t, Zone), ...] appearing mid-flight (E6 scenarios); zone (at args.zone_at) is one of them.
+    extra: unplanned drones (intruders: id, start, goal, t, route); an entry with 'emergency': True
+    is an emergency flight instead (E6): its drone waits on its pad until t, then it is filed with
+    'priority' (E4 / E1 give it the air it needs) and takes off on the approved route."""
+    zones = list(zones or []) + ([(args.zone_at, zone)] if zone is not None else [])
     plan = 'no_e1' if mode == 'no_e1' else 'e1'
     n_f = len(flights)
     n = n_f + len(extra)
     cfg = json.loads(json.dumps(cfg))
-    cfg['environment'].update(n_agents=n, crash_mode='remove', schedule={'enabled': True},
-                              route_follow={'enabled': True})
+    sch = {'enabled': True}
+    for k in ('land_latch_m', 'land_vz_max', 'land_wait_clear_m'):   # landing options (absent = off)
+        if getattr(args, k, None) is not None:
+            sch[k] = getattr(args, k)
+    cfg['environment'].update(n_agents=n, crash_mode='remove', schedule=sch, route_follow={'enabled': True})
+    if getattr(args, 'simulator', 'pybullet') != 'pybullet':   # C5: one Webots connection per process
+        cfg['environment']['simulator'] = args.simulator
     if pilot == 'blind':
         cfg.setdefault('lidar', {})['sees_drones'] = False
     dt = cfg['environment'].get('control_timestep', 0.032)
     starts = [f['start'] for f in flights] + [x['start'] for x in extra]
     goals = [f['goal'] for f in flights] + [x['goal'] for x in extra]
     routes = [f[plan][1] for f in flights] + [x['route'] for x in extra]
-    deps = [f[plan][0] + late[i] for i, f in enumerate(flights)] + [x['t'] for x in extra]
+    deps = [f[plan][0] + late[i] for i, f in enumerate(flights)] + [np.inf if x.get('emergency') else x['t'] for x in extra]
+    calls = {n_f + k: x for k, x in enumerate(extra) if x.get('emergency')}     # drone index -> emergency
+    if calls and mode == 'no_e1':
+        raise ValueError('emergency flights need E1 (mode e1 or e4)')
     factor = np.array(slow + [1.0] * len(extra))
     longest = max(sum(math.dist(a[:2], b[:2]) for a, b in zip(r, r[1:])) for r in routes)
-    cfg['environment']['max_steps'] = int((max(deps) + 3.0 * longest / factor.min() + 30.0) / dt)
+    last = max([d for d in deps if np.isfinite(d)] + [x['t'] for x in calls.values()])
+    extra_s = float(getattr(args, 'extra_time', 0.0))       # E6: room for E4's delays (zones waited out)
+    # an emergency's route is in `longest`; E1 may still delay its take-off by up to max_delay
+    wait_em = sky.s.max_delay if calls else 0.0
+    cfg['environment']['max_steps'] = int((last + wait_em + 3.0 * longest / factor.min() + 30.0 + extra_s) / dt)
     env = SwarmEnv(cfg, device=torch.device('cpu'))
     disable_all_collision_physics(env, n)
     if pilot == 'simple':
@@ -167,13 +189,30 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
     if monitor is not None and (args.telemetry is not None or args.risk == 'intent'):
         tm = TelemetryModel(*(args.telemetry or (0.0, 0.0, 0.0)), seed=9000 + seed)
     prev = {}                                     # drone -> true position a report period ago
+    every_frame = None
+
+    def status():                                 # per drone, utm/flight_log.py codes
+        return np.where(env.cancelled, 4, np.where(env.crashed, 3, np.where(env.landed, 2, np.where(env.waiting, 0, 1))))
+
+    if rec is not None:
+        every_frame = max(1, int(round(rec.frame_dt / dt)))
+        rec.start(sky, layout, dt, [
+            {'id': ids[i], 'kind': 'flight' if i < n_f else ('emergency' if i in calls else 'intruder'),
+             'operator': flights[i].get('operator', '') if i < n_f else '',
+             'start': starts[i], 'goal': goals[i], 't_dep': deps[i] if np.isfinite(deps[i]) else None,
+             'route': [] if i in calls else routes[i],
+             'arrival': flights[i]['arrival'][plan] if i < n_f else None,
+             'layer': sky.layer_of(routes[i][1][2]) if len(routes[i]) > 2 else 0} for i in range(n)],
+            [z for _, z in zones])
     e4 = ContingencyManager(sky, monitor) if mode == 'e4' else None
-    zkeys = set(zone_keys(zone, sky.sky, sky.s.n_layers)) if zone is not None else set()
-    zone_on, entered, inside_s, replans = False, set(), 0.0, []
+    zkeys = [set(zone_keys(z, sky.sky, sky.s.n_layers)) for _, z in zones]
+    zone_on, entered, inside_s, replans = [False] * len(zones), set(), 0.0, []
+    called = {}                                   # emergency id -> {t, status, t_dep}
     every = max(1, int(round(1.0 / dt)))
     close = {t: {} for t in NEAR}                 # pair -> first time below the threshold
     min_sep = np.inf
     info = {}
+    was_landed, was_crashed = env.landed.copy(), env.crashed.copy()
     for step in range(cfg['environment']['max_steps']):
         acts = policy.act(obs, env, n)
         for i in np.flatnonzero(factor < 1.0):
@@ -183,6 +222,14 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
         t = (step + 1) * dt
         air = np.flatnonzero(~(env.waiting | env.landed | env.crashed))
         pos = env.adapter.get_positions()
+        if rec is not None and (step + 1) % every_frame == 0:
+            rec.frame(t, pos, status())
+        if rec is not None:                       # arrivals and crashes as events (the E5 dashboard)
+            for i in np.flatnonzero(env.landed & ~was_landed):
+                rec.event(t, 'arrived', flight=ids[i])
+            for i in np.flatnonzero(env.crashed & ~was_crashed):
+                rec.event(t, 'crashed', flight=ids[i])
+            was_landed, was_crashed = env.landed.copy(), env.crashed.copy()
         if (step + 1) % every == 0:
             here, paths = {ids[i]: pos[i] for i in air}, None
             if tm is not None:
@@ -195,23 +242,42 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
                     states[ids[i]] = (pos[i], vel, route_intent(f, pos[i], np.hypot(*vel[:2]), t) if cruising else [])
                 tm.send(t, states)
                 tm.receive(t)
-                for fid in [x for x in tm.latest if x not in here]:
-                    tm.forget(fid)                # landed or crashed: stops reporting
+                for fid in silent(tm.latest, t):  # no report for LINK_TIMEOUT_S: landed, crashed or
+                    tm.forget(fid)                #   link lost (never the simulator's truth)
                 here = {fid: r.pos for fid, r in tm.latest.items()}
                 if args.risk == 'intent':
                     paths = {fid: predicted_path(r, t) for fid, r in tm.latest.items()}
             prev = {i: pos[i].copy() for i in air}
             acts_e4 = []
-            if zone is not None and not zone_on and t >= args.zone_at:
-                zone_on = True
-                if e4 is not None:
-                    acts_e4 += e4.add_zone(zone, t, here)
+            for k, (t_on, z) in enumerate(zones):
+                if not zone_on[k] and t >= t_on:
+                    zone_on[k] = True
+                    if rec is not None:
+                        rec.zone_on(t, z.id)
+                    if e4 is not None:
+                        acts_e4 += e4.add_zone(z, t, here)
+            for i, x in calls.items():
+                if ids[i] not in called and t >= x['t']:
+                    fp = FlightPlan(ids[i], tuple(x['start']), tuple(x['goal']), 0, t, int(x.get('priority', 1)), 'emergency')
+                    got = (e4.emergency(fp, t, here) if e4 is not None      # first: the emergency itself
+                           else [{'t': t, 'flight': fp.id, 'why': 'emergency', 'decision': sky.submit(fp, now=t)}])
+                    acts_e4 += got
+                    d = got[0]['decision']
+                    called[fp.id] = {'t': round(t, 2), 'status': d.status, 't_dep': d.t_dep}
+                    if d.status == 'approved' and monitor is not None:
+                        monitor.plans[fp.id] = d          # E3 watches it like any planned flight
+                    elif d.status != 'approved':          # refused: it never takes off, the run doesn't wait
+                        env.cancel(i)
             if e4 is not None:
                 acts_e4 += e4.step(t, here, paths)
             elif monitor is not None:
                 monitor.check(t, here, paths)
+            if rec is not None:
+                rec.tick(t, monitor, paths)
             for a in acts_e4:
                 d = a['decision']
+                if rec is not None:
+                    rec.replan(a['t'], a['flight'], a['why'], d)
                 replans.append({'t': a['t'], 'flight': a['flight'], 'why': a['why'], 'status': d.status, 'reason': d.reason})
                 if a['flight'] not in ids:
                     continue
@@ -220,9 +286,11 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
                     env.set_route(i, d.waypoints, departure=d.t_dep)
                 elif a['why'].endswith('-> cancelled') and env.waiting[i]:
                     env.cancel(i)
-            if zone_on and (zone.permanent or t < zone.active[0][1]):
+            live = set().union(*[zk for (_, z), zk, on in zip(zones, zkeys, zone_on)
+                                 if on and (z.permanent or any(a <= t < b for a, b in z.active))]) if zones else set()
+            if live:
                 for i in air:
-                    if (sky.sky.cell(pos[i][0], pos[i][1]), sky.layer_of(pos[i][2])) in zkeys:
+                    if (sky.sky.cell(pos[i][0], pos[i][1]), sky.layer_of(pos[i][2])) in live:
                         entered.add(ids[i])
                         inside_s += 1.0
         if len(air) > 1:
@@ -236,6 +304,8 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
                     close[th].setdefault((int(air[iu[0][k]]), int(air[iu[1][k]])), t)
         if done:
             break
+    if rec is not None and (not rec.log['frames']['t'] or rec.log['frames']['t'][-1] != round(t, 3)):
+        rec.frame(t, env.adapter.get_positions(), status())   # the final state, unless just recorded
     env.close()
     reached = np.asarray(info.get('drone_reached_goal', [False] * n), dtype=bool)
     home = {y['flight'] for y in replans if y['status'] == 'approved' and y['reason'] == 'return to base'}
@@ -243,9 +313,12 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
     out = {'flights': n_f, 'intruders': len(extra), 'arrived': arrived,
            'crashed': int(env.crashed[:n_f].sum()), 'crashed_all': int(env.crashed.sum()),
            'pairs_below_2.0': len(close[2.0]), 'pairs_below_1.4': len(close[1.4]),
-           'pairs_below_1.4_with_intruder': sum(1 for a, b in close[1.4] if a >= n_f or b >= n_f),
+           'pairs_below_1.4_with_intruder': sum(1 for a, b in close[1.4]
+                                                if (a >= n_f and a not in calls) or (b >= n_f and b not in calls)),
            'min_separation_m': None if min_sep == np.inf else round(min_sep, 3),
            'zone_entries': len(entered), 'zone_seconds': inside_s,
+           'emergencies': [{'id': ids[i], **called.get(ids[i], {'t': None, 'status': 'never called'}),
+                            'arrived': bool(reached[i])} for i in calls],
            'cancelled': int(env.cancelled[:n_f].sum()),
            'returned': len(home),
            'replans': replans}
@@ -276,6 +349,8 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
         out['close_pair_warning_s'] = warn
         out['close_pairs'] = detail
         out['alerts_followed_by_close_pass'] = int(sum(hit))
+    if rec is not None:
+        rec.finish(out, monitor)
     return out
 
 
@@ -299,6 +374,10 @@ def main():
     ap.add_argument('--zone-place', choices=['busiest', 'random'], default='busiest',
                     help='where: the tile that cuts the most routes, or a random tile that cuts one')
     ap.add_argument('--risk', choices=['booking', 'intent'], default='booking', help="E3's risk rule (intent: E2)")
+    ap.add_argument('--simulator', choices=['pybullet', 'webots_l2_multi'], default='pybullet',
+                    help='webots_l2_multi: one run per command (one seed, mode and pilot), one Webots per process')
+    ap.add_argument('--land-latch-m', type=float, default=None, help='C5 landing option (default: off)')
+    ap.add_argument('--land-vz-max', type=float, default=None, help='C5 landing option (default: off)')
     ap.add_argument('--telemetry', type=float, nargs=3, default=None, metavar=('NOISE_M', 'DELAY_S', 'LOSS'),
                     help='the UTM hears the drones through reports (default: true positions)')
     ap.add_argument('--zone-for', type=float, default=None, help='zone active this many s (default: permanent)')
@@ -308,6 +387,8 @@ def main():
     args = ap.parse_args()
     if any(10 <= s <= 19 for s in args.seeds):
         ap.error('seeds 10-19 are reserved for test runs')
+    if args.simulator != 'pybullet' and len(args.seeds) * len(args.modes) * len(args.pilots) > 1:
+        ap.error('Webots: one run per command (one seed, one mode, one pilot)')
 
     with open(args.config, encoding='utf-8') as f:
         cfg = yaml.safe_load(f)

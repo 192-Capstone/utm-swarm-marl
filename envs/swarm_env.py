@@ -94,9 +94,17 @@ class SwarmEnv:
         #   land_vz_max:  while landing (latched as above, or within LAND_RADIUS_M without a
         #                 latch), its commanded vz is clipped to +-land_vz_max m/s; the clipped
         #                 action is the one applied and recorded.
+        #   land_wait_clear_m: a drone does not descend onto its pad while another drone is low
+        #                 over it (closer than this horizontally to the pad and more than 0.5 m
+        #                 below cruise height and below it: still landing there, or taking off; of two
+        #                 drones dipping to one pad the lower lands first): it holds at
+        #                 cruise height above the pad until it is clear (E6; found in Webots,
+        #                 where landings take ~2 s longer than in PyBullet and a drone came down
+        #                 on one still settling).
         sch = config['environment'].get('schedule') or {}
         self.land_latch_m = None if sch.get('land_latch_m') is None else float(sch['land_latch_m'])
         self.land_vz_max = None if sch.get('land_vz_max') is None else float(sch['land_vz_max'])
+        self.land_wait_clear_m = None if sch.get('land_wait_clear_m') is None else float(sch['land_wait_clear_m'])
         if self.land_latch_m is not None and self.land_latch_m < LAND_RADIUS_M:
             raise ValueError(f"schedule.land_latch_m ({self.land_latch_m}) must be >= LAND_RADIUS_M ({LAND_RADIUS_M})")
         if self.land_vz_max is not None and self.land_vz_max < 0:
@@ -463,6 +471,9 @@ class SwarmEnv:
                     self._climbed[key] = True
                 if not self._climbed[key]:
                     carrot = np.array([f.w[0, 0], f.w[0, 1], zc])
+                elif self._pad_busy(i, goal, zc, positions):   # wait above until the pad is clear
+                    self._landing[i] = False
+                    carrot = np.array([goal[0], goal[1], zc])
                 elif self.land_latch_m is None and self.land_vz_max is None:   # default (unchanged)
                     if np.hypot(*(positions[i][:2] - goal[:2])) < LAND_RADIUS_M:
                         carrot = goal
@@ -475,6 +486,16 @@ class SwarmEnv:
                     if self._landing[i]:
                         carrot = goal
             self.adapter.goals[key] = np.asarray(carrot, dtype=np.float32)
+
+    def _pad_busy(self, i, goal, zc, positions):
+        """land_wait_clear_m: another flying drone is low over drone i's pad (landing or taking off)."""
+        if self.land_wait_clear_m is None or np.hypot(*(positions[i][:2] - goal[:2])) >= 2.0 * LAND_RADIUS_M:
+            return False                          # off, or not near its pad yet
+        busy = ~(self.waiting | self.landed | self.crashed)
+        busy[i] = False
+        near = np.hypot(positions[:, 0] - goal[0], positions[:, 1] - goal[1]) < self.land_wait_clear_m
+        low = (positions[:, 2] < zc - 0.5) & (positions[:, 2] < positions[i][2])   # lower one lands first
+        return bool(np.any(busy & near & low))
 
     def step(self, actions_dict):
         if self.land_vz_max is not None and self._landing.any():   # E1 landing: limit vz

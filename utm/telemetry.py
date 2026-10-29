@@ -61,6 +61,14 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+LINK_TIMEOUT_S = 3.0      # s without a report before the UTM drops a drone (three report periods)
+
+
+def silent(latest, t, timeout=LINK_TIMEOUT_S):
+    """Drones in latest (id -> newest report) whose newest report was sent more than timeout s before
+    t: the UTM's only sign that one has landed, crashed or lost its link (it cannot see the truth)."""
+    return [fid for fid, r in latest.items() if t - r.t_sent > timeout]
+
 
 @dataclass
 class Report:
