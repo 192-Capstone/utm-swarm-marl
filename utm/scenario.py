@@ -59,6 +59,10 @@ for the dashboard. YAML, every key optional except map (defaults below).
                                              #   (default 3) over the pad; land_vz_max only below that
                                              # los_below_cruise: a roof over 1 m below a drone's cruise
                                              #   height doesn't block its line of sight (flying over roofs)
+    failures:                        # D5: drone failures (utm.mode e1 or e4, PyBullet), absent = none
+      p: 0.2                         #   drawn: each approved flight fails with probability p, mid-flight,
+      types: [motor, land, comms]    #   its type drawn from types (own RNG: 8000 + seed, as eval_layered)
+    # or listed: [{flight: f3, t: 30, type: motor}, ...]    (t: s, flight: an id of the run's flights)
     record: eval_results/scenarios/ecity_demo.json.gz
 
 Seeds 10-19 are refused (reserved for test runs), as in the evaluation scripts.
@@ -91,6 +95,7 @@ DEFAULTS = {
             'los_below_cruise': False},
     'record': None,
 }
+FAILURE_TYPES = ('motor', 'land', 'comms')        # envs/disturbances.py FAILURE_TYPES
 MODES, RISKS, PILOTS = ('no_e1', 'e1', 'e4'), ('booking', 'intent'), ('simple', 'blind', 'learned')
 SIMULATORS = ('pybullet', 'webots_l2_multi')
 
@@ -157,6 +162,36 @@ def validate(sc):
     ix = sc['intruders']
     if not isinstance(ix, int) and not all({'t', 'start', 'goal'} <= set(x) for x in ix):
         bad('intruders: a count, or a list of {t, start, goal}')
+    fl = sc.get('failures')                           # not in DEFAULTS: absent stays out of the recording
+    if fl is not None:
+        if sc['utm']['mode'] not in ('e1', 'e4'):
+            bad('failures need the UTM to hear the drones (utm.mode e1 or e4)')
+        if sc['sim']['simulator'] != 'pybullet':
+            bad('failures are PyBullet only (Webots has no set_falling)')
+        if isinstance(fl, dict):
+            if set(fl) - {'p', 'types'} or 'p' not in fl:
+                bad('failures: {p: 0-1, types: [motor, land, comms]} or a list of {flight, t, type}')
+            if isinstance(fl['p'], bool) or not isinstance(fl['p'], (int, float)) or not 0.0 <= fl['p'] <= 1.0:
+                bad(f"failures.p must be a number in [0, 1], got {fl['p']!r}")
+            types = fl.get('types', list(FAILURE_TYPES))
+            if not isinstance(types, (list, tuple)) or not types or any(x not in FAILURE_TYPES for x in types):
+                bad(f'failures.types must be a non-empty list of {FAILURE_TYPES}, got {types!r}')
+            fl['types'] = list(types)
+        elif isinstance(fl, list):
+            ids = {f'f{k}' for k in range(len(sc['requests']))} if sc['requests'] else None   # else known at run time
+            for f in fl:
+                if not isinstance(f, dict) or set(f) != {'flight', 't', 'type'}:
+                    bad('a failure needs flight, t and type (and nothing else)')
+                if f['type'] not in FAILURE_TYPES:
+                    bad(f"failure type {f['type']!r} must be one of {FAILURE_TYPES}")
+                if isinstance(f['t'], bool) or not isinstance(f['t'], (int, float)) or f['t'] < 0:
+                    bad(f"failure t must be a number >= 0, got {f['t']!r}")
+                if ids is not None and f['flight'] not in ids:
+                    bad(f"failure for unknown flight {f['flight']!r} (this scenario's flights: f0..f{len(ids) - 1})")
+            if len({f['flight'] for f in fl}) < len(fl):
+                bad('at most one failure per flight')
+        else:
+            bad('failures: {p, types} or a list of {flight, t, type}')
     return sc
 
 

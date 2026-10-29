@@ -39,6 +39,7 @@ import eval_layered as ev                                         # noqa: E402
 from eval_e1_flown import plans                                    # noqa: E402
 from preview_route import load_map                                 # noqa: E402
 from preview_strategic import random_requests                      # noqa: E402
+from envs.disturbances import draw_failures                          # noqa: E402
 from utm import scenario as scn                                    # noqa: E402
 from utm.airspace_zones import Zone                                # noqa: E402
 from utm.demand import DemandSettings, generate_demand             # noqa: E402
@@ -146,6 +147,18 @@ def make_zones(sc, sky, flights):
     return out, cuts
 
 
+def failure_schedule(sc, flights, late):
+    """The scenario's failures as fly()'s failures=: None when absent (nothing drawn); a list as given; the drawn
+    form (p, types) as eval_layered's --failures does (RandomState(8000 + seed), over E1's booked windows + lateness)."""
+    fl = sc.get('failures')
+    if fl is None or isinstance(fl, list):
+        return fl
+    drawn = draw_failures(np.random.RandomState(8000 + sc['seed']),
+                          [(f['id'], f['e1'][0] + late[i], f['arrival']['e1'] + late[i]) for i, f in enumerate(flights)],
+                          fl['p'], tuple(fl['types']))
+    return [{'flight': d['drone'], 't': d['t'], 'type': d['type']} for d in drawn]
+
+
 def checkpoint_path(path):
     """The scenario's checkpoint: as given (from the current directory), else from the repo root."""
     for p in (path, os.path.join(ROOT, path)):
@@ -210,7 +223,7 @@ def run(sc, record=None):
                                  extra_time=60.0 + sum(float(z.get('for') or 60.0) for z in sc['zones']))
     rec = FlightLog(sc, progress_s=10.0)
     out = ev.fly(cfg, args, layout, sky, flights, extra, late, slow, sc['utm']['mode'], sc['sim']['pilot'],
-                 sc['seed'], rec=rec, zones=zones)
+                 sc['seed'], rec=rec, zones=zones, failures=failure_schedule(sc, flights, late))
     out.update(requested=len(reqs), approved=len(flights), zone_cuts=cuts)
     if e7['flight_s'] > 0:
         e7['safety'] = safety_per_flight_hour(out['pairs_below_1.4'], out['crashed'], e7['flight_s'])
@@ -232,7 +245,8 @@ def main():
     t0 = time.time()
     out, rec = run(sc, a.record)
     keep = ('requested', 'approved', 'flights', 'arrived', 'crashed', 'cancelled', 'returned', 'pairs_below_1.4',
-            'zone_entries', 'zone_cuts', 'high_alerts', 'emergencies')
+            'zone_entries', 'zone_cuts', 'high_alerts', 'emergencies', 'forced_down', 'failures',
+            'false_alerts')
     print(json.dumps({k: out.get(k) for k in keep if k in out}, indent=1))
     e7 = out['e7']
     print(f"E7: throughput {e7['throughput_per_h']:.0f} flights/h, delay mean {e7['delay_mean_s']:.1f} s "
