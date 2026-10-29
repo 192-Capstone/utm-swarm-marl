@@ -167,6 +167,8 @@ def planner_for(sc):
     if sc['utm']['layer_penalty'] is not None:
         s.layer_penalty = float(sc['utm']['layer_penalty'])
     s.traffic_detour = bool(sc['utm']['traffic_detour'])
+    if sc['utm']['inflate'] is not None:
+        s.inflate = float(sc['utm']['inflate'])
     for k in ('v_climb', 'v_descent', 'v_descent_high', 'slow_band_m'):     # the flight profile E1 books (null: E1's)
         if sc['utm'][k] is not None:
             setattr(s, k, float(sc['utm'][k]))

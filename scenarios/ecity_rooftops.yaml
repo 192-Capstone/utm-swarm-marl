@@ -56,7 +56,7 @@ zones:
 emergencies:
   - {t: 75, from: City Hospital, to: Incident Site, priority: 1, layer: 7, operator: Hospital}   # across op1's f5 at 16 m
 utm: {mode: e4, risk: booking, telemetry: null, layer_floor: 1, n_layers: 8, layers_open: [2, 3, 6, 7],
-      layer_penalty: 30, max_delay: 120, traffic_detour: true, v_climb: 1.0, v_descent: 0.5,
+      layer_penalty: 30, max_delay: 120, traffic_detour: true, inflate: 1.15, v_climb: 1.0, v_descent: 0.5,
       v_descent_high: 1.0, slow_band_m: 3.0}
 sim: {cruise_z_bias: 0.9, altitude_cap: 3.5, land_step_m: 2.0, position_origin: goal,
       hold_engage_m: 1.0, land_vz_high: 1.0, land_slow_m: 3.0, los_below_cruise: true}
