@@ -30,6 +30,7 @@ from envs.pybullet_adapter import PyBulletAdapter
 from envs import scenarios
 from envs import scenario_manager
 from envs.lidar import lidar_config
+from envs import disturbances
 
 
 # E1 flight profile for routes given with heights (SwarmEnv._update_carrots): the carrot stays
@@ -107,6 +108,23 @@ class SwarmEnv:
         self.cancelled = np.zeros(self.n_agents, dtype=bool)     # E4: flight called off on its pad
         self.departures = None
         self._t_step = 0
+        # D5 drone failures (envs/disturbances.py; off by default: then nothing below runs, no
+        # random numbers are drawn and info has no new keys).
+        #   environment.failures start_episode(failures=[{'drone', 't', 'type'}]): at time t the
+        #                        drone, if it is flying, has a
+        #       motor   failure: it ignores its commands and falls; on the ground or a building it
+        #               is crashed (crashed + failed 'motor')
+        #       land    forced landing where it is: its carrot goes straight down to land_z above
+        #               the ground or the roof under it, |vz| <= land_vz, the policy flies it there;
+        #               settled there it has landed (landed + forced_down, not arrived)
+        #       comms   comms loss: it flies on as before, but set_route no longer reaches it (the
+        #               eval stops its reports: utm/telemetry.py TelemetryModel.mute)
+        #   Needs crash_mode remove. A failure whose drone is not flying at t (still on its pad,
+        #   landed or crashed) is skipped (failures_skipped). set_route refuses failed drones.
+        self.failure_cfg = disturbances.failure_config(config)
+        if self.failure_cfg is not None and self.crash_mode != 'remove':
+            raise ValueError("environment.failures needs environment.crash_mode: remove")
+        self._reset_failures()
         # Safety cost for constrained RL (MAPPO-Lagrangian), kept separate from
         # the reward: 1 per step a drone is closer than cost_distance to any
         # other drone, plus collision_cost on the step it crashes (a crash ends
@@ -159,6 +177,8 @@ class SwarmEnv:
             else:
                 adapter = PyBulletAdapter(config, gui=gui)
         self.adapter        = adapter
+        if self.failure_cfg is not None and not hasattr(adapter, 'set_falling'):
+            raise ValueError(f"environment.failures is not supported by {type(adapter).__name__}")
         self.obs_processor  = ObservationProcessor(config, self.device)
         self.reward_engine  = RewardEngine(config)
         self.episode_manager = EpisodeManager(config)
@@ -289,7 +309,8 @@ class SwarmEnv:
             spawns, goals = scenarios.GENERATORS[scenario](np.random, self.n_agents)
         return self.start_episode(spawns, goals)
 
-    def start_episode(self, spawns, goals, rng=None, obstacles='auto', routes=None, departures=None):
+    def start_episode(self, spawns, goals, rng=None, obstacles='auto', routes=None, departures=None,
+                      failures=None):
         """Begin an episode with the given spawns and goals ({'drone_i': [x, y, z]}).
         reset() uses this, and so do the evaluation and analysis scripts that
         build their own scenarios, so nothing (obstacles included) is skipped.
@@ -304,7 +325,11 @@ class SwarmEnv:
                     straight at their goal
         departures: {'drone_i': t_dep_s} take-off times (needs environment.schedule.enabled);
                     missing drones take off at t = 0
+        failures  : [{'drone': 'drone_i', 't': s, 'type': 'motor' | 'land' | 'comms'}] (needs
+                    environment.failures.enabled; envs/disturbances.py draw_failures)
         """
+        if failures is not None and self.failure_cfg is None:
+            raise ValueError("start_episode(failures=...) needs environment.failures.enabled")
         if routes is not None and not self.route_follow:
             raise ValueError("start_episode(routes=...) needs environment.route_follow.enabled")
         if departures is not None and not self.schedule:
@@ -336,6 +361,7 @@ class SwarmEnv:
             self.departures = None
             self.waiting = np.zeros(self.n_agents, dtype=bool)
         self._landing = np.zeros(self.n_agents, dtype=bool)
+        self._reset_failures(failures)
         self.followers = self._make_followers(spawns, goals, routes) if routes else None
         self._update_carrots()
 
@@ -394,8 +420,12 @@ class SwarmEnv:
         """Give drone i a new route (3D waypoints, E1 profile) mid-episode (E4 re-planning): a
         flying drone starts following it from its first waypoint (its current position); a drone
         still waiting on its pad also gets the new departure time. The route's end becomes the
-        drone's goal (a re-plan may send it back to its start pad)."""
+        drone's goal (a re-plan may send it back to its start pad).
+        Returns False (and changes nothing) for a drone with a failure (D5): it can't follow a new
+        route (motor, forced landing) or doesn't hear it (comms loss); True otherwise."""
         from envs.route_planner import RouteFollower
+        if self.failed[i]:
+            return False
         key = f'drone_{i}'
         xy = np.asarray([p[:2] for p in route], dtype=float)
         self._cruise[key] = float(route[1][2] if len(route) > 2 else max(p[2] for p in route))
@@ -406,6 +436,7 @@ class SwarmEnv:
         self.goals[i, :2] = xy[-1]
         if departure is not None and self.departures is not None and self.waiting[i]:
             self.departures[i] = float(departure)
+        return True
 
     def cancel(self, i):
         """Call off drone i's flight while it is still waiting on its pad (E4): it never takes off,
@@ -453,6 +484,8 @@ class SwarmEnv:
                 a[2] = np.clip(a[2], -self.land_vz_max, self.land_vz_max)
                 actions_dict[f'drone_{i}'] = a
         # 1. apply actions + advance the simulator
+        if self._forced.any():                    # D5 forced landing: limit vz
+            actions_dict = self._forced_vz_limit(actions_dict)
         self.adapter.apply_actions(actions_dict)
         self.adapter.step_simulation()
         self._t_step += 1
@@ -461,11 +494,15 @@ class SwarmEnv:
             for i in np.flatnonzero(go):
                 self.adapter.place(i, self._spawns[i])
             self.waiting &= ~go
+        if self._fail_queue:
+            self._trigger_failures()
         parked = self.crashed | self.waiting | self.landed
         if parked.any():                            # crashed / not departed / landed: off the map
             self.adapter.park(np.flatnonzero(parked))
         self.episode_manager.step()
         self._update_carrots()                    # route following (D7): new carrots first
+        if self._forced.any():
+            self._failure_carrots()
 
         # 2. read the new world state
         raw       = self.adapter.get_raw_state()
@@ -490,6 +527,8 @@ class SwarmEnv:
         obstacle_collision = [g < scenario_manager.DRONE_RADIUS for g in obstacle_gap]
         if self.crash_mode == 'remove':
             new = (np.array(drone_collision) | np.array(obstacle_collision)) & ~self.crashed
+            if self._falling.any():                 # motor failure: down on the ground
+                new |= self._falling & (positions[:, 2] <= scenario_manager.DRONE_RADIUS + 0.05) & ~self.crashed
             if new.any():
                 # park them now, so no other drone sees or hits them from the next observation on
                 self.crashed |= new
@@ -513,6 +552,8 @@ class SwarmEnv:
                           for i in range(self.n_agents)], dtype=np.float32)
         settled_now = (curr_dist < self.goal_threshold) & (speed < self.settle_speed)
         self.settle_counter = np.where(settled_now, self.settle_counter + 1, 0)
+        if self._forced.any():
+            self._forced_landing_done(positions, speed)
 
         goal_just_reached = [False] * self.n_agents
         for i in range(self.n_agents):
@@ -577,7 +618,8 @@ class SwarmEnv:
         if done and reason == 'success':
             done, reason = False, None
         if removing:
-            if not done and all(r or c or x for r, c, x in zip(self.drone_reached_goal, self.crashed, self.cancelled)):
+            if not done and all(r or c or x or f for r, c, x, f in zip(self.drone_reached_goal, self.crashed,
+                                                                      self.cancelled, self.forced_down)):
                 done, reason = True, 'collision' if self.crashed.any() else 'success'
             elif done and self.crashed.any():
                 reason = 'collision'            # timed out after a crash: still a crash episode
@@ -640,7 +682,80 @@ class SwarmEnv:
                 'reward_components': {
                     k: float(v.sum()) for k, v in rewards.items() if k != 'total'
                 }}
+        if self.failure_cfg is not None:
+            info['drone_failed'] = list(self.failed)
+            info['drone_forced_down'] = self.forced_down.tolist()
+            info['drone_comms_lost'] = self.comms_lost.tolist()
         return self._build_obs(raw), rewards_dict, bool(done), info
+
+    # ---- D5 drone failures (envs/disturbances.py) ---------------------------
+    def _reset_failures(self, failures=None):
+        """Failure state for a new episode (all clear when failures are off)."""
+        n = self.n_agents
+        self.failed = [''] * n                    # failure type per drone ('' = none)
+        self.failure_t = np.full(n, np.nan)       # when it happened (s)
+        self.comms_lost = np.zeros(n, dtype=bool)
+        self.forced_down = np.zeros(n, dtype=bool)
+        self.emergency_report = np.zeros(n, dtype=bool)   # motor: its emergency report gets out
+        self.failures_skipped = []                # scheduled, but the drone wasn't flying then
+        self._falling = np.zeros(n, dtype=bool)
+        self._forced = np.zeros(n, dtype=bool)    # forced landing under way
+        self._forced_target = np.zeros((n, 3), dtype=np.float32)
+        self._forced_counter = np.zeros(n, dtype=np.int64)
+        self._fail_queue = disturbances.check_failures(failures or [], n)
+        if self.failure_cfg is not None:
+            self._fail_rng = np.random.default_rng([int(self.failure_cfg['seed']), getattr(self, 'episode_index', 0)])
+
+    def _forced_vz_limit(self, actions_dict):
+        """A forced-landing drone's commanded vz, clipped to +-land_vz (the action applied)."""
+        actions_dict = dict(actions_dict)
+        lim = self.failure_cfg['land_vz']
+        for i in np.flatnonzero(self._forced):
+            a = np.array(actions_dict[f'drone_{i}'], dtype=np.float32)
+            a[2] = np.clip(a[2], -lim, lim)
+            actions_dict[f'drone_{i}'] = a
+        return actions_dict
+
+    def _trigger_failures(self):
+        """Start the scheduled failures whose time has come."""
+        now = self._t_step * self.control_dt + 1e-9
+        while self._fail_queue and self._fail_queue[0]['t'] <= now:
+            f = self._fail_queue.pop(0)
+            i = int(f['drone'].split('_')[1])
+            if self.waiting[i] or self.landed[i] or self.crashed[i] or self.cancelled[i]:
+                self.failures_skipped.append(f)
+                continue
+            self.failed[i], self.failure_t[i] = f['type'], f['t']
+            if f['type'] == 'motor':
+                self._falling[i] = True
+                self.emergency_report[i] = self._fail_rng.uniform() < self.failure_cfg['p_emergency_report']
+                self.adapter.set_falling(i)
+            elif f['type'] == 'land':
+                x, y, _ = self.adapter.get_positions()[i]
+                roof = disturbances.roof_under(self.layout, x, y, scenario_manager.DRONE_RADIUS + 0.3)
+                self._forced[i] = True
+                self._forced_target[i] = (x, y, roof + self.failure_cfg['land_z'])
+                self._landing[i] = False
+            else:
+                self.comms_lost[i] = True
+
+    def _failure_carrots(self):
+        """A forced-landing drone's carrot (observation + LiDAR heading): the point under it."""
+        for i in np.flatnonzero(self._forced):
+            self.adapter.goals[f'drone_{i}'] = self._forced_target[i].copy()
+
+    def _forced_landing_done(self, positions, speed):
+        """A forced-landing drone that has settled at its landing point (land_tol, settle_speed,
+        settle_steps) has landed: it is parked from the next step on."""
+        near = np.linalg.norm(positions - self._forced_target, axis=1) < self.failure_cfg['land_tol']
+        ok = self._forced & ~self.crashed & near & (speed < self.settle_speed)
+        self._forced_counter = np.where(ok, self._forced_counter + 1, 0)
+        done = self._forced & (self._forced_counter >= self.settle_steps)
+        if done.any():
+            self.forced_down |= done
+            self.landed |= done
+            self._forced &= ~done
+        self._forced &= ~self.crashed
 
     def _episode_noise_seed(self, spawns):
         """Seed for one episode's sensor noise: the base seed plus a hash of
