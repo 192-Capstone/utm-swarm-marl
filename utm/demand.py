@@ -41,7 +41,8 @@ Origins / destinations (mode):
             apart; a flight uses one pad of its depot at random. With a single pad per depot,
             every depot flight takes off from or lands on that one pad, so E1 has to queue them
             all on it and the depot pad, not the airspace, limits capacity.
-    or pass `pads`: a plain list of (x, y) or (x, y, kind), e.g. from D2's vertiports later;
+    or pass `pads`: a plain list of (x, y), (x, y, kind) or (x, y, "hub", operator: the depot of that
+    operator, whose flights it gets), e.g. from D2's vertiports later;
     'random' then picks two pads per flight, 'hubs' uses kind 'hub' as depots and the rest as
     drop points. Given pads are never moved or dropped for clearance: the report says how close
     they are (pads_below_clearance, pads_below_edge).
@@ -99,6 +100,8 @@ class DemandSettings:
     hub_share: float = 0.8                      # 'hubs': share of flights depot -> drop point
     operators: dict = field(default_factory=lambda: {'op0': 0.25, 'op1': 0.25, 'op2': 0.25, 'op3': 0.25})
     layers: tuple = (0,)                        # preferred cruise layer, drawn uniformly
+    short_trip_m: float = None                  # trips shorter than this prefer one of short_layers
+    short_layers: tuple = None                  #   (low, around the buildings); longer ones `layers`
     keep_unroutable: bool = False
     max_tries: int = 50                         # draws per flight before giving up on a request
     pad_clearance: float = 1.5                  # m from any building to a generated pad
@@ -113,6 +116,7 @@ class Pad:
     y: float
     kind: str = ''                              # e.g. 'hub', 'drop'; free text
     group: int = -1                             # depot index of a generated hub pad (-1: none)
+    operator: str = ''                          # 'hubs': the operator whose depot this is (its flights)
 
 
 @dataclass
@@ -321,8 +325,8 @@ def _as_pads(pads):
             out.append(p)
         elif len(p) == 2:
             out.append(Pad(float(p[0]), float(p[1])))
-        else:
-            out.append(Pad(float(p[0]), float(p[1]), str(p[2])))
+        else:                                    # (x, y, kind[, operator])
+            out.append(Pad(float(p[0]), float(p[1]), str(p[2]), operator=str(p[3]) if len(p) > 3 else ''))
     return out
 
 
@@ -442,7 +446,7 @@ def generate_demand(layout, bounds, settings=None, seed=0, pads=None, planner_se
     plans, recent = [], []                      # recent: (t, start, goal) for pad_sep
     dropped = no_pair = 0
     for t in times:
-        pair = None
+        pair, owner = None, ''
         for _ in range(s.max_tries):
             if s.mode == 'hubs':
                 if clustered:                    # a depot, then one of its pads
@@ -452,6 +456,7 @@ def generate_demand(layout, bounds, settings=None, seed=0, pads=None, planner_se
                     h = hubs[rng.randint(len(hubs))]
                 o = others[rng.randint(len(others))]
                 a, b = ((h.x, h.y), (o.x, o.y)) if rng.uniform() < s.hub_share else ((o.x, o.y), (h.x, h.y))
+                owner = h.operator
             elif pads:
                 i, j = rng.choice(len(pads), 2, replace=False)
                 a, b = (pads[i].x, pads[i].y), (pads[j].x, pads[j].y)
@@ -480,7 +485,11 @@ def generate_demand(layout, bounds, settings=None, seed=0, pads=None, planner_se
         a, b = pair
         # drawn before the route check, so keep_unroutable doesn't change the other requests
         op = ops[rng.choice(len(ops), p=w)] if s.operators else ''
-        layer = int(s.layers[rng.randint(len(s.layers))])
+        if s.mode == 'hubs' and owner:            # a hub pad with an operator: its flights are that operator's
+            op = owner
+        short = s.short_trip_m is not None and np.hypot(b[0] - a[0], b[1] - a[1]) < s.short_trip_m
+        ls = s.short_layers if short else s.layers
+        layer = int(ls[rng.randint(len(ls))])
         if check_route and plan(grid, a, b) is None:
             dropped += 1
             if not s.keep_unroutable:

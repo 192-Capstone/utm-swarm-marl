@@ -115,6 +115,8 @@ class FlightLog:
     def replan(self, t, flight, why, decision):
         """An E4 re-plan: the new route and booking (if approved)."""
         extra = {'flight': flight, 'why': why, 'status': decision.status, 'reason': decision.reason}
+        if getattr(decision, 'around_traffic', False):
+            extra['around_traffic'] = True          # a same-layer detour around other flights' air
         if decision.status == 'approved':
             extra.update(route=_r(decision.waypoints), t_dep=float(decision.t_dep), arrival=float(decision.arrival),
                          booking=self._keys(decision.reservation))

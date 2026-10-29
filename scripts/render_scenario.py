@@ -106,6 +106,8 @@ def describe(e):
             return f"{f} {r}: no free alternative, keeps its route"
         if r == 'the no-fly zone':
             return f"{f} re-routed around the no-fly zone"
+        if e.get('around_traffic'):
+            return f"{f} swerves around other traffic on its layer"
         if r == 'the intruder':
             return f"{f} re-booked to stay clear of the intruder"
         if r == 'the emergency flight':
