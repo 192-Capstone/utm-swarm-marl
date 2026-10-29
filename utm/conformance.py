@@ -95,7 +95,7 @@ CLIMB_DONE_M = 0.6                # m: as envs/swarm_env.py (tests check it; utm
 
 class ConformanceMonitor:
     def __init__(self, planner, debounce=1.0, risk_horizon=10.0, risk='booking', vertical_sep=VERTICAL_SEP,
-                 failures=False, noise_m=REF_NOISE_M):
+                 failures=False, noise_m=REF_NOISE_M, blind_margin=0.0):
         if risk not in ('booking', 'intent'):
             raise ValueError("risk must be 'booking' or 'intent'")
         self.p = planner
@@ -104,6 +104,11 @@ class ConformanceMonitor:
         self.risk_mode = risk
         self.vertical_sep = float(vertical_sep)   # m: risk='intent' conflict height (half a layer gap)
         self.paths = {}                   # flight -> predicted path (risk='intent'), from check()
+        # risk='intent': a drone with no flight plan (an intruder) shares no intent and is predicted from
+        # its velocity alone, so pairs with one get blind_margin m more horizontal radius (E2 follow-up,
+        # option B, small version; 0 = as before). The caller sets `blind` (ids with no plan) before check().
+        self.blind_margin = float(blind_margin)
+        self.blind = set()
         self.plans = {d.id: d for d in planner.decisions if d.status == 'approved'}
         self.state = {}                   # flight -> confirmed state
         self.risk = {}                    # flight -> confirmed risk ('high' / 'low'; '' when ok)
@@ -174,8 +179,9 @@ class ConformanceMonitor:
         keep = times <= t + self.risk_horizon + 1e-9
         skip = set(self.p.exempt.get(fid, ()))
         for other, theirs in self.paths.items():
+            r = self.p.s.radius + (self.blind_margin if fid in self.blind or other in self.blind else 0.0)
             if other != fid and first_conflict((times[keep], path[keep]), (theirs[0][keep], theirs[1][keep]),
-                                               self.p.s.radius, self.vertical_sep) is not None:
+                                               r, self.vertical_sep) is not None:
                 return 'high', other
         for tk, q in zip(times[keep], path[keep]):
             key = self.key_of(q)

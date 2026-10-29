@@ -6,7 +6,7 @@ import pytest
 
 from envs.route_planner import RouteFollower
 from utm.conformance import ConformanceMonitor
-from utm.intent import closest_approach, first_conflict, predicted_path, route_intent
+from utm.intent import closest_approach, first_conflict, predicted_path, profile_intent, route_intent
 from utm.strategic_planner import FlightPlan, StrategicPlanner
 from utm.telemetry import Report, TelemetryModel
 
@@ -143,3 +143,73 @@ def test_utm_drops_a_drone_only_when_its_reports_stop():
     assert silent(tm.latest, 2 + LINK_TIMEOUT_S + 0.5) == ['f2']
     tm.forget('f2')
     assert set(tm.latest) == {'f1'}
+
+
+def _route(zc=4.0):
+    return RouteFollower([(0.0, 0.0, zc), (20.0, 0.0, zc)])     # cruise at 4 m, pad at (20, 0)
+
+
+def test_profile_intent_climbs_then_flies_the_route():
+    """E2 option D: a drone still climbing shares the climb, then the route."""
+    out = profile_intent(_route(), (0.0, 0.0, 1.0), 0.0, 10.0, 'climb', 1.0, v_cruise=1.5, v_up=0.5, v_down=0.5)
+    z = [q[3] for q in out]
+    assert out[0][0] == 12.0 and z[0] == pytest.approx(2.0)           # 1 m up after 2 s at 0.5 m/s
+    assert z[2] == pytest.approx(4.0) and out[-1][1] > 0.0            # at cruise height, then moving off
+
+
+def test_profile_intent_shows_the_landing_ahead():
+    """E2 v2, city seed 22: f8 cruising 2 m short of its pad was pictured staying at cruise height and
+    landed through f3's layer unwarned. With D its intent goes down onto the pad."""
+    f = _route()
+    old = route_intent(f, (18.0, 0.0, 4.0), 1.0, 0.0)
+    new = profile_intent(f, (18.0, 0.0, 4.0), 1.0, 0.0, 'cruise', 1.0, v_cruise=1.5, v_up=0.5, v_down=0.5)
+    assert min(q[3] for q in old) == pytest.approx(4.0)               # route_intent: never comes down
+    assert [q[3] for q in new][:3] == pytest.approx([4.0, 3.0, 2.0])  # at the pad by 2 s, then 0.5 m/s down
+    assert new[-1][1:] == pytest.approx([20.0, 0.0, 1.0])             # on the pad
+
+
+def test_profile_intent_landing_goes_straight_down():
+    out = profile_intent(_route(), (19.8, 0.1, 3.0), 0.0, 0.0, 'land', 1.0, v_cruise=1.5, v_up=0.5, v_down=0.5)
+    assert all(q[1:3] == [19.8, 0.1] for q in out)
+    assert [q[3] for q in out][:3] == pytest.approx([2.0, 1.0, 1.0])
+
+
+def test_a_late_drone_shares_its_real_timing():
+    """Option A's time shift is not needed: the intent starts where the drone is, at its speed, so a
+    drone 5 m behind schedule at 0.5 m/s shares exactly that."""
+    out = profile_intent(_route(), (5.0, 0.0, 4.0), 0.5, 30.0, 'cruise', 1.0, v_cruise=1.5, v_up=0.5, v_down=0.5)
+    assert out[0][:2] == pytest.approx([32.0, 6.0])
+
+
+def test_blind_margin_widens_only_pairs_with_a_drone_that_shares_no_intent():
+    """E2 option B (small): 2.6 m apart is clear at the 2.1 m radius, a risk with a 1 m margin, and
+    only when one of the two shares no intent."""
+    sky = _sky()
+    z = sky.layer_z(0)
+    a = Report('A', 0.0, np.array([-10.0, 5.0, z]), np.zeros(3))
+    b = Report('B', 0.0, np.array([-10.0, 7.6, z]), np.zeros(3))
+    for margin, blind, risk in ((0.0, {'B'}, 'low'), (1.0, set(), 'low'), (1.0, {'B'}, 'high')):
+        mon = ConformanceMonitor(sky, risk='intent', blind_margin=margin)
+        mon.blind = blind
+        mon.plans = {}                                                 # both unplanned: risk only
+        for t in (0.0, 1.0, 2.0):
+            mon.check(t, {'A': a.pos, 'B': b.pos}, {'A': predicted_path(a, t), 'B': predicted_path(b, t)})
+        assert mon.risk.get('A') == risk, (margin, blind)
+
+
+def test_flags_off_leave_the_monitor_unchanged():
+    """Without --blind-margin (the default 0) the monitor ignores `blind`: the same close pair gives the
+    same risk whoever is marked blind, so fly() without the E2 follow-up flags behaves as before."""
+    sky = _sky()
+    z = sky.layer_z(0)
+    a = Report('A', 0.0, np.array([-10.0, 5.0, z]), np.zeros(3))
+    b = Report('B', 0.0, np.array([-10.0, 6.5, z]), np.zeros(3))      # 1.5 m apart: inside the 2.1 m radius
+    risks = []
+    for blind in (set(), {'A'}, {'A', 'B'}):
+        mon = ConformanceMonitor(sky, risk='intent')
+        mon.blind = blind
+        mon.plans = {}
+        for t in (0.0, 1.0, 2.0):
+            mon.check(t, {'A': a.pos, 'B': b.pos}, {'A': predicted_path(a, t), 'B': predicted_path(b, t)})
+        risks.append(mon.risk.get('A'))
+    assert risks == ['high'] * 3
