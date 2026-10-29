@@ -4,7 +4,7 @@ telemetry.py
 What the UTM hears from the drones (E2): each airborne drone sends a report about once per
 second, as real drones do over the network (Network Remote ID):
 
-    {id, seq, t_sent, pos (x, y, z), vel (vx, vy, vz), intent [[t, x, y, z], ...]}
+    {id, seq, t_sent, pos (x, y, z), vel (vx, vy, vz), intent [[t, x, y, z], ...], status}
 
 seq counts each drone's reports (set by the drone: gaps are lost reports); t_received is set by
 the receiver when the report arrives (t_received - t_sent: the delay).
@@ -12,17 +12,26 @@ the receiver when the report arrives (t_received - t_sent: the delay).
 intent is the drone's planned path for the next ~10 s (utm/intent.py route_intent); empty for a
 drone that has none to share (an intruder, tracked by surveillance: position and velocity only).
 
+status is the drone's own state, as Remote ID's emergency status (D5): 'ok' (default), 'emergency'
+(a motor failure: it is going down) or 'landing' (a forced landing where it is).
+
 TelemetryModel turns the simulator's true states into the reports the UTM receives:
 
     tm = TelemetryModel(noise_m=1.0, delay_s=0.5, loss=0.05, seed=20)
     tm.send(t, {'f1': (pos, vel, intent), ...})       # every report period
     for r in tm.receive(t): ...                       # what has arrived by time t
     tm.latest                                         # id -> newest report received
+    tm.mute(fid) / tm.unmute(fid)                     # comms loss (D5): its reports are not sent
 
     noise_m   GPS error: Gaussian, this std per axis (m) on the position; a fifth of it (m/s) on the
               velocity. The intent is the drone's own plan, sent as is.
     delay_s   network delay: a report arrives delay_s after it was sent
     loss      probability that a report is lost
+
+A state may carry a fourth item, the report's status: (pos, vel, intent, status). A muted drone
+(comms loss) still counts its seq (so a gap shows when it comes back) but nothing goes out: it
+is not in sent or lost, only in muted (the number of reports not sent). Muting draws no random
+numbers, so the other drones' noise and losses stay as they were.
 
 Limitation: the GPS error is drawn afresh for every report; real GPS error drifts slowly (it stays
 off by about the same amount for a while), which a predictor finds harder to average out.
@@ -62,6 +71,7 @@ class Report:
     intent: list = field(default_factory=list)        # [[t, x, y, z], ...]
     seq: int = 0                                      # per drone, from 0
     t_received: float = None
+    status: str = 'ok'                                # 'ok' | 'emergency' | 'landing' (D5)
 
 
 class TelemetryModel:
@@ -74,19 +84,34 @@ class TelemetryModel:
         self.latest = {}                  # id -> newest report received (by t_sent)
         self.sent = self.lost = 0
         self._seq = {}                    # id -> next sequence number
+        self.muted = 0                    # reports not sent: their drone had lost its link
+        self._muted = set()
+
+    def mute(self, fid):
+        """Comms loss (D5): fid's reports are no longer sent."""
+        self._muted.add(fid)
+
+    def unmute(self, fid):
+        self._muted.discard(fid)
 
     def send(self, t, states):
-        """states: {id: (pos, vel, intent)} at time t (the true values)."""
-        for fid, (pos, vel, intent) in states.items():
-            self.sent += 1
+        """states: {id: (pos, vel, intent) or (pos, vel, intent, status)} at time t (the true values)."""
+        for fid, state in states.items():
+            pos, vel, intent = state[:3]
+            status = state[3] if len(state) > 3 else 'ok'
             seq = self._seq.get(fid, 0)
             self._seq[fid] = seq + 1
+            if fid in self._muted:
+                self.muted += 1
+                continue
+            self.sent += 1
             if self.loss and self.rng.rand() < self.loss:
                 self.lost += 1
                 continue
             p = np.asarray(pos, dtype=float) + (self.rng.normal(0.0, self.noise, 3) if self.noise else 0.0)
             v = np.asarray(vel, dtype=float) + (self.rng.normal(0.0, self.noise / 5, 3) if self.noise else 0.0)
-            self._queue.append((t + self.delay, Report(fid, float(t), p, v, [list(map(float, q)) for q in intent], seq)))
+            self._queue.append((t + self.delay, Report(fid, float(t), p, v, [list(map(float, q)) for q in intent], seq,
+                                                         status=str(status))))
 
     def receive(self, t):
         """The reports that have arrived by time t (oldest first); also updates latest."""
@@ -136,7 +161,8 @@ class RadioTelemetry:
         got = []
         for r in self.adapter.reports():
             fid = self._fid[r.id]
-            got.append(Report(fid, r.t_sent, r.pos, r.vel, r.intent, r.seq, r.t_received))
+            got.append(Report(fid, r.t_sent, r.pos, r.vel, r.intent, r.seq, r.t_received,
+                              getattr(r, 'status', 'ok')))
             self._max_seq[fid] = max(self._max_seq.get(fid, -1), r.seq)
         self.received += len(got)
         _update_latest(self.latest, got)

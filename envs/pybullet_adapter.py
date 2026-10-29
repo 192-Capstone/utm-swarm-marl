@@ -83,6 +83,14 @@ class PyBulletAdapter:
         self.lag_delay = tuple(dyn.get('delay_steps', (3, 5)))
         self.control_dt = float(config['environment'].get('control_timestep', 0.032))
 
+        # D5 drone failures (envs/disturbances.py), used only when SwarmEnv calls set_falling
+        # (environment.failures on); otherwise nothing changes.
+        fcfg = config['environment'].get('failures') or {}
+        self.fall_g = float(fcfg.get('gravity', 9.81))
+        self.fall_v_max = float(fcfg.get('fall_v_max', 10.0))
+        self.fall_drag_tau = float(fcfg.get('fall_drag_tau', 1.0))
+        self._falling = {}           # drone index -> its velocity while it falls (motor failure)
+
         # Every PyBullet call below passes physicsClientId=self.client. Without
         # it, calls go to world 0 by default, so a second adapter in the same
         # process (the trainer's eval env) put its drones into the TRAINING
@@ -137,6 +145,7 @@ class PyBulletAdapter:
             p.resetBaseVelocity(body, [0, 0, 0], [0, 0, 0], physicsClientId=self.client)
             self.goals[key] = np.array(goal_positions[key], dtype=np.float32)
         self._heading = {}
+        self._falling = {}
         if self.lag:
             n = len(self.drone_ids)
             tau = np.stack([np.random.uniform(*self.lag_tau_xy, n), np.random.uniform(*self.lag_tau_xy, n),
@@ -182,6 +191,9 @@ class PyBulletAdapter:
     def apply_actions(self, actions: dict):
         """actions: {'drone_i': [vx, vy, vz, yaw_rate]} (yaw_rate optional)."""
         for i, body in enumerate(self.drone_ids):
+            if i in self._falling:                                   # motor failure: commands ignored
+                self._fall_step(i, body)
+                continue
             a = actions[f'drone_{i}']
             v = np.clip(np.asarray(a[:3], dtype=np.float32), -self.v_max, self.v_max)
             if self.lag:
@@ -194,11 +206,28 @@ class PyBulletAdapter:
                                 angularVelocity=[0.0, 0.0, yaw_rate],
                                 physicsClientId=self.client)
 
+    def set_falling(self, i):
+        """Motor failure (SwarmEnv environment.failures): from now on drone i ignores its commands
+        and falls (gravity is off in this world, so the fall is integrated here): vz gains -g per
+        second up to -fall_v_max, and the horizontal speed decays with fall_drag_tau. SwarmEnv
+        ends it as a crash on the ground or a building."""
+        lin, _ = p.getBaseVelocity(self.drone_ids[i], physicsClientId=self.client)
+        self._falling[int(i)] = np.asarray(lin, dtype=np.float64)
+
+    def _fall_step(self, i, body):
+        dt = self.control_dt
+        v = self._falling[i]
+        v[:2] *= np.exp(-dt / self.fall_drag_tau)
+        v[2] = max(v[2] - self.fall_g * dt, -self.fall_v_max)
+        p.resetBaseVelocity(body, linearVelocity=v.tolist(), angularVelocity=[0.0, 0.0, 0.0],
+                            physicsClientId=self.client)
+
     def park(self, indices):
         """Move these drones far out of the world and stop them (SwarmEnv crash_mode: remove).
         Each gets its own spot 100 m apart, so parked drones are out of every sensor's range
         and never touch each other."""
         for i in indices:
+            self._falling.pop(int(i), None)
             p.resetBasePositionAndOrientation(self.drone_ids[i], [1e5 + 100.0 * i, 1e5, 50.0],
                                               [0, 0, 0, 1], physicsClientId=self.client)
             p.resetBaseVelocity(self.drone_ids[i], [0, 0, 0], [0, 0, 0], physicsClientId=self.client)
