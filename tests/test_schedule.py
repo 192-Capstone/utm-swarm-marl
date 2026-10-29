@@ -176,3 +176,35 @@ def test_off_by_default():
     with pytest.raises(ValueError):
         env.start_episode(SPAWNS, GOALS, obstacles=[], departures={'drone_1': 1.0})
     env.close()
+
+
+def test_refly_gives_a_landed_slot_a_new_flight():
+    """Live UTM: a drone slot that has landed is given a new pad, route and departure, waits parked,
+    takes off then and lands at its new goal; a slot never used waits for ever (departure inf)."""
+    env = make_env(route=True)
+    r0 = [(-4.0, 0.0, 1.0), (-4.0, 0.0, 2.0), (-4.0, 4.0, 2.0), (-4.0, 4.0, 1.0)]
+    r1 = [(4.0, 6.0, 1.0), (4.0, 6.0, 2.0), (4.0, 2.0, 2.0), (4.0, 2.0, 1.0)]
+    env.start_episode(SPAWNS, GOALS, obstacles=[], routes={'drone_0': r0, 'drone_1': r1},
+                      departures={'drone_0': 0.0, 'drone_1': np.inf})
+    pos = lambda: env.adapter.get_positions()
+    for _ in range(600):
+        if env.landed[0]:
+            break
+        v = np.clip(1.5 * (env.goals - pos()), -1.0, 1.0)
+        env.step({f'drone_{i}': [*v[i], 0.0] for i in range(2)})
+    assert env.landed[0] and env.waiting[1]
+    now = env._t_step * env.control_dt
+    back = [(-4.0, 4.0, 1.0), (-4.0, 4.0, 2.0), (0.0, 4.0, 2.0), (0.0, 4.0, 1.0)]
+    env.refly(0, back[0], back, now + 1.0)
+    assert env.waiting[0] and not env.landed[0] and not env.drone_reached_goal[0]
+    for _ in range(int(1.5 / env.control_dt)):                       # off its pad, flying
+        v = np.clip(1.5 * (env.goals - pos()), -1.0, 1.0)
+        env.step({f'drone_{i}': [*v[i], 0.0] for i in range(2)})
+    with pytest.raises(ValueError):
+        env.refly(0, back[0], back, now + 5.0)
+    for _ in range(800):
+        if env.landed[0]:
+            break
+        v = np.clip(1.5 * (env.goals - pos()), -1.0, 1.0)
+        env.step({f'drone_{i}': [*v[i], 0.0] for i in range(2)})
+    assert env.landed[0] and np.allclose(env.goals[0], (0.0, 4.0, 1.0)) and env.waiting[1]
