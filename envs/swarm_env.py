@@ -491,6 +491,23 @@ class SwarmEnv:
         self.departures[i] = np.inf
         self.cancelled[i] = True
 
+    def refly(self, i, spawn, route, departure):
+        """Give drone slot i a new flight (the live UTM, scripts/utm_server.py: a fixed set of drones
+        serves the bookings as they come): it waits parked until `departure` (s, episode time), is then
+        placed on `spawn` (its pad) and flies `route` (3D waypoints, E1 profile) to its end. The slot
+        must not be flying or crashed (a fresh one waiting with departure inf, a landed or a cancelled
+        one); its arrival and settling are reset. Needs schedule and route_follow."""
+        if self.departures is None or self.followers is None:
+            raise ValueError('refly needs environment.schedule and a routed episode')
+        if self.crashed[i] or not (self.waiting[i] or self.landed[i] or self.cancelled[i]):
+            raise ValueError(f'drone_{i} is flying or crashed')
+        self._spawns[i] = np.asarray(spawn, dtype=np.float32)
+        self.waiting[i], self.landed[i], self.cancelled[i] = True, False, False
+        self.drone_reached_goal[i] = self.ever_entered_goal[i] = False
+        self.settle_counter[i] = self.best_settle_counter[i] = 0
+        self.set_route(i, route, departure)
+        self.goals[i, 2] = float(route[-1][2])
+
     def _update_carrots(self):
         """Point each routed drone's adapter goal (observation + LiDAR heading) at its carrot."""
         if not self.followers:
