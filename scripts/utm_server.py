@@ -47,6 +47,7 @@ from envs.swarm_env import SwarmEnv                                 # noqa: E402
 from modules.goal_hold import GoalHoldPolicy, goal_hold_enabled     # noqa: E402
 from record_rollout import disable_all_collision_physics           # noqa: E402
 from render_scenario import describe, short                        # noqa: E402
+from utm import flight_db, speeds                                  # noqa: E402  (the flight log, E1's flight profile)
 from utm import scenario as scn                                    # noqa: E402
 from utm.conformance import ConformanceMonitor                     # noqa: E402
 from utm.contingency import ContingencyManager                     # noqa: E402
@@ -63,9 +64,11 @@ def fmt(t):
 
 
 class LiveUTM:
-    def __init__(self, sc, slots=16, speed=1.0, seed=20):
+    def __init__(self, sc, slots=16, speed=1.0, seed=20, db=None):
         self.sc, self.speed, self.n = sc, float(speed), int(slots)
         self.layout, self.bounds, self.sky = rs.planner_for(sc)
+        self.db_path = db                          # the flight log (utm/flight_db.py): written as things happen; None: off
+        self.rec = flight_db.LiveRecorder(db, sc, self.speed, speeds.from_settings(self.sky.s)) if db else None
         cfg, args = rs.sim_setup(sc)
         sch = {'enabled': True}
         for k in FLIGHT_OPTIONS:
@@ -125,6 +128,8 @@ class LiveUTM:
 
     def _event(self, kind, text, **extra):
         self.events.append({'t': round(self.t, 2), 'type': kind, 'text': text, **extra})
+        if self.rec:
+            self.rec.event(self.events[-1])
 
     # ------------------------------------------------------------------ bookings
     def _start(self, fid, d, kind, operator, frm, to):
@@ -137,10 +142,13 @@ class LiveUTM:
                              'status': 'waiting', 't_dep': round(d.t_dep, 2), 'arrival': round(d.arrival, 2),
                              'layer_z': round(self.sky.layer_z(d.layer), 1), 'route': [list(map(float, w)) for w in d.waypoints],
                              'pos': [d.waypoints[0][0], d.waypoints[0][1], z0], 'replans': 0, 'slot': i}
+        if self.rec:
+            self.rec.booked(self.flights[fid], self.t, d.layer)
 
     def _reply(self, fid, d, operator, frm, to):
         if d.status != 'approved':
-            self._event('rejected', f'{operator}: {fid} {frm} → {to} refused ({d.reason})', flight=fid, node=operator)
+            self._event('rejected', f'{operator}: {fid} {frm} → {to} refused ({d.reason})', flight=fid, node=operator,
+                        reason=d.reason, frm=frm, to=to)
             return {'flight': fid, 'status': 'rejected', 'reason': d.reason}
         f = self.flights[fid]
         self._event('booked', f"{operator}: {fid} {frm} → {to} approved, take-off {fmt(d.t_dep)} at "
@@ -206,6 +214,8 @@ class LiveUTM:
                 self.env.set_route(self.slot[fid], d.waypoints, departure=d.t_dep)
                 f.update(t_dep=round(d.t_dep, 2), arrival=round(d.arrival, 2), replans=f['replans'] + 1,
                          layer_z=round(self.sky.layer_z(d.layer), 1), route=[list(map(float, w)) for w in d.waypoints])
+                if self.rec:
+                    self.rec.replanned(f)
                 if later >= 1.0:
                     extra['later'] = round(later, 1)
             elif fid in self.slot and a['why'].endswith('-> cancelled') and self.env.waiting[self.slot[fid]]:
@@ -226,6 +236,8 @@ class LiveUTM:
                 elif s == 'crashed':
                     self._event('crashed', f'{fid} crashed', flight=fid, node=f['operator'])
                 f['status'] = s
+                if self.rec:
+                    self.rec.status(fid, s, self.t, f)
             if s == 'flying':
                 f['pos'] = [round(float(v), 2) for v in pos[i]]
             if s in ('landed', 'crashed', 'cancelled'):
@@ -243,6 +255,8 @@ class LiveUTM:
             if self.k % self.every == 0:
                 self._apply(self.e4.step(self.t, self._airborne()))
             self._sync()
+            if self.rec and self.k % self.every == 0:         # the flight log's 1 Hz position track
+                self.rec.track(self.t, [(fid, f['pos']) for fid, f in self.flights.items() if f['status'] == 'flying'])
             if self.k % 3 == 0:                   # ~10 snapshots per simulated second
                 self.snap = {'t': round(self.t, 2), 'free': len(self.free),
                              'flights': [dict(f) for f in self.flights.values()]}
@@ -269,7 +283,22 @@ class LiveUTM:
                             'pads': p['pads'] if p.get('kind') == 'hub' else [p['at']]} for n, p in self.places.items()],
                 'operators': sorted(self.hubs) + sorted({e.get('operator', 'Hospital') for e in self.sc['emergencies']}
                                                         or {'Hospital'}),
-                'slots': self.n}
+                'slots': self.n, 'speeds': speeds.from_settings(self.sky.s),     # speeds: E1's flight profile (the ETA)
+                'speed': (self.rec.pace() if self.rec else None) or self.speed,   # sim s per wall s, as it really runs
+                'clock': self.rec.clock() if self.rec else []}                    # [t, wall epoch] knots: the tracking page's clock
+
+    def note_reply(self, reply, body):
+        """A refusal that never became a flight (no drone free, unknown place) goes to the flight log as Rejected."""
+        if self.rec and reply.get('status') == 'rejected' and 'flight' not in reply:
+            with self.lock:
+                self.rec.refused(self.t, body.get('operator'), body.get('from') or self.hubs.get(body.get('operator')),
+                                 body.get('to'), reply.get('reason'))
+
+    def close(self):
+        """Stops the simulation loop and closes the flight log (flights not finished are marked as such)."""
+        self.running = False
+        time.sleep(0.3)                           # let the loop finish its step
+        return self.rec.close() if self.rec else 0
 
     def state(self, since=0):
         """The newest snapshot (no lock: the simulation is not held up) and the events from `since` on."""
@@ -305,6 +334,20 @@ def handler(live, root):
                 return self._json(live.scene())
             if u.path == '/api/state':
                 return self._json(live.state(int(parse_qs(u.query).get('since', ['0'])[0])))
+            if u.path in ('/api/flightlog', '/api/track'):         # the flight log database (not with --no-db)
+                if not live.db_path:
+                    return self._json({'status': 'error', 'reason': 'the flight log is off (--no-db)'}, 404)
+                q = parse_qs(u.query)
+                db = flight_db.connect(live.db_path)               # a reader of its own: WAL, the simulation's writes go on
+                try:
+                    active = live.rec.run_id if live.rec else None
+                    if u.path == '/api/flightlog':
+                        return self._json(flight_db.flightlog_dict(db, active or '', live.snap['t']))
+                    return self._json(flight_db.track_dict(db, q.get('run', [active])[0], q['flight'][0]))
+                except (KeyError, ValueError) as e:
+                    return self._json({'status': 'error', 'reason': str(e)}, 404)
+                finally:
+                    db.close()
             return super().do_GET()
 
         def do_POST(self):
@@ -312,9 +355,13 @@ def handler(live, root):
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
                 if u.path == '/api/request':
-                    return self._json(live.request(body['operator'], body['to'], body.get('from'), body.get('pad')))
+                    reply = live.request(body['operator'], body['to'], body.get('from'), body.get('pad'))
+                    live.note_reply(reply, body)
+                    return self._json(reply)
                 if u.path == '/api/emergency':
-                    return self._json(live.emergency(body['operator'], body['from'], body['to'], body.get('layer')))
+                    reply = live.emergency(body['operator'], body['from'], body['to'], body.get('layer'))
+                    live.note_reply(reply, body)
+                    return self._json(reply)
             except (KeyError, ValueError, TypeError) as e:
                 return self._json({'status': 'error', 'reason': str(e)}, 400)
             self._json({'status': 'error', 'reason': 'not found'}, 404)
@@ -327,11 +374,15 @@ def main():
     ap.add_argument('--port', type=int, default=8770)
     ap.add_argument('--slots', type=int, default=16, help='drones the simulator holds (bookings at once)')
     ap.add_argument('--speed', type=float, default=1.0, help='simulated seconds per wall second')
+    ap.add_argument('--db', default=os.path.join(ROOT, 'eval_results', 'flight_log.db'),
+                    help='the flight log database every booking, event and position is written to (utm/flight_db.py)')
+    ap.add_argument('--no-db', action='store_true', help='do not write the flight log')
     a = ap.parse_args()
     sc = scn.load(os.path.abspath(a.scenario))
+    db = None if a.no_db else os.path.abspath(a.db)
     os.chdir(ROOT)                                # the scenario's relative paths (config, checkpoint) are the repo's
     print('building the city and the planner...', flush=True)
-    live = LiveUTM(sc, a.slots, a.speed, sc['seed'])
+    live = LiveUTM(sc, a.slots, a.speed, sc['seed'], db=db)
     threading.Thread(target=live.run, daemon=True).start()
     h = handler(live, os.path.join(ROOT, 'dashboard'))
     srv = ThreadingHTTPServer(('127.0.0.1', a.port), h)            # local only: both loopbacks, no network
@@ -340,10 +391,11 @@ def main():
     except OSError:
         pass                                      # no IPv6: 127.0.0.1 still works
     print(f'UTM live on http://localhost:{a.port}/  (operators: {", ".join(live.scene()["operators"])})', flush=True)
+    print(f'flight log: {db} (run {live.rec.run_id})' if db else 'flight log: off (--no-db)', flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        live.running = False
+        live.close()
 
 
 if __name__ == '__main__':

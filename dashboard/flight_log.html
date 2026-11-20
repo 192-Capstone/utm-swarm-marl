@@ -77,6 +77,13 @@ td small { display: block; color: var(--muted); font-size: 11px; }
 .st { font-weight: 500; }
 .st-ok { color: var(--ok); } .st-info { color: var(--data); }
 .st-bad { color: var(--danger); } .st-warn { color: var(--warn); } .st-grey { color: var(--muted); }
+.livepill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: var(--danger);
+  background: var(--danger-soft); border-radius: 999px; padding: 3px 9px; }
+.livepill i { width: 7px; height: 7px; border-radius: 50%; background: var(--danger); animation: pulse 1.4s ease-in-out infinite; }
+.livepill.lost { color: var(--muted); background: var(--raised); } .livepill.lost i { background: var(--muted); animation: none; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+a.trk { display: inline-block; padding: 2px 10px; border-radius: 999px; background: var(--data-soft); color: var(--data); font-size: 12px; text-decoration: none; }
+a.trk:hover { text-decoration: underline; }
 .empty { padding: 36px 20px; text-align: center; color: var(--muted); }
 .empty b { display: block; color: var(--text); font-weight: 500; font-size: 15px; margin-bottom: 6px; }
 .empty code { font-family: var(--mono); font-size: 12px; background: var(--raised); padding: 2px 6px; border-radius: 4px; }
@@ -114,6 +121,7 @@ td small { display: block; color: var(--muted); font-size: 11px; }
       <div><b>Flight log</b><span>Every flight across the scenario runs &middot; E-City</span></div>
     </div>
     <div class="top">
+      <span class="livepill" id="live" hidden><i></i><span id="livetxt">LIVE</span></span>
       <a href="index.html">&larr; UTM console</a>
       <div class="seg" role="group" aria-label="Theme">
         <button type="button" data-theme-set="light" aria-pressed="true">Light</button>
@@ -143,6 +151,7 @@ td small { display: block; color: var(--muted); font-size: 11px; }
   </div>
 </div>
 
+<script src="track_logic.js"></script>
 <script>
 (() => {
 // Scenes index.html can replay (its SCENES list); keep in sync. index.html reads only #<scene> from the URL.
@@ -178,11 +187,18 @@ const COLS = [
   { k: 'status', h: 'Status', v: f => outcome(f).text },
   { k: 'replans', h: 'Re-plans', v: f => f.n_replans, num: 1 },
   { k: 'alerts', h: 'Alerts', v: f => f.n_alerts, num: 1 },
+  { k: 'track', h: 'Track', v: f => (trackHref(f) ? 0 : 1), nosort: 1 },
 ];
 let DB = null, RUNS = {}, ROWS = [], shown = [], sel = null;
 let sort = { k: 'sdep', dir: 1 };
 
-const abs = (f, t) => t == null ? null : RUNS[f.run_id].start_epoch + t;          // clock time, epoch seconds
+const CLOCKS = new WeakMap();                    // run -> (sim t -> epoch s): a live run's recorded clock, else start_epoch + t / speed
+const abs = (f, t) => {
+  if (t == null) return null;
+  const run = RUNS[f.run_id];
+  if (!CLOCKS.has(run)) CLOCKS.set(run, TrackLogic.clockFn(run));
+  return CLOCKS.get(run)(t);
+};
 const clock = (e) => e == null ? '–' : new Date(e * 1000).toLocaleTimeString('en-GB', { hour12: false });
 const tplus = (t) => t == null ? '–' : `T+${t.toFixed(1)} s`;
 const delay = (f) => f.arr_delay != null ? f.arr_delay : f.dep_delay;
@@ -190,7 +206,7 @@ const signed = (d) => d == null ? '–' : `${Math.round(d) > 0 ? '+' : ''}${Math
 const at = (f, k) => f[k + '_x'] == null ? '' : `(${f[k + '_x']}, ${f[k + '_y']})`;
 const layerText = (f) => f.layer == null ? '–' : `L${f.layer}${f.cruise_z == null ? '' : ` · ${Number(f.cruise_z.toFixed(1))} m`}`;
 const dur = (s) => { if (s == null) return '–'; const n = Math.round(s); return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`; };
-const STATUS_CLASS = { Crashed: 'bad', 'Forced down': 'bad', Returned: 'warn', Cancelled: 'grey', Rejected: 'grey',
+const STATUS_CLASS = { Booked: 'grey', 'In flight': 'info', Crashed: 'bad', 'Forced down': 'bad', Returned: 'warn', Cancelled: 'grey', Rejected: 'grey',
   'In flight at end': 'info', 'Not departed': 'grey' };
 // What the board shows: the outcome, and for a landing its punctuality (green on time / early, amber delayed).
 function outcome(f) {
@@ -202,32 +218,90 @@ function outcome(f) {
   return { text: f.status, cls: f.status === 'Landed' ? 'ok' : STATUS_CLASS[f.status] || 'grey' };
 }
 
-async function load() {
+// The flight log comes from the live UTM server when the page is served by it (GET api/flightlog: imported runs and the
+// live one, refreshed every few seconds), else from the exported file (data/flight_log.json) as before.
+const REFRESH_MS = 3000;
+let SERVED_LIVE = false, tableBuilt = false, feedLost = false;
+async function fetchLog() {
   try {
-    const r = await fetch('data/flight_log.json', { cache: 'no-cache' });
-    if (!r.ok) throw new Error(r.status);
-    DB = await r.json();
-  } catch { DB = null; }
-  if (!DB || !DB.flights || !DB.flights.length) return emptyState(DB ? 'The flight log has no flights yet.' : 'No flight log found.');
+    const r = await fetch('api/flightlog', { cache: 'no-store' });
+    if (r.ok && (r.headers.get('content-type') || '').includes('json')) { SERVED_LIVE = true; return await r.json(); }
+  } catch { }
+  SERVED_LIVE = false;
+  const r = await fetch('data/flight_log.json', { cache: 'no-cache' });
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+function setLog(log) {
+  DB = log;
   RUNS = Object.fromEntries(DB.runs.map(r => [r.run_id, r]));
   ROWS = DB.flights;
-  const opts = (id, label, list) => { const s = $(id); s.replaceChildren(new Option(label, '')); list.forEach(([v, text]) => s.add(new Option(text, v))); };
+  const keep = { op: $('f-op').value, st: $('f-status').value, run: $('f-run').value };       // a refresh keeps the filters
+  const opts = (id, label, list, value) => { const s = $(id); s.replaceChildren(new Option(label, '')); list.forEach(([v, text]) => s.add(new Option(text, v))); if ([...s.options].some(o => o.value === value)) s.value = value; };
   const uniq = (xs) => [...new Set(xs)].sort().map(v => [v, v]);
-  opts('f-op', 'All operators', uniq(ROWS.map(f => f.operator).filter(Boolean)));
-  opts('f-status', 'All statuses', uniq(ROWS.map(f => f.status)));
-  opts('f-run', 'All runs', DB.runs.map(r => [r.run_id, `${r.scenario} · ${new Date(r.start_epoch * 1000).toLocaleString('en-GB', { hour12: false })}`]));
+  opts('f-op', 'All operators', uniq(ROWS.map(f => f.operator).filter(Boolean)), keep.op);
+  opts('f-status', 'All statuses', uniq(ROWS.map(f => f.status)), keep.st);
+  opts('f-run', 'All runs', DB.runs.map(r => [r.run_id, `${r.scenario}${r.source === 'live' ? ' (live)' : ''} · ${new Date(r.start_epoch * 1000).toLocaleString('en-GB', { hour12: false })}`]), keep.run);
+  $('live').hidden = !DB.live; $('live').classList.toggle('lost', feedLost);
+  $('livetxt').textContent = feedLost ? 'LIVE FEED LOST' : 'LIVE';
+}
+
+async function load() {
+  let log = null;
+  try { log = await fetchLog(); } catch { log = null; }
+  if (!log || !log.flights || !log.flights.length) {
+    if (log && SERVED_LIVE) { setLog(log); emptyState('No flights yet: book one from the operator console.'); setInterval(refresh, REFRESH_MS); return; }
+    return emptyState(log ? 'The flight log has no flights yet.' : 'No flight log found.');
+  }
+  setLog(log);
   ['f-op', 'f-status', 'f-run'].forEach(id => $(id).onchange = draw);
   $('f-q').oninput = draw;
   $('csv').onclick = downloadCsv;
-  $('filters').hidden = false; $('tbl').hidden = false;
+  $('filters').hidden = false; $('tbl').hidden = false; $('empty').hidden = true;
   const tr = $('head');
   COLS.forEach(c => {
     const th = el('th', c.num ? 'num' : '', c.h); th.tabIndex = 0; th.dataset.k = c.k;
+    if (c.nosort) { th.style.cursor = 'default'; tr.append(th); return; }
     const go = () => { sort = { k: c.k, dir: sort.k === c.k ? -sort.dir : 1 }; draw(); };
     th.onclick = go; th.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
     tr.append(th);
   });
-  draw();
+  tableBuilt = true;
+  checkScenes(); draw();
+  if (SERVED_LIVE) setInterval(refresh, REFRESH_MS);
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('api/flightlog', { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    const log = await r.json();
+    feedLost = false; setLog(log);
+    if (!tableBuilt && log.flights.length) return location.reload();                // the first flight arrived: build the page
+    if (!tableBuilt) return;
+    draw();
+    if (sel && !$('detail').hidden) { const f = ROWS.find(x => `${x.run_id}/${x.flight_id}` === sel); if (f) show(f, true); }
+  } catch { feedLost = true; if (DB) { $('live').classList.add('lost'); $('livetxt').textContent = 'LIVE FEED LOST'; } }
+}
+
+// "Track" is offered where a replay or the live view can be opened: a flight of the live run (live), of an earlier live run
+// (from the database, needs the server) and of a recorded scene that has data/<scene>.json.
+const SCENE_OK = {};
+function checkScenes() {
+  const scenes = [...new Set(DB.runs.filter(r => r.source !== 'live').map(r => r.scenario))];
+  Promise.all(scenes.map(s => fetch(`data/${s}.json`, { method: 'HEAD' }).then(r => { SCENE_OK[s] = r.ok; }).catch(() => { SCENE_OK[s] = false; })))
+    .then(() => { if (tableBuilt) draw(); });
+}
+function trackHref(f) {
+  const run = RUNS[f.run_id], id = encodeURIComponent(f.flight_id);
+  if (run.source === 'live') {
+    if (!SERVED_LIVE) return null;
+    return DB.live && DB.active_run === run.run_id && f.status !== 'Rejected' && ['Booked', 'In flight'].includes(f.status) ? `track.html?flight=${id}`
+      : `track.html?run=${encodeURIComponent(run.run_id)}&flight=${id}`;
+  }
+  if (f.status === 'Rejected' || f.kind === 'intruder' || !SCENE_OK[run.scenario]) return null;
+  return `track.html?scene=${encodeURIComponent(run.scenario)}&flight=${id}`;
 }
 
 // The rows now shown (filters and sort applied) as CSV: clock times, and the same times as sim seconds.
@@ -293,6 +367,8 @@ function draw() {
     dc.title = f.arr_delay != null ? 'Arrival delay' : 'Departure delay';
     cell(o.text, 'st st-' + o.cls);
     cell(f.n_replans, 'num'); cell(f.n_alerts, 'num');
+    const href = trackHref(f), tc = cell('', '');
+    if (href) { const a = el('a', 'trk', 'Track'); a.href = href; a.onclick = (e) => e.stopPropagation(); tc.append(a); } else tc.textContent = '–';
     const open = () => { sel = key; draw(); show(f); if (matchMedia('(max-width: 980px)').matches) $('detail').scrollIntoView({ block: 'start' }); };
     tr.onclick = open; tr.onkeydown = (e) => { if (e.key === 'Enter') open(); };
     body.append(tr);
@@ -303,9 +379,15 @@ function draw() {
 // ---------------------------------------------------------------- one flight's history (a drawer over the board)
 function closeDetail() { sel = null; $('detail').hidden = true; draw(); }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('detail').hidden) closeDetail(); });
+// The drawer starts below the filters row, so the filters, the count and Download CSV stay usable while it is open.
+function placeDrawer() {
+  const d = $('detail');
+  d.style.top = matchMedia('(max-width: 980px)').matches ? '' : `${Math.max(12, $('filters').getBoundingClientRect().bottom + 8)}px`;
+}
+addEventListener('scroll', placeDrawer, { passive: true }); addEventListener('resize', placeDrawer);
 
 function show(f) {
-  const run = RUNS[f.run_id], d = $('detail'); d.hidden = false;
+  const run = RUNS[f.run_id], d = $('detail'); d.hidden = false; placeDrawer();
   const dl = el('dl');
   const row = (k, v) => { dl.append(el('dt', '', k), el('dd', '', v)); };
   const both = (t) => t == null ? '–' : `${clock(abs(f, t))} (${tplus(t)})`;
@@ -333,8 +415,12 @@ function show(f) {
   const head = el('div'); head.append(el('div', 'id', f.callsign), el('div', 'sub', `${f.flight_id} · ${f.kind}`));
   const o = outcome(f), stat = el('div', 'st st-' + o.cls, o.text);
   const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close'); x.onclick = closeDetail;
+  const keepScroll = d.scrollTop;                              // a live refresh rebuilds the drawer: stay where the reader was
   d.replaceChildren(x, head, stat, dl, el('h2', '', 'History'), tl);
-  if (SCENES.includes(run.scenario)) {
+  d.scrollTop = keepScroll;
+  const href = trackHref(f);
+  if (href) { const t = el('a', 'btn', ['Booked', 'In flight'].includes(f.status) && SERVED_LIVE ? 'Track live' : 'Track'); t.href = href; d.append(t); }
+  if (run.source !== 'live' && SCENES.includes(run.scenario)) {                     // a live run has no recorded scene to replay in the console
     const a = el('a', 'btn', 'Replay'); a.href = `index.html#${run.scenario}`; d.append(a);
     d.append(el('p', 'note', 'Opens the console on this scene. It cannot yet jump to the flight or its time.'));
     fetch(`data/${run.scenario}.json`, { method: 'HEAD' }).then(r => { if (!r.ok) a.hidden = true; }).catch(() => { });

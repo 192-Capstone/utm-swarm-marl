@@ -98,3 +98,34 @@ the page adds `start_epoch` (the start clock). The "Replay" link (shown when `da
 `python scripts/export_dashboard.py <recording>` for it) on the page opens `index.html#<scenario>` for the scenes listed in `SCENES` there
 (keep the list in `flight_log.html` in step). `index.html` reads only the scene from the URL, so the link cannot yet
 jump to a flight or time.
+
+## Live logging (`scripts/utm_server.py`)
+
+The live UTM server writes to the same database as things happen, so a delivery can be looked up and replayed afterwards.
+
+```
+python scripts/utm_server.py scenarios/ecity_rooftops.yaml                       # logs to eval_results/flight_log.db
+python scripts/utm_server.py scenarios/ecity_rooftops.yaml --db my.db            # another file
+python scripts/utm_server.py scenarios/ecity_rooftops.yaml --no-db               # no logging; /api/flightlog is then 404
+```
+
+- **One run per server session**, `live-<scenario>-<start time>` (`runs.source_file = 'live'`; flight ids restart at `f0`
+  each session, the key is `(run_id, flight_id)`). `runs.speed` starts as the server's `--speed` and is then the measured pace (sim seconds per wall second, refreshed every 5 s: the server falls behind when asked for more than the machine can do) (clock time = `started_at` +
+  t / speed, the fallback for imports; a live run uses the `clock` table: one `(run_id, t, wall)` row per simulated second, served thinned as `runs[].clock` and in `/api/scene`, because the pace varies with load) and `runs.speeds` E1's flight profile (the tracking page's ETA). Static imports store `speed` 1.0 and their
+  scenario's `speeds` too.
+- **flights:** a row at booking (status **Booked**, with the booked take-off and arrival, the drone slot, the pads and their
+  coordinates), updated as it goes: **In flight** at take-off (`act_dep`, `dep_delay`), then **Landed** (`act_arr`, `arr_delay`,
+  `duration_s`), **Crashed**, **Cancelled** or **Returned** (E4 sent it back to its pad); `n_replans`, `cruise_z` follow E4's
+  re-plans and `distance_m` the track. A refused booking is a **Rejected** row with id `r<n>` and its reason (the server
+  hands `f<n>` to the next booking, so the ids would collide). Intruder and alert details are not logged live.
+- **events:** the server's events in the same table, plus a `takeoff` event; run-wide events have no flight.
+- **track:** `(run_id, flight_id, t, x, y, z)` once per simulated second while the flight is flying.
+- **Closing:** when the server stops (Ctrl+C), or at the next start after a crash, flights still Booked / In flight are closed as
+  **Not departed** / **In flight at end**.
+- **Concurrency:** every connection (`flight_db.connect`) uses WAL and a 5 s busy timeout. The simulation thread writes
+  (one transaction per call, its own connection); the HTTP handlers and the CLI read with theirs and never block it.
+
+Endpoints: `GET /api/flightlog` is what `data/flight_log.json` is (every run in the database, imported and live) plus
+`live`, `active_run` and `now_t`; `flight_log.html` uses it when served by the server (refreshing every 3 s, with a LIVE
+badge) and falls back to the exported file when opened statically. `GET /api/track?flight=f3[&run=<run id>]` returns the
+flight row, its history and its track.

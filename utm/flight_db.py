@@ -22,19 +22,22 @@ Status, by precedence: Crashed > Forced down > Returned > Landed > Cancelled > R
 
 import datetime
 import gzip
+import functools
 import hashlib
 import json
 import os
 import re
 import sqlite3
 import sys
+import threading
+import time
 
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 
 from render_scenario import STATE_WORDS, describe  # noqa: E402
-from utm import flight_log, strategic_planner  # noqa: E402
+from utm import flight_log, speeds, strategic_planner  # noqa: E402
 
 DEFAULT_DB = os.path.join('eval_results', 'flight_log.db')
 EXPORT_SCHEMA = 'utm-flight-log-db/1'
@@ -51,7 +54,14 @@ CREATE TABLE IF NOT EXISTS events (
     run_id TEXT NOT NULL, seq INTEGER, t REAL, flight_id TEXT, type TEXT, text TEXT,
     PRIMARY KEY (run_id, seq));
 CREATE INDEX IF NOT EXISTS events_flight ON events (run_id, flight_id);
+CREATE TABLE IF NOT EXISTS track (
+    run_id TEXT NOT NULL, flight_id TEXT NOT NULL, t REAL NOT NULL, x REAL, y REAL, z REAL,
+    PRIMARY KEY (run_id, flight_id, t));
+CREATE TABLE IF NOT EXISTS clock (
+    run_id TEXT NOT NULL, t REAL NOT NULL, wall REAL NOT NULL,
+    PRIMARY KEY (run_id, t));
 """
+RUN_COLUMNS = (('started_at', 'TEXT'), ('speed', 'REAL'), ('speeds', 'TEXT'))   # added after the first version
 FLIGHT_SCHEMA = (('run_id', 'TEXT NOT NULL'), ('flight_id', 'TEXT NOT NULL'), ('callsign', 'TEXT'), ('drone', 'TEXT'),
                  ('operator', 'TEXT'), ('kind', 'TEXT'), ('origin', 'TEXT'), ('dest', 'TEXT'),
                  ('origin_x', 'REAL'), ('origin_y', 'REAL'), ('dest_x', 'REAL'), ('dest_y', 'REAL'),
@@ -63,20 +73,26 @@ FLIGHT_SCHEMA = (('run_id', 'TEXT NOT NULL'), ('flight_id', 'TEXT NOT NULL'), ('
 FLIGHT_COLS = tuple(c for c, _ in FLIGHT_SCHEMA)
 
 
-def connect(path=DEFAULT_DB):
+BUSY_TIMEOUT_MS = 5000
+
+
+def connect(path=DEFAULT_DB, check_same_thread=True):
+    """Opens the database (and creates or upgrades its tables). Every connection uses WAL and waits up to 5 s for a
+    lock, so the live server can write while its HTTP handlers (and the CLI) read: a reader never blocks the writer."""
     if path != ':memory:' and os.path.dirname(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-    db = sqlite3.connect(path)
+    db = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000, check_same_thread=check_same_thread)
     db.row_factory = sqlite3.Row
+    db.execute(f'PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}')
+    db.execute('PRAGMA journal_mode = WAL')
     db.executescript(SCHEMA_SQL)
     cols = ', '.join(f'{c} {t}' for c, t in FLIGHT_SCHEMA)
     db.execute(f'CREATE TABLE IF NOT EXISTS flights ({cols}, PRIMARY KEY (run_id, flight_id))')
-    have = {r['name'] for r in db.execute('PRAGMA table_info(flights)')}
-    if 'started_at' not in {r['name'] for r in db.execute('PRAGMA table_info(runs)')}:
-        db.execute('ALTER TABLE runs ADD COLUMN started_at TEXT')
-    for c, t in FLIGHT_SCHEMA:                            # a database made by an older version: add what is new
-        if c not in have:
-            db.execute(f'ALTER TABLE flights ADD COLUMN {c} {t.replace(" NOT NULL", "")}')
+    for table, schema in (('flights', FLIGHT_SCHEMA), ('runs', RUN_COLUMNS)):
+        have = {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}
+        for c, t in schema:                               # a database made by an older version: add what is new
+            if c not in have:
+                db.execute(f'ALTER TABLE {table} ADD COLUMN {c} {t.replace(" NOT NULL", "")}')
     return db
 
 
@@ -324,10 +340,10 @@ def import_recording(db, path):
     with db:                                              # one transaction: replace the run
         for table in ('events', 'flights', 'runs'):
             db.execute(f'DELETE FROM {table} WHERE run_id = ?', (run_id,))
-        db.execute('INSERT INTO runs (run_id, scenario, map, seed, source_file, recorded_at, summary, started_at) '
-                   'VALUES (?,?,?,?,?,?,?,?)',
+        db.execute('INSERT INTO runs (run_id, scenario, map, seed, source_file, recorded_at, summary, started_at, speed, speeds) '
+                   'VALUES (?,?,?,?,?,?,?,?,?,?)',
                    (run_id, name, json.dumps(sc.get('map')), sc.get('seed'), os.path.abspath(path), recorded,
-                    json.dumps(log.get('summary') or {}), started))
+                    json.dumps(log.get('summary') or {}), started, 1.0, json.dumps(speeds.from_scenario(sc.get('utm')))))
         db.executemany(f'INSERT INTO flights ({",".join(FLIGHT_COLS)}) VALUES ({",".join(":" + c for c in FLIGHT_COLS)})', rows)
         db.executemany('INSERT INTO events VALUES (?,?,?,?,?,?)',
                        [(run_id, n, t, f, ty, tx) for n, (t, f, ty, tx) in enumerate(ev_rows)])
@@ -370,15 +386,32 @@ def flight_history(db, run, flight):
     return row, own
 
 
-def export_json(db, path):
-    """dashboard/data/flight_log.json: the runs, the flights with their histories, and each run's events
-    that belong to no flight (the no-fly zone closing)."""
+def clock_points(db, run_id, step=10.0):
+    """A live run's clock: [[sim t, wall epoch seconds]], about one knot per `step` sim seconds (and the last one). The
+    server's pace varies with its load, so the pages interpolate these instead of assuming one speed. Empty for an import."""
+    rows = [[r['t'], r['wall']] for r in db.execute('SELECT t, wall FROM clock WHERE run_id = ? ORDER BY t', (run_id,))]
+    out = []
+    for p in rows:
+        if not out or p[0] - out[-1][0] >= step:
+            out.append(p)
+    if rows and out[-1] is not rows[-1]:
+        out.append(rows[-1])
+    return out
+
+
+def flightlog_dict(db, active_run=None, now_t=None):
+    """What dashboard/flight_log.html reads (data/flight_log.json, or GET /api/flightlog of the live server): the runs,
+    the flights with their histories, and each run's events that belong to no flight (the no-fly zone closing).
+    A run has `speed` (sim seconds per wall second: clock time = start_epoch + t / speed) and `speeds` (E1's flight
+    profile, for the tracking page's ETA). active_run / now_t: the live server's current run and its sim time."""
     runs = []
     for r in db.execute('SELECT * FROM runs ORDER BY recorded_at'):
         start = datetime.datetime.fromisoformat(r['started_at'] or r['recorded_at']).timestamp()
         runs.append({'run_id': r['run_id'], 'scenario': r['scenario'], 'map': json.loads(r['map'] or 'null'),
-                     'seed': r['seed'], 'source': os.path.basename(r['source_file']), 'recorded_at': r['recorded_at'], 'started_at': r['started_at'],
-                     'start_epoch': start,
+                     'seed': r['seed'], 'source': os.path.basename(r['source_file']), 'recorded_at': r['recorded_at'],
+                     'started_at': r['started_at'], 'start_epoch': start, 'speed': r['speed'] or 1.0,
+                     'speeds': json.loads(r['speeds']) if r['speeds'] else None,
+                     'clock': clock_points(db, r['run_id']),
                      'events': [{'t': e['t'], 'type': e['type'], 'text': e['text']} for e in db.execute(
                          'SELECT * FROM events WHERE run_id = ? AND flight_id IS NULL ORDER BY t, seq', (r['run_id'],))]})
     hist = {}
@@ -391,7 +424,217 @@ def export_json(db, path):
         flights.append(d)
     out = {'schema': EXPORT_SCHEMA, 'generated': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
            'runs': runs, 'flights': flights}
+    if active_run is not None:
+        out.update(live=True, active_run=active_run, now_t=now_t)
+    return out
+
+
+def export_json(db, path):
+    """Writes flightlog_dict to path (dashboard/data/flight_log.json)."""
+    out = flightlog_dict(db)
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     with open(path, 'w', encoding='utf-8') as fh:
         json.dump(out, fh, separators=(',', ':'))
-    return len(runs), len(flights)
+    return len(out['runs']), len(out['flights'])
+
+
+def track_dict(db, run, flight):
+    """GET /api/track: one flight's row, its history and its 1 Hz position track (t, x, y, z). run: a run id (a
+    prefix or a scenario name also work)."""
+    r = find_run(db, run)
+    row, events = flight_history(db, r['run_id'], flight)
+    pts = [[p['t'], p['x'], p['y'], p['z']] for p in db.execute(
+        'SELECT t, x, y, z FROM track WHERE run_id = ? AND flight_id = ? ORDER BY t', (r['run_id'], row['flight_id']))]
+    return {'run': {'run_id': r['run_id'], 'scenario': r['scenario'], 'seed': r['seed'], 'speed': r['speed'] or 1.0,
+                    'speeds': json.loads(r['speeds']) if r['speeds'] else None, 'clock': clock_points(db, r['run_id']),
+                    'start_epoch': datetime.datetime.fromisoformat(r['started_at'] or r['recorded_at']).timestamp()},
+            'flight': {k: row[k] for k in row.keys()},
+            'events': [{'t': e['t'], 'type': e['type'], 'text': e['text']} for e in events], 'track': pts}
+
+
+# ---------------------------------------------------------------------------------------------------- live logging
+LIVE_STATUS = {'waiting': 'Booked', 'flying': 'In flight', 'landed': 'Landed', 'crashed': 'Crashed', 'cancelled': 'Cancelled'}
+STALE_STATUS = {'Booked': 'Not departed', 'In flight': 'In flight at end'}      # what a flight that never finished becomes
+
+
+def close_stale(db):
+    """Flights of live runs still Booked / In flight (their server stopped, or died): closed as Not departed / In
+    flight at end. Returns how many."""
+    n = 0
+    with db:
+        for old, new in STALE_STATUS.items():
+            n += db.execute("UPDATE flights SET status = ? WHERE status = ? AND run_id IN "
+                            "(SELECT run_id FROM runs WHERE source_file = 'live')", (new, old)).rowcount
+    return n
+
+
+def _open(fn):
+    """A LiveRecorder call after close() does nothing (the simulation thread may still be finishing its step)."""
+    @functools.wraps(fn)
+    def wrapper(self, *a, **k):
+        return None if self.closed else fn(self, *a, **k)
+    return wrapper
+
+
+class LiveRecorder:
+    """What scripts/utm_server.py writes as things happen. One run per server session (run_id
+    live-<scenario>-<start time>, source_file 'live'); the flight row is written at booking and updated as it goes
+    (Booked -> In flight -> Landed / Crashed / Cancelled / Returned), its events go to `events` (plus a take-off), a
+    1 Hz position track to `track`, and a refused booking is a Rejected row with id r<n> (the server reuses f<n> for
+    those). Own connection (WAL, 5 s busy timeout), used from the simulation thread; readers open theirs."""
+
+    def __init__(self, path, sc, speed=1.0, speeds=None, wall=None):
+        self.path = path
+        self.db = connect(path, check_same_thread=False)
+        self.lock = threading.RLock()
+        close_stale(self.db)                              # an earlier server that did not close its flights
+        wall = time.time() if wall is None else wall
+        base = f"live-{sc.get('name', 'scenario')}-{time.strftime('%Y%m%d-%H%M%S', time.localtime(wall))}"
+        self.run_id, k = base, 1
+        while self.db.execute('SELECT 1 FROM runs WHERE run_id = ?', (self.run_id,)).fetchone():
+            k += 1
+            self.run_id = f'{base}-{k}'
+        with self.db:
+            self.db.execute('INSERT INTO runs (run_id, scenario, map, seed, source_file, recorded_at, summary, started_at, speed, speeds) '
+                            'VALUES (?,?,?,?,?,?,?,?,?,?)',
+                            (self.run_id, sc.get('name'), json.dumps(sc.get('map')), sc.get('seed'), 'live', _iso(wall),
+                             json.dumps({'live': True}), _iso(wall), float(speed), json.dumps(speeds) if speeds else None))
+        self.seq, self.n_refused, self.closed = 0, 0, False
+        self.wall0, self.t_last, self.pace_at = wall, 0.0, wall                        # to measure the pace the simulation really runs at
+        self.rows = {}                                    # flight id -> {act_dep, last, dist, returned}
+
+    # -- rows
+    def _insert(self, **kw):
+        row = _row(run_id=self.run_id, **kw)
+        cols = ','.join(FLIGHT_COLS)
+        self.db.execute(f'INSERT OR REPLACE INTO flights ({cols}) VALUES ({",".join(":" + c for c in FLIGHT_COLS)})', row)
+
+    def _update(self, fid, **kw):
+        sets = ', '.join(f'{k} = :{k}' for k in kw)
+        self.db.execute(f'UPDATE flights SET {sets} WHERE run_id = :run_id AND flight_id = :fid',
+                        {**kw, 'run_id': self.run_id, 'fid': fid})
+
+    def _event(self, t, fid, kind, text):
+        self.db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)', (self.run_id, self.seq, round(float(t), 2), fid, kind, text))
+        self.seq += 1
+
+    # -- what the server reports
+    @_open
+    def booked(self, f, t_request, layer=None):
+        """f: the server's flight dict (id, kind, operator, from, to, route, t_dep, arrival, layer_z, slot)."""
+        a, b = f['route'][0], f['route'][-1]
+        with self.lock, self.db:
+            self._insert(flight_id=f['id'], callsign=callsign(f['operator'], f['kind'], f['id']), drone=f"D{f['slot'] + 1:02d}",
+                         operator=f['operator'], kind=f['kind'], origin=f['from'], dest=f['to'],
+                         origin_x=round(a[0], 1), origin_y=round(a[1], 1), dest_x=round(b[0], 1), dest_y=round(b[1], 1),
+                         layer=layer, cruise_z=f['layer_z'], t_request=round(float(t_request), 2), sched_dep=f['t_dep'],
+                         sched_arr=f['arrival'], status='Booked', n_replans=0, n_alerts=0, distance_m=0.0)
+            self.rows[f['id']] = {'act_dep': None, 'last': None, 'dist': 0.0, 'returned': False}
+
+    @_open
+    def refused(self, t, operator, frm, to, reason):
+        """A refused booking: a Rejected row (id r<n>) and its event. Returns the id."""
+        with self.lock, self.db:
+            self.n_refused += 1
+            fid = f'r{self.n_refused}'
+            self._insert(flight_id=fid, callsign=callsign(operator, 'flight', fid).replace('-', '-R', 1), operator=operator or '', kind='flight',
+                         origin=frm, dest=to, t_request=round(float(t), 2), status='Rejected', n_replans=0, n_alerts=0,
+                         distance_m=0.0)
+            self._event(t, fid, 'refused', f'{fid}: booking refused' + (f' ({reason})' if reason else ''))
+        return fid
+
+    @_open
+    def event(self, e):
+        """One of the server's events ({t, type, text, flight?, ...}). A refusal by E1 becomes a Rejected row."""
+        if e['type'] == 'rejected':
+            return self.refused(e['t'], e.get('node'), e.get('frm'), e.get('to'), e.get('reason'))
+        fid = e.get('flight')
+        with self.lock, self.db:
+            if e.get('tag') == 'back to its pad' and fid in self.rows:
+                self.rows[fid]['returned'] = True
+            self._event(e['t'], fid, e['type'], e['text'])
+            if e['type'] == 'arrived' and fid in self.rows:
+                self._update(fid, act_arr=round(e['t'], 2))
+
+    @_open
+    def status(self, fid, s, t, f):
+        """The simulator's status of flight fid changed to s (waiting / flying / landed / crashed / cancelled)."""
+        st = self.rows.get(fid)
+        if st is None:
+            return
+        with self.lock, self.db:
+            name = 'Returned' if s == 'landed' and st['returned'] else LIVE_STATUS[s]
+            kw = {'status': name}
+            if s == 'flying' and st['act_dep'] is None:
+                st['act_dep'] = round(float(t), 2)
+                kw.update(act_dep=st['act_dep'], dep_delay=round(st['act_dep'] - f['t_dep'], 2))
+                self._event(t, fid, 'takeoff', f'{fid} took off')
+            if s == 'landed' and name == 'Landed':
+                row = self.db.execute('SELECT act_arr FROM flights WHERE run_id = ? AND flight_id = ?',
+                                      (self.run_id, fid)).fetchone()
+                arr = row['act_arr'] if row and row['act_arr'] is not None else round(float(t), 2)
+                kw.update(act_arr=arr, arr_delay=round(arr - f['arrival'], 2))
+                if st['act_dep'] is not None:
+                    kw['duration_s'] = round(arr - st['act_dep'], 2)
+            self._update(fid, **kw)
+
+    @_open
+    def replanned(self, f):
+        """E4 re-planned flight f (the server's dict, already updated): its re-plan count and height."""
+        if f['id'] in self.rows:
+            with self.lock, self.db:
+                self._update(f['id'], n_replans=f['replans'], cruise_z=f['layer_z'])
+
+    @_open
+    def track(self, t, positions):
+        """positions: [(flight id, [x, y, z])] of the flights flying now: one track point each and the distance flown. Called
+        once per simulated second, it also keeps runs.speed at the pace the simulation really runs at (the server falls behind
+        when it is asked for more than the machine can do), so clock time = started_at + t / speed stays close to the wall clock."""
+        self.t_last = float(t)
+        self._measure_pace()
+        with self.lock, self.db:
+            self.db.execute('INSERT OR REPLACE INTO clock VALUES (?,?,?)', (self.run_id, round(float(t), 2), round(time.time(), 3)))
+            for fid, p in positions:
+                st = self.rows.get(fid)
+                if st is None:
+                    continue
+                self.db.execute('INSERT OR REPLACE INTO track VALUES (?,?,?,?,?,?)',
+                                (self.run_id, fid, round(float(t), 2), p[0], p[1], p[2]))
+                if st['last'] is not None:
+                    st['dist'] += float(np.linalg.norm(np.subtract(p, st['last'])))
+                    self._update(fid, distance_m=round(st['dist'], 2))
+                st['last'] = list(p)
+
+    def clock(self):
+        """The run's clock so far (clock_points), for the scene a page loads."""
+        with self.lock:
+            return clock_points(self.db, self.run_id)
+
+    def pace(self):
+        """Simulated seconds per wall second since the run began (None in the first 5 s): the pace stored as runs.speed."""
+        now = time.time()
+        if now - self.wall0 < 5.0 or self.t_last <= 0:
+            return None
+        return round(self.t_last / (now - self.wall0), 4)
+
+    def _measure_pace(self, force=False):
+        now = time.time()
+        if not force and now - self.pace_at < 5.0:
+            return
+        pace = self.pace()
+        if pace is None:
+            return
+        self.pace_at = now
+        with self.lock, self.db:
+            self.db.execute('UPDATE runs SET speed = ? WHERE run_id = ?', (pace, self.run_id))
+
+    def close(self):
+        """The server stops: flights still Booked / In flight are closed (see close_stale). Returns how many."""
+        with self.lock:
+            if self.closed:
+                return 0
+            self._measure_pace(force=True)
+            n = close_stale(self.db)
+            self.closed = True
+            self.db.close()
+        return n

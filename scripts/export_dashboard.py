@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from render_scenario import caption, describe, short  # noqa: E402
-from utm import flight_log  # noqa: E402
+from utm import flight_log, speeds  # noqa: E402
 
 
 def r(a, d=2):
@@ -113,6 +113,7 @@ def main():
         'routes': routes, 'bookings': books, 'zones': log['zones'],
         'frames': {'t': log['frames']['t'], 'pos': [r(p) for p in log['frames']['pos']], 'status': log['frames']['status']},
         'hot': hot, 'events': events, 'summary': log['summary'],
+        'speeds': speeds.from_scenario(sc.get('utm')),           # the flight profile E1 booked: the tracking page's ETA
     }
     path = a.out or os.path.join('dashboard', 'data', os.path.basename(a.recording).replace('.json.gz', '.json'))
     os.makedirs(os.path.dirname(path), exist_ok=True)

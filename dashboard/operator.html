@@ -153,7 +153,7 @@ async function poll() {
 
 function render() {
   const mine = flights.filter(f => f.operator === op).reverse();
-  $('mine').innerHTML = mine.length ? mine.map(f => `<tr><td class="id">${esc(f.id)}</td><td>${esc(f.from)} \u2192 ${esc(f.to)}</td>
+  $('mine').innerHTML = mine.length ? mine.map(f => `<tr><td class="id">${esc(f.id)} <a href="track.html?flight=${encodeURIComponent(f.id)}" target="_blank" rel="noopener">Track</a></td><td>${esc(f.from)} \u2192 ${esc(f.to)}</td>
     <td><span class="pill ${f.status}">${f.status === 'waiting' ? 'on its pad' : f.status}</span></td><td>${fmt(f.t_dep)}</td>
     <td>${fmt(f.arrival)}</td><td>${f.layer_z} m</td><td>${f.replans}</td></tr>`).join('')
     : '<tr><td colspan="7" class="empty">No flights yet.</td></tr>';
