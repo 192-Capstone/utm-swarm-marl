@@ -34,7 +34,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 
 from render_scenario import STATE_WORDS, describe  # noqa: E402
-from utm import flight_log  # noqa: E402
+from utm import flight_log, strategic_planner  # noqa: E402
 
 DEFAULT_DB = os.path.join('eval_results', 'flight_log.db')
 EXPORT_SCHEMA = 'utm-flight-log-db/1'
@@ -234,6 +234,7 @@ def import_recording(db, path):
     recorded, started = _iso(mtime), _iso(mtime - length)
     drones = log['drones']
     place = _Pads(sc, log)
+    pad_before = float((sc.get('utm') or {}).get('pad_before', strategic_planner.Settings().pad_before))
     keep = {i for i, d in enumerate(drones) if d.get('kind') not in SKIPPED}
     kin = _kinematics(log, keep)
     index = {d['id']: i for i, d in enumerate(drones)}
@@ -265,6 +266,8 @@ def import_recording(db, path):
         k = kin[i]
         sched = kind in SCHEDULED
         t_dep, arr = (d.get('t_dep'), d.get('arrival')) if sched else (None, None)
+        if kind == 'flight' and log['bookings'].get(f):   # E1's booked departure, not the recorded one (it has the injected lateness)
+            t_dep = min(w[2] for w in log['bookings'][f]) + pad_before
         if kind == 'emergency':                           # its booking is the one E4 approved when it was filed
             ok = [e for e in es if e['type'] == 'replan' and e.get('why') == 'emergency' and e.get('status') == 'approved']
             if ok:
@@ -288,9 +291,13 @@ def import_recording(db, path):
         if kind == 'emergency':                           # filed when E4 was asked for its booking
             filed = next((e['t'] for e in es if e['type'] == 'replan' and e.get('why') == 'emergency'), None)
         act_arr = arrived if status == 'Landed' else None
+        operator = d.get('operator') or ''
+        if kind == 'emergency' and operator in ('', 'emergency'):     # the scenario named no operator: the site it leaves from
+            site = place.named(origin[1], origin[2])
+            operator = site if site and ' pad ' not in site else operator
         rows.append(_row(
-            run_id=run_id, flight_id=f, callsign=callsign(d.get('operator'), kind, f), drone=f'D{i + 1:02d}',
-            operator=d.get('operator') or '', kind=kind, origin=origin[0], origin_x=origin[1], origin_y=origin[2],
+            run_id=run_id, flight_id=f, callsign=callsign(operator, kind, f), drone=f'D{i + 1:02d}',
+            operator=operator, kind=kind, origin=origin[0], origin_x=origin[1], origin_y=origin[2],
             dest=goal[0], dest_x=goal[1], dest_y=goal[2], layer=d.get('layer'), cruise_z=_cruise_z(route),
             t_request=filed, sched_dep=t_dep, act_dep=k['act_dep'], sched_arr=arr, act_arr=act_arr,
             dep_delay=dep_delay, arr_delay=arr_delay,

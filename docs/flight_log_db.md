@@ -45,7 +45,7 @@ A run is identified by `<scenario name>-<hash of the recording's content>`. Impo
 | `origin_x`, `origin_y`, `dest_x`, `dest_y` | the pad coordinates (local m), shown as a tooltip and in the detail panel |
 | `layer`, `cruise_z` | cruise layer, highest point of the route (m) |
 | `t_request` | when the booking was filed: the request's time (only in recordings with `requests`); an emergency flight: when it was filed |
-| `sched_dep`, `sched_arr` | booked take-off and arrival (sim s). An emergency flight: its booking when E4 cleared it. Intruders: none |
+| `sched_dep`, `sched_arr` | E1's booked take-off and arrival (sim s). An emergency flight: its booking when E4 cleared it. Intruders: none. See below |
 | `act_dep` | first frame in which the drone is flying |
 | `act_arr` | its `arrived` event (only for status Landed) |
 | `dep_delay`, `arr_delay` | actual minus scheduled (s) |
@@ -54,6 +54,14 @@ A run is identified by `<scenario name>-<hash of the recording's content>`. Impo
 | `n_replans`, `n_alerts` | approved E4 re-plans of this flight (not the emergency filing); E3 alerts about it |
 | `distance_m` | path length flown, from the frames |
 | `min_sep_m`, `min_sep_with` | closest approach to any other airborne drone (intruders count, birds do not) and which |
+
+**Booked departure.** `drones[].t_dep` in a recording is E1's booked take-off **plus the scenario's injected lateness**
+(`disruptions`: `eval_layered.fly()` flies `t_dep + late`), while `arrival` is E1's booked arrival, so the two disagree
+for a late drone (it could even "depart" after it was due to land). The recording does not keep the booked departure,
+so it is derived from E1's booking, which is stored unchanged at take-off: E1 holds a flight's start pad from
+`pad_before` (2.0 s, `utm/strategic_planner.py` Settings, or the scenario's `utm.pad_before`) before take-off, so
+`sched_dep` = the earliest start of the flight's booking windows + `pad_before`. A flight without a booking falls back to
+`t_dep`. The injected lateness then shows up as the departure delay. E4's later re-plans do not move `sched_dep`.
 
 **events**: `run_id`, `seq`, `t` (sim s), `flight_id` (null for run-wide events such as the no-fly zone closing),
 `type`, `text`. The text uses the wording of `scripts/render_scenario.py` (the dashboard's feed); events that wording

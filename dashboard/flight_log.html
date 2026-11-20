@@ -77,7 +77,6 @@ td small { display: block; color: var(--muted); font-size: 11px; }
 .st { font-weight: 500; }
 .st-ok { color: var(--ok); } .st-info { color: var(--data); }
 .st-bad { color: var(--danger); } .st-warn { color: var(--warn); } .st-grey { color: var(--muted); }
-.late { color: var(--danger); } .early { color: var(--data); }
 .empty { padding: 36px 20px; text-align: center; color: var(--muted); }
 .empty b { display: block; color: var(--text); font-weight: 500; font-size: 15px; margin-bottom: 6px; }
 .empty code { font-family: var(--mono); font-size: 12px; background: var(--raised); padding: 2px 6px; border-radius: 4px; }
@@ -289,9 +288,9 @@ function draw() {
     cell(layerText(f), 'num mono');
     for (const t of [f.sched_dep, f.act_dep, f.sched_arr, f.act_arr]) cell(clock(abs(f, t)), 'num mono');
     cell(dur(f.duration_s), 'num mono');
-    const d = delay(f), dc = cell(signed(d), 'num mono' + (d != null && d > ON_TIME_S ? ' late' : ''));
+    const o = outcome(f);                                   // the delay is coloured like the status beside it
+    const dc = cell(signed(delay(f)), 'num mono st-' + o.cls);
     dc.title = f.arr_delay != null ? 'Arrival delay' : 'Departure delay';
-    const o = outcome(f);
     cell(o.text, 'st st-' + o.cls);
     cell(f.n_replans, 'num'); cell(f.n_alerts, 'num');
     const open = () => { sel = key; draw(); show(f); if (matchMedia('(max-width: 980px)').matches) $('detail').scrollIntoView({ block: 'start' }); };

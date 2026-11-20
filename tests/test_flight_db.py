@@ -178,3 +178,47 @@ def test_the_start_clock_is_the_file_time_minus_the_run_length(db):
     r = db.execute('SELECT * FROM runs').fetchone()
     gap = datetime.datetime.fromisoformat(r['recorded_at']) - datetime.datetime.fromisoformat(r['started_at'])
     assert gap.total_seconds() == pytest.approx(20.0, abs=1.0)                  # the last frame is at 20 s
+
+
+def late_recording(tmp_path):
+    """One flight booked to leave at 10 s and land at 14 s that the scenario's disruptions hold back 8 s: the recording
+    has t_dep 18 (booked + lateness) but E1's booking window, which starts pad_before (2 s) before the booked take-off
+    and ends pad_after (10 s) after the booked arrival. It flies 18 -> 22 s."""
+    rec = flight_log.FlightLog({'name': 'late', 'seed': 1, 'map': {'map': 'city'}})
+    rec.log['drones'] = [drone('A', t_dep=18.0, arrival=14.0)]
+    rec.log['bookings'] = {'A': [['c0', 1, 8.0, 24.0], ['c1', 1, 12.0, 24.0]]}
+    for k in range(50):
+        t = 0.5 * (k + 1)
+        rec.frame(t, np.array([[min(t, 22.0), 0.0, 1.0]]), [0 if t < 18 else 1 if t < 22 else 2])
+    rec.event(22.0, 'arrived', flight='A')
+    rec.finish({})
+    path = tmp_path / 'late.json.gz'
+    rec.save(path)
+    return path
+
+
+def test_the_schedule_is_e1s_booking_and_injected_lateness_is_a_departure_delay(tmp_path):
+    d = flight_db.connect(':memory:')
+    flight_db.import_recording(d, late_recording(tmp_path))
+    a = by_id(d)['A']
+    assert a['sched_dep'] == pytest.approx(10.0) and a['sched_arr'] == 14.0      # not the recorded t_dep of 18
+    assert a['sched_dep'] <= a['sched_arr']
+    assert a['act_dep'] == pytest.approx(18.0, abs=0.6)
+    assert a['dep_delay'] == pytest.approx(8.0, abs=0.6)                          # the injected lateness
+    assert a['arr_delay'] == pytest.approx(8.0, abs=0.01) and a['status'] == 'Landed'
+    assert a['duration_s'] == pytest.approx(4.0, abs=0.6)                         # flown about as planned (4 s)
+
+
+def test_an_emergency_flight_with_no_named_operator_takes_the_site_it_leaves_from(tmp_path):
+    rec = flight_log.FlightLog({'name': 'em', 'places': {'City Hospital': {'kind': 'hospital', 'at': [1.0, 1.0]}}})
+    e = drone('emergency_0', 'emergency', 'emergency')
+    e['start'] = [1.0, 1.0]
+    rec.log['drones'] = [e]
+    rec.frame(1.0, np.array([[1.0, 1.0, 0.5]]), [0])
+    rec.finish({})
+    path = tmp_path / 'em.json.gz'
+    rec.save(path)
+    d = flight_db.connect(':memory:')
+    flight_db.import_recording(d, path)
+    row = by_id(d)['emergency_0']
+    assert (row['operator'], row['callsign']) == ('City Hospital', 'CIT-E00')
