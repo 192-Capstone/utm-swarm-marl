@@ -445,12 +445,14 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
             apply_acts(acts_now)
         if rec is not None and (step + 1) % every_frame == 0:
             rec.frame(t, pos, status())
+            if env.birds is not None:
+                rec.bird_frame(env.birds.positions(), env.birds.radii[0])
         if rec is not None:                       # arrivals and crashes as events (the E5 dashboard)
             for i in np.flatnonzero(env.landed & ~was_landed):
                 if not env.forced_down[i]:        # a forced landing is not an arrival
                     rec.event(t, 'arrived', flight=ids[i])
             for i in np.flatnonzero(env.crashed & ~was_crashed):
-                rec.event(t, 'crashed', flight=ids[i])
+                rec.event(t, 'crashed', flight=ids[i], **({'cause': 'bird'} if env.bird_crashed[i] else {}))
             if feed is not None:
                 for kind, i, what in feed.new_events():
                     rec.event(t, kind, flight=ids[i], **({'failure_type': what} if what else {}))
@@ -519,6 +521,8 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
             break
     if rec is not None and (not rec.log['frames']['t'] or rec.log['frames']['t'][-1] != round(t, 3)):
         rec.frame(t, env.adapter.get_positions(), status())   # the final state, unless just recorded
+        if env.birds is not None:
+            rec.bird_frame(env.birds.positions(), env.birds.radii[0])
     env.close()
     reached = np.asarray(info.get('drone_reached_goal', [False] * n), dtype=bool)
     home = {y['flight'] for y in replans if y['status'] == 'approved' and y['reason'] == 'return to base'}

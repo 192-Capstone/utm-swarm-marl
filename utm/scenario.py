@@ -63,6 +63,9 @@ for the dashboard. YAML, every key optional except map (defaults below).
       p: 0.2                         #   drawn: each approved flight fails with probability p, mid-flight,
       types: [motor, land, comms]    #   its type drawn from types (own RNG: 8000 + seed, as eval_layered)
     # or listed: [{flight: f3, t: 30, type: motor}, ...]    (t: s, flight: an id of the run's flights)
+    birds:                           # moving non-cooperative obstacles (envs/birds.py: any of its settings), absent = none;
+      count: 3                       #   aimed at the drones' planned routes, PyBullet only; crash reason 'bird';
+      speed: [1.0, 3.0]              #   recorded in the flight log as the top-level "birds" key
     record: eval_results/scenarios/ecity_demo.json.gz
 
 Seeds 10-19 are refused (reserved for test runs), as in the evaluation scripts.
@@ -71,6 +74,8 @@ Seeds 10-19 are refused (reserved for test runs), as in the evaluation scripts.
 import copy
 
 import yaml
+
+from envs import birds as birds_mod
 
 DEFAULTS = {
     'name': 'scenario',
@@ -162,6 +167,16 @@ def validate(sc):
     ix = sc['intruders']
     if not isinstance(ix, int) and not all({'t', 'start', 'goal'} <= set(x) for x in ix):
         bad('intruders: a count, or a list of {t, start, goal}')
+    bd = sc.get('birds')                              # not in DEFAULTS either: absent stays out of the recording
+    if bd is not None:
+        if not isinstance(bd, dict):
+            bad('birds: {count, speed, radius, modes, ...} (envs/birds.py)')
+        try:
+            birds_mod.validate_block(bd)
+        except ValueError as e:
+            bad(str(e))
+        if sc['sim']['simulator'] != 'pybullet':
+            bad('birds are PyBullet only')
     fl = sc.get('failures')                           # not in DEFAULTS: absent stays out of the recording
     if fl is not None:
         if sc['utm']['mode'] not in ('e1', 'e4'):

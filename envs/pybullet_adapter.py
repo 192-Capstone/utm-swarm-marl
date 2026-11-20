@@ -90,6 +90,9 @@ class PyBulletAdapter:
         self.fall_v_max = float(fcfg.get('fall_v_max', 10.0))
         self.fall_drag_tau = float(fcfg.get('fall_drag_tau', 1.0))
         self._falling = {}           # drone index -> its velocity while it falls (motor failure)
+        self.birds = None            # envs/birds.py BirdField of the episode (None: no birds, nothing below runs)
+        self.bird_ids = []
+        self._last_obj = None        # object id every LiDAR ray hit in the last scan (birds only)
 
         # Every PyBullet call below passes physicsClientId=self.client. Without
         # it, calls go to world 0 by default, so a second adapter in the same
@@ -188,6 +191,34 @@ class PyBulletAdapter:
                                              physicsClientId=self.client)
             self.obstacle_ids.append(body)
 
+    def set_birds(self, field):
+        """Replace the previous episode's birds (None: no birds). A bird is a kinematic sphere (mass 0,
+        moved on by step_simulation), so the LiDAR rays hit it like any other body; contact with drones
+        is off, SwarmEnv decides a crash geometrically."""
+        for b in self.bird_ids:
+            p.removeBody(b, physicsClientId=self.client)
+        self.bird_ids, self.birds, self._last_obj = [], field, None
+        if field is None:
+            return
+        for pos, r in zip(field.positions(0), field.radii):
+            col = p.createCollisionShape(p.GEOM_SPHERE, radius=float(r), physicsClientId=self.client)
+            vis = p.createVisualShape(p.GEOM_SPHERE, radius=float(r), rgbaColor=[0.9, 0.3, 0.1, 1],
+                                      physicsClientId=self.client)
+            body = p.createMultiBody(baseMass=0.0, baseCollisionShapeIndex=col, baseVisualShapeIndex=vis,
+                                     basePosition=pos.tolist(), physicsClientId=self.client)
+            for d in self.drone_ids:
+                p.setCollisionFilterPair(d, body, -1, -1, enableCollision=0, physicsClientId=self.client)
+            self.bird_ids.append(body)
+
+    def bird_sensing(self, positions):
+        """(distance, seen): true centre distances (n_drones, n_birds), and whether at least one LiDAR ray
+        of the drone hit that bird in the last scan."""
+        d = np.linalg.norm(np.asarray(positions, dtype=float)[:, None, :] - self.birds.positions()[None, :, :], axis=2)
+        if self._last_obj is None:
+            return d, np.zeros(d.shape, dtype=bool)
+        seen = np.stack([(self._last_obj == b).any(axis=1) for b in self.bird_ids], axis=1)
+        return d, seen
+
     def apply_actions(self, actions: dict):
         """actions: {'drone_i': [vx, vy, vz, yaw_rate]} (yaw_rate optional)."""
         for i, body in enumerate(self.drone_ids):
@@ -245,6 +276,9 @@ class PyBulletAdapter:
             self._queue[i] = [np.zeros(3, dtype=np.float32)] * len(self._queue[i])
 
     def step_simulation(self):
+        if self.birds is not None:                   # birds move on one control step (kinematic)
+            for body, pos in zip(self.bird_ids, self.birds.step()):
+                p.resetBasePositionAndOrientation(body, pos.tolist(), [0, 0, 0, 1], physicsClientId=self.client)
         for _ in range(self.action_repeat):
             p.stepSimulation(physicsClientId=self.client)
 
@@ -299,6 +333,8 @@ class PyBulletAdapter:
         seen = (obj >= 0) & (obj != self.plane_id)
         if not self.lidar_cfg['sees_drones']:
             seen &= ~np.isin(obj, self.drone_ids)
+        if self.birds is not None:
+            self._last_obj = np.where(seen, obj, -1).reshape(self.n_agents, -1)
         dist = np.where(seen, RAY_START + frac * (rng - RAY_START), rng).reshape(self.n_agents, -1)
         return dist[:, :self.n_lidar].tolist(), dist[:, self.n_lidar:].tolist()
 

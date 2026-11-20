@@ -71,6 +71,7 @@ SEP_THRESHOLDS = (0.2, 0.3, 0.4, 0.5)
 # not physical. Only for adapters that report episode_stats() (Webots Level 2 multi); PyBullet
 # output is unchanged.
 LOST_TILT_DEG = 60.0
+BIRD_BINS = (0.0, 2.0, 4.0, 6.0)      # drone-bird distance bins (m) for the LiDAR detection rate (--birds only)
 
 
 def lost_control(stats, i):
@@ -548,6 +549,10 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
     #                   behaviour at the goal never counts as passing.
     along_gap = np.full(n_agents, np.inf)
     close_steps = turnback_steps = 0
+    # Birds (only with --birds): closest drone-bird distance, and LiDAR detection: of the (drone, bird)
+    # pairs within the LiDAR range in a step, how many had at least one ray on the bird (by distance bin)
+    bird_min = np.inf
+    det = np.zeros((len(BIRD_BINS) - 1, 2), dtype=np.int64)          # [bin] -> (pairs in range, pairs seen)
 
     for step in range(max_steps):
         lf = obs['local_fixed']
@@ -596,6 +601,15 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
             any_drone_collision = True
         if any(info.get('obstacle_collision', [])):
             any_obstacle_collision = True
+        if 'bird_distance' in info:
+            bd, bs = np.asarray(info['bird_distance']), np.asarray(info['bird_seen'])
+            live = ~env.crashed | np.asarray(info['bird_collision'])      # a parked drone is out of the world
+            if live.any():
+                bd, bs = bd[live], bs[live]
+                bird_min = min(bird_min, float(bd.min()))
+                for b in range(len(BIRD_BINS) - 1):
+                    m = (bd >= BIRD_BINS[b]) & (bd < BIRD_BINS[b + 1])
+                    det[b] += (int(m.sum()), int((m & bs).sum()))
         gaps = info.get('obstacle_distance', [])
         if gaps and min(gaps) < min_obs_gap:
             min_obs_gap = min(gaps)
@@ -607,7 +621,7 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
     pos = env.adapter.get_positions()
     final_dist = np.linalg.norm(pos - env.goals, axis=1)
     reason = info.get('reason')
-    outcome = 'success' if info.get('success') else (reason if reason in ('collision',) else 'timeout')
+    outcome = 'success' if info.get('success') else (reason if reason in ('collision', 'bird') else 'timeout')
 
     agents = []
     for i in range(n_agents):
@@ -647,6 +661,13 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
         'alongside_close_steps': close_steps,
         'turnback_steps': turnback_steps,
     }
+    if env.birds is not None:
+        episode.update({'n_birds': len(env.birds), 'bird_crash': int(outcome == 'bird'),
+                        'min_bird_dist': round(bird_min, 4) if np.isfinite(bird_min) else '',
+                        'bird_pair_steps': int(det[:, 0].sum()), 'bird_seen_steps': int(det[:, 1].sum())})
+        for b in range(len(BIRD_BINS) - 1):
+            episode[f'bird_in_{BIRD_BINS[b]:g}_{BIRD_BINS[b + 1]:g}'] = int(det[b, 0])
+            episode[f'bird_seen_{BIRD_BINS[b]:g}_{BIRD_BINS[b + 1]:g}'] = int(det[b, 1])
     for t in SEP_THRESHOLDS:
         episode[f'sep_below_{t}'] = int(min_sep is not None and min_sep < t) if n_agents > 1 else ''
     stats = env.adapter.episode_stats() if hasattr(env.adapter, 'episode_stats') else None
@@ -802,6 +823,12 @@ def main():
                          "on the paths, which spreads the drones out)")
     ap.add_argument("--max-steps", type=int, default=None,
                     help="episode time limit override (e.g. 1000 to tell slow traffic from gridlock)")
+    ap.add_argument("--birds", type=int, default=0,
+                    help="N birds per episode (envs/birds.py), aimed at the drones' paths; default 0 = none, "
+                         "output unchanged. The episode's drones, noise and lag are the same as without birds")
+    ap.add_argument("--bird-speed", type=float, nargs=2, default=None, metavar=("LO", "HI"),
+                    help="bird speed range, m/s (default 1 3)")
+    ap.add_argument("--bird-radius", type=float, default=None, help="bird radius, m (default 0.12)")
     ap.add_argument("--blind-neighbors", action="store_true",
                     help="ablation: MAPPO actor sees no other drones (all neighbour slots masked)")
     ap.add_argument("--blind-lidar", action="store_true",
@@ -872,6 +899,10 @@ def main():
         if obstacle_test or interaction:
             ap.error("--no-obstacles applies to the multi-drone scenarios")
         config.setdefault('obstacles', {})['enabled'] = False
+    if args.birds > 0:
+        config['environment']['birds'] = {'enabled': True, 'count': args.birds,
+                                          **({'speed': args.bird_speed} if args.bird_speed else {}),
+                                          **({'radius': args.bird_radius} if args.bird_radius else {})}
     n_agents = config['environment']['n_agents']
     # A1 part 3: goal-hold handover, only when the config's goal_hold block enables it
     goal_hold = goal_hold_enabled(config)
@@ -892,6 +923,8 @@ def main():
            f"phys{args.collision_physics}_s{'-'.join(map(str, args.seeds))}_e{args.episodes}"
            + (f"_T{max_steps}" if args.max_steps is not None else "")
            + ("_noobs" if args.no_obstacles else "")
+           + (f"_birds{args.birds}" + (f"_bv{args.bird_speed[0]:g}-{args.bird_speed[1]:g}" if args.bird_speed else "")
+              if args.birds > 0 else "")
            + (f"_{args.simulator}" if args.simulator != "pybullet" else "")
            + ("_real" if args.webots_real else ""))
     out_dir = args.out_dir or os.path.join(args.results_root, tag)
