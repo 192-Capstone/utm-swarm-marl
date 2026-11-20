@@ -63,3 +63,4 @@ docs/pybullet_to_webots_transfer.md
 
 # Generated route preview images
 route_preview_*.png
+dashboard/data/flight_log.json

@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UTM Flight Log</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* Same tokens, fonts and card style as index.html (the console). A departures board of every flight in the
+   flight log database (scripts/flight_db.py export -> data/flight_log.json), and a flight's history beside it. */
+:root {
+  --ground: #f4f3f1; --surface: #ffffff; --raised: #ecebe8; --border: #e4e2dd; --text: #0a0a0a;
+  --muted: #6b6b6b; --ink: #141414; --data: #1d5fbf; --danger: #c4242a; --warn: #92400e;
+  --data-soft: #e3ecf8; --danger-soft: #fbe9e9; --warn-soft: #fbf1e3; --ok: #1a7f4b;
+  --font: "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --r-card: 8px; --r-control: 6px; --gap: 12px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --ground: #000000; --surface: #111111; --raised: #222222; --border: #1d1d1d; --text: #ffffff;
+  --muted: #a8a8a8; --ink: #ffffff; --data: #5b9bff; --danger: #ff5a5f; --warn: #e5a93b;
+  --data-soft: #0f1d33; --danger-soft: #2c1517; --warn-soft: #2b2414; --ok: #4cc38a; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --ground: #000000; --surface: #111111; --raised: #222222; --border: #1d1d1d; --text: #ffffff;
+  --muted: #a8a8a8; --ink: #ffffff; --data: #5b9bff; --danger: #ff5a5f; --warn: #e5a93b;
+  --data-soft: #0f1d33; --danger-soft: #2c1517; --warn-soft: #2b2414; --ok: #4cc38a; color-scheme: dark }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body { background: var(--ground); color: var(--text); font: 400 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1600px; margin: 0 auto; padding-block: var(--gap); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand svg { flex: none; }
+.brand b { font-size: 16px; font-weight: 500; display: block; }
+.brand span { color: var(--muted); font-size: 12px; }
+.top { display: flex; align-items: center; gap: 12px; }
+.top a { color: var(--data); font-size: 13px; text-decoration: none; }
+.top a:hover { text-decoration: underline; }
+.seg { display: inline-flex; background: var(--surface); border-radius: var(--r-control); padding: 3px; gap: 2px; }
+.seg button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 4px; cursor: pointer; }
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--raised); color: var(--text); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.filters label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.filters select, .filters input { height: 36px; border-radius: var(--r-control); border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); font: inherit; padding: 0 10px; min-width: 150px; }
+.filters input[type=search] { min-width: 220px; }
+.count { color: var(--muted); font-size: 12px; margin-left: auto; align-self: center; }
+.csv { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border: 0; border-radius: var(--r-control);
+  background: var(--raised); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+.csv:hover:not(:disabled) { background: var(--border); }
+.csv:disabled { color: var(--muted); cursor: default; }
+.csv svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.main { display: block; }
+.card { background: var(--surface); border-radius: var(--r-card); }
+.board { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 8px 12px; text-align: left; white-space: nowrap; }
+th { position: sticky; top: 0; background: var(--surface); color: var(--muted); font-weight: 500; font-size: 12px; box-shadow: inset 0 -1px var(--border);
+  cursor: pointer; user-select: none; }
+th:hover { color: var(--text); }
+th[aria-sort] { color: var(--text); }
+th[aria-sort="ascending"]::after { content: " \25B2"; font-size: 9px; }
+th[aria-sort="descending"]::after { content: " \25BC"; font-size: 9px; }
+tbody tr { cursor: pointer; transition: background .16s ease; }
+tbody tr + tr td { border-top: 1px solid var(--border); }
+tbody tr:hover { background: var(--raised); }
+tbody tr[aria-selected="true"] { background: var(--data-soft); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td .cs { font-family: var(--mono); font-weight: 500; }
+td small { display: block; color: var(--muted); font-size: 11px; }
+.mono { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.st { font-weight: 500; }
+.st-ok { color: var(--ok); } .st-info { color: var(--data); }
+.st-bad { color: var(--danger); } .st-warn { color: var(--warn); } .st-grey { color: var(--muted); }
+.late { color: var(--danger); } .early { color: var(--data); }
+.empty { padding: 36px 20px; text-align: center; color: var(--muted); }
+.empty b { display: block; color: var(--text); font-weight: 500; font-size: 15px; margin-bottom: 6px; }
+.empty code { font-family: var(--mono); font-size: 12px; background: var(--raised); padding: 2px 6px; border-radius: 4px; }
+.detail { padding: 14px 16px; display: grid; gap: 12px; position: fixed; top: var(--gap); right: var(--gap); bottom: var(--gap); width: 380px; z-index: 5;
+  overflow-y: auto; align-content: start; box-shadow: 0 10px 40px rgba(0, 0, 0, .22); }
+.detail .x { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border: 0; border-radius: var(--r-control); background: transparent;
+  color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.detail .x:hover { background: var(--raised); color: var(--text); }
+.detail h2 { margin: 0; font-size: 13px; font-weight: 500; color: var(--muted); }
+.detail .id { font-family: var(--mono); font-size: 18px; font-weight: 500; }
+.detail .sub { color: var(--muted); font-size: 12px; }
+.detail dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+.detail dt { color: var(--muted); }
+.detail dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.tl { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.tl li { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 8px; font-size: 13px; }
+.tl time { color: var(--muted); font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 12px; }
+.tl small { color: var(--muted); display: block; font-family: var(--mono); font-size: 11px; }
+.tl .k-crashed, .tl .k-forced_down, .tl .k-failure, .tl .k-refused { color: var(--danger); }
+.tl .k-alert { color: var(--warn); }
+.tl .run-ev { color: var(--muted); font-style: italic; }
+.btn { display: inline-flex; align-items: center; height: 34px; padding: 0 14px; border-radius: var(--r-control); background: var(--ink); color: var(--surface);
+  text-decoration: none; font-weight: 500; font-size: 13px; width: fit-content; }
+.note { color: var(--muted); font-size: 12px; margin: 0; }
+:focus-visible { outline: 2px solid var(--data); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (max-width: 980px) { .detail { position: static; margin-top: var(--gap); box-shadow: none; width: auto; } .count { margin-left: 0; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><polygon points="17,2 30,9.5 30,24.5 17,32 4,24.5 4,9.5" fill="none" stroke="var(--ink)" stroke-width="1.6"/><polygon points="17,9 23.5,12.75 23.5,20.25 17,24 10.5,20.25 10.5,12.75" fill="var(--ink)"/></svg>
+      <div><b>Flight log</b><span>Every flight across the scenario runs &middot; E-City</span></div>
+    </div>
+    <div class="top">
+      <a href="index.html">&larr; UTM console</a>
+      <div class="seg" role="group" aria-label="Theme">
+        <button type="button" data-theme-set="light" aria-pressed="true">Light</button>
+        <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+  </header>
+
+  <section class="filters" id="filters" aria-label="Filters" hidden>
+    <label>Operator<select id="f-op"></select></label>
+    <label>Status<select id="f-status"></select></label>
+    <label>Run<select id="f-run"></select></label>
+    <label>Search<input type="search" id="f-q" placeholder="Callsign, flight, place"></label>
+    <span class="count" id="count" aria-live="polite"></span>
+    <button type="button" class="csv" id="csv"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1.5v8M3.8 6.6 7 9.8l3.2-3.2M2 12.5h10"/></svg>Download CSV</button>
+  </section>
+
+  <div class="main">
+    <section class="card board" id="board" aria-label="Departures board">
+      <table id="tbl" hidden>
+        <thead><tr id="head"></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty" hidden></div>
+    </section>
+    <aside class="card detail" id="detail" aria-label="Flight history" hidden></aside>
+  </div>
+</div>
+
+<script>
+(() => {
+// Scenes index.html can replay (its SCENES list); keep in sync. index.html reads only #<scene> from the URL.
+const SCENES = ['ecity_rooftops', 'ecity_demo'];
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+// ---------------------------------------------------------------- theme (same key as index.html)
+let theme = 'light';
+try { theme = localStorage.getItem('utm-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch { }
+function setTheme(t) {
+  theme = t; document.documentElement.dataset.theme = t;
+  try { localStorage.setItem('utm-theme', t); } catch { }
+  document.querySelectorAll('[data-theme-set]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.themeSet === t)));
+}
+document.querySelectorAll('[data-theme-set]').forEach(b => b.onclick = () => setTheme(b.dataset.themeSet));
+setTheme(theme);
+
+// ---------------------------------------------------------------- data
+const ON_TIME_S = 5;                    // a landing within this many seconds of its booked arrival is "On time"
+const COLS = [
+  { k: 'flight', h: 'Flight', v: f => f.callsign },
+  { k: 'drone', h: 'Drone', v: f => f.drone },
+  { k: 'operator', h: 'Operator', v: f => f.operator },
+  { k: 'route', h: 'From → To', v: f => `${f.origin || ''} ${f.dest || ''}` },
+  { k: 'layer', h: 'Layer', v: f => f.layer, num: 1 },
+  { k: 'sdep', h: 'Sched dep', v: f => abs(f, f.sched_dep), num: 1 },
+  { k: 'adep', h: 'Actual dep', v: f => abs(f, f.act_dep), num: 1 },
+  { k: 'sarr', h: 'Sched arr', v: f => abs(f, f.sched_arr), num: 1 },
+  { k: 'aarr', h: 'Actual arr', v: f => abs(f, f.act_arr), num: 1 },
+  { k: 'dur', h: 'Duration', v: f => f.duration_s, num: 1 },
+  { k: 'delay', h: 'Delay', v: f => delay(f), num: 1 },
+  { k: 'status', h: 'Status', v: f => outcome(f).text },
+  { k: 'replans', h: 'Re-plans', v: f => f.n_replans, num: 1 },
+  { k: 'alerts', h: 'Alerts', v: f => f.n_alerts, num: 1 },
+];
+let DB = null, RUNS = {}, ROWS = [], shown = [], sel = null;
+let sort = { k: 'sdep', dir: 1 };
+
+const abs = (f, t) => t == null ? null : RUNS[f.run_id].start_epoch + t;          // clock time, epoch seconds
+const clock = (e) => e == null ? '–' : new Date(e * 1000).toLocaleTimeString('en-GB', { hour12: false });
+const tplus = (t) => t == null ? '–' : `T+${t.toFixed(1)} s`;
+const delay = (f) => f.arr_delay != null ? f.arr_delay : f.dep_delay;
+const signed = (d) => d == null ? '–' : `${Math.round(d) > 0 ? '+' : ''}${Math.round(d)} s`;   // Math.round(-0.3) is -0: prints 0
+const at = (f, k) => f[k + '_x'] == null ? '' : `(${f[k + '_x']}, ${f[k + '_y']})`;
+const layerText = (f) => f.layer == null ? '–' : `L${f.layer}${f.cruise_z == null ? '' : ` · ${Number(f.cruise_z.toFixed(1))} m`}`;
+const dur = (s) => { if (s == null) return '–'; const n = Math.round(s); return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`; };
+const STATUS_CLASS = { Crashed: 'bad', 'Forced down': 'bad', Returned: 'warn', Cancelled: 'grey', Rejected: 'grey',
+  'In flight at end': 'info', 'Not departed': 'grey' };
+// What the board shows: the outcome, and for a landing its punctuality (green on time / early, amber delayed).
+function outcome(f) {
+  const d = f.arr_delay;
+  if (f.status === 'Landed' && d != null) {
+    if (Math.abs(d) <= ON_TIME_S) return { text: 'Landed · On time', cls: 'ok' };
+    return d > 0 ? { text: `Landed · Delayed +${Math.round(d)} s`, cls: 'warn' } : { text: `Landed · Early −${Math.round(-d)} s`, cls: 'ok' };
+  }
+  return { text: f.status, cls: f.status === 'Landed' ? 'ok' : STATUS_CLASS[f.status] || 'grey' };
+}
+
+async function load() {
+  try {
+    const r = await fetch('data/flight_log.json', { cache: 'no-cache' });
+    if (!r.ok) throw new Error(r.status);
+    DB = await r.json();
+  } catch { DB = null; }
+  if (!DB || !DB.flights || !DB.flights.length) return emptyState(DB ? 'The flight log has no flights yet.' : 'No flight log found.');
+  RUNS = Object.fromEntries(DB.runs.map(r => [r.run_id, r]));
+  ROWS = DB.flights;
+  const opts = (id, label, list) => { const s = $(id); s.replaceChildren(new Option(label, '')); list.forEach(([v, text]) => s.add(new Option(text, v))); };
+  const uniq = (xs) => [...new Set(xs)].sort().map(v => [v, v]);
+  opts('f-op', 'All operators', uniq(ROWS.map(f => f.operator).filter(Boolean)));
+  opts('f-status', 'All statuses', uniq(ROWS.map(f => f.status)));
+  opts('f-run', 'All runs', DB.runs.map(r => [r.run_id, `${r.scenario} · ${new Date(r.start_epoch * 1000).toLocaleString('en-GB', { hour12: false })}`]));
+  ['f-op', 'f-status', 'f-run'].forEach(id => $(id).onchange = draw);
+  $('f-q').oninput = draw;
+  $('csv').onclick = downloadCsv;
+  $('filters').hidden = false; $('tbl').hidden = false;
+  const tr = $('head');
+  COLS.forEach(c => {
+    const th = el('th', c.num ? 'num' : '', c.h); th.tabIndex = 0; th.dataset.k = c.k;
+    const go = () => { sort = { k: c.k, dir: sort.k === c.k ? -sort.dir : 1 }; draw(); };
+    th.onclick = go; th.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+    tr.append(th);
+  });
+  draw();
+}
+
+// The rows now shown (filters and sort applied) as CSV: clock times, and the same times as sim seconds.
+function downloadCsv() {
+  const clk = (f, t) => t == null ? '' : clock(abs(f, t));
+  const head = ['run', 'callsign', 'flight_id', 'drone', 'operator', 'kind', 'from', 'from_x', 'from_y', 'to', 'to_x', 'to_y',
+    'layer', 'cruise_z_m', 'filed', 'sched_dep', 'actual_dep', 'sched_arr', 'actual_arr', 'filed_s', 'sched_dep_s', 'actual_dep_s',
+    'sched_arr_s', 'actual_arr_s', 'duration_s', 'dep_delay_s', 'arr_delay_s', 'status', 'outcome', 'replans', 'alerts', 'distance_m',
+    'closest_m', 'closest_with'];
+  const rows = shown.map(f => [RUNS[f.run_id].scenario, f.callsign, f.flight_id, f.drone, f.operator, f.kind, f.origin, f.origin_x, f.origin_y,
+    f.dest, f.dest_x, f.dest_y, f.layer, f.cruise_z, clk(f, f.t_request), clk(f, f.sched_dep), clk(f, f.act_dep), clk(f, f.sched_arr),
+    clk(f, f.act_arr), f.t_request, f.sched_dep, f.act_dep, f.sched_arr, f.act_arr, f.duration_s, f.dep_delay, f.arr_delay, outcome(f).text,
+    f.status, f.n_replans, f.n_alerts, f.distance_m, f.min_sep_m, f.min_sep_with]);
+  const q = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const text = [head, ...rows].map(r => r.map(q).join(',')).join('\r\n') + '\r\n';
+  const a = el('a'); a.href = URL.createObjectURL(new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' }));
+  a.download = 'flight_log.csv'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function emptyState(msg) {
+  $('empty').hidden = false;
+  const b = el('b', '', msg), p = el('p', '');
+  p.append('Record a scenario, then run ');
+  p.append(el('code', '', 'python scripts/flight_db.py import eval_results/scenarios/*.json.gz'));
+  p.append(' and ');
+  p.append(el('code', '', 'python scripts/flight_db.py export'));
+  p.append('.');
+  $('empty').replaceChildren(b, p);
+}
+
+function draw() {
+  const op = $('f-op').value, st = $('f-status').value, run = $('f-run').value, q = $('f-q').value.trim().toLowerCase();
+  let list = ROWS.filter(f => (!op || f.operator === op) && (!st || f.status === st) && (!run || f.run_id === run) &&
+    (!q || `${f.callsign} ${f.flight_id} ${f.drone} ${f.operator} ${f.origin} ${f.dest} ${outcome(f).text}`.toLowerCase().includes(q)));
+  const col = COLS.find(c => c.k === sort.k);
+  list = list.map(f => [col.v(f), f]).sort(([a], [b]) => {
+    if (a == null || a === '') return b == null || b === '' ? 0 : 1;          // empty values last, either direction
+    if (b == null || b === '') return -1;
+    return (typeof a === 'string' ? a.localeCompare(b, undefined, { numeric: true }) : a - b) * sort.dir;
+  }).map(x => x[1]);
+  shown = list;
+  $('count').textContent = `${list.length} of ${ROWS.length} flights`;
+  $('csv').disabled = !list.length;
+  document.querySelectorAll('#head th').forEach(th => {
+    if (th.dataset.k === sort.k) th.setAttribute('aria-sort', sort.dir > 0 ? 'ascending' : 'descending'); else th.removeAttribute('aria-sort');
+  });
+  const body = $('rows'); body.replaceChildren();
+  for (const f of list) {
+    const tr = document.createElement('tr'); tr.tabIndex = 0;
+    const key = `${f.run_id}/${f.flight_id}`; tr.dataset.key = key;
+    if (sel === key) tr.setAttribute('aria-selected', 'true');
+    const cell = (text, cls) => { const td = el('td', cls || '', text); tr.append(td); return td; };
+    const c0 = cell('', ''); c0.append(el('span', 'cs', f.callsign)); c0.append(el('small', '', DB.runs.length > 1 ? `${f.flight_id} · ${RUNS[f.run_id].scenario}` : f.flight_id));
+    cell(f.drone || '–', 'mono');
+    cell(f.operator || '–');
+    const route = cell(f.kind === 'intruder' ? `${f.origin || '?'} → ${f.dest || '?'} (intruder)` : `${f.origin || '?'} → ${f.dest || '?'}`);
+    route.title = `${at(f, 'origin')} → ${at(f, 'dest')}`;
+    cell(layerText(f), 'num mono');
+    for (const t of [f.sched_dep, f.act_dep, f.sched_arr, f.act_arr]) cell(clock(abs(f, t)), 'num mono');
+    cell(dur(f.duration_s), 'num mono');
+    const d = delay(f), dc = cell(signed(d), 'num mono' + (d != null && d > ON_TIME_S ? ' late' : ''));
+    dc.title = f.arr_delay != null ? 'Arrival delay' : 'Departure delay';
+    const o = outcome(f);
+    cell(o.text, 'st st-' + o.cls);
+    cell(f.n_replans, 'num'); cell(f.n_alerts, 'num');
+    const open = () => { sel = key; draw(); show(f); if (matchMedia('(max-width: 980px)').matches) $('detail').scrollIntoView({ block: 'start' }); };
+    tr.onclick = open; tr.onkeydown = (e) => { if (e.key === 'Enter') open(); };
+    body.append(tr);
+  }
+  if (!list.length) { const tr = el('tr'), td = el('td', 'empty', 'No flights match these filters.'); td.colSpan = COLS.length; tr.append(td); body.append(tr); }
+}
+
+// ---------------------------------------------------------------- one flight's history (a drawer over the board)
+function closeDetail() { sel = null; $('detail').hidden = true; draw(); }
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('detail').hidden) closeDetail(); });
+
+function show(f) {
+  const run = RUNS[f.run_id], d = $('detail'); d.hidden = false;
+  const dl = el('dl');
+  const row = (k, v) => { dl.append(el('dt', '', k), el('dd', '', v)); };
+  const both = (t) => t == null ? '–' : `${clock(abs(f, t))} (${tplus(t)})`;
+  row('Run', `${run.scenario} · seed ${run.seed ?? '–'}`);
+  row('Operator', f.operator || '–');
+  row('Drone', f.drone || '–');
+  const pad = (k) => `${f[k] || '?'}${f[k + '_x'] == null || f[k] === at(f, k) ? '' : ' ' + at(f, k)}`;
+  row('From', pad('origin')); row('To', pad('dest'));
+  row('Layer / height', layerText(f));
+  row('Filed', f.t_request == null ? '–' : both(f.t_request));
+  row('Scheduled dep', both(f.sched_dep)); row('Actual dep', both(f.act_dep)); row('Departure delay', signed(f.dep_delay));
+  row('Scheduled arr', both(f.sched_arr)); row('Actual arr', both(f.act_arr)); row('Arrival delay', signed(f.arr_delay));
+  row('Duration', f.duration_s == null ? '–' : `${dur(f.duration_s)} (${f.duration_s.toFixed(1)} s)`);
+  row('Distance flown', f.distance_m ? `${f.distance_m.toFixed(1)} m` : '–');
+  row('Closest approach', f.min_sep_m == null ? '–' : `${f.min_sep_m.toFixed(2)} m to ${f.min_sep_with}`);
+  const tl = el('ol', 'tl');
+  const evs = [...f.events.map(e => ({ ...e, own: 1 })), ...run.events.map(e => ({ ...e, own: 0 }))].sort((a, b) => a.t - b.t);
+  if (!f.events.length) tl.append(el('li', '', 'Nothing was recorded for this flight.'));
+  for (const e of evs) {
+    const li = el('li', e.own ? 'k-' + e.type : 'run-ev');
+    const t = el('time', '', clock(abs(f, e.t))); t.append(el('small', '', tplus(e.t)));
+    li.append(t, el('span', '', e.text));
+    tl.append(li);
+  }
+  const head = el('div'); head.append(el('div', 'id', f.callsign), el('div', 'sub', `${f.flight_id} · ${f.kind}`));
+  const o = outcome(f), stat = el('div', 'st st-' + o.cls, o.text);
+  const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close'); x.onclick = closeDetail;
+  d.replaceChildren(x, head, stat, dl, el('h2', '', 'History'), tl);
+  if (SCENES.includes(run.scenario)) {
+    const a = el('a', 'btn', 'Replay'); a.href = `index.html#${run.scenario}`; d.append(a);
+    d.append(el('p', 'note', 'Opens the console on this scene. It cannot yet jump to the flight or its time.'));
+    fetch(`data/${run.scenario}.json`, { method: 'HEAD' }).then(r => { if (!r.ok) a.hidden = true; }).catch(() => { });
+  }
+}
+
+load();
+})();
+</script>
+</body>
+</html>

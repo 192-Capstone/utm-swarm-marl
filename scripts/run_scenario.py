@@ -189,6 +189,9 @@ def run(sc, record=None):
     reqs = requests(sc, layout, bounds, sky)
     op = {fp.id: fp.operator for fp in reqs}
     decisions, flights = plans(sky, reqs)
+    filed = [{'id': fp.id, 'operator': fp.operator, 'start': [float(x) for x in fp.start],
+              'goal': [float(x) for x in fp.goal], 't_request': float(fp.t_earliest), 'status': d.status,
+              'reason': d.reason} for fp, d in zip(reqs, decisions)]     # E1's decision on every request, as filed
     for f in flights:
         f['operator'] = op.get(f['id'], '')
     window = max((fp.t_earliest for fp in reqs), default=0.0) + 1.0
@@ -229,6 +232,7 @@ def run(sc, record=None):
         e7['safety'] = safety_per_flight_hour(out['pairs_below_1.4'], out['crashed'], e7['flight_s'])
     out['e7'] = e7
     rec.log['summary']['e7'] = e7
+    rec.log['requests'] = filed          # additive key (flight_db.py reads it: refused requests never fly)
     path = record or sc.get('record')
     if path:
         os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
