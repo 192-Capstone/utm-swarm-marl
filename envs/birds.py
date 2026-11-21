@@ -43,19 +43,28 @@ Config (environment.birds; off when the block is missing or enabled is false):
       circle_radius: [2.0, 4.0]    # m
       max_turn_rate: 0.35          # rad/s (turn mode)
       vz_max: 0.3                  # m/s
+      detector: null               # an onboard detector + tracker (envs/bird_detector.py), off by default
+      guard: null                  # a classical avoidance layer on the tracks (modules/bird_guard.py), off by default
+      spawn: timed                 # timed: aimed at a drone's path, there when it is (worst case)
+                                   # random: straight crossings of the arena at random times, unrelated to the
+                                   #   drones (a fairer test)
 """
 
 import hashlib
 
 import numpy as np
 
+from envs import bird_detector
+
 MODES = ('cross', 'turn', 'circle')
+SPAWNS = ('timed', 'random')
 
 DEFAULTS = {
     'enabled': False, 'count': 0, 'speed': [1.0, 3.0], 'radius': 0.12,
     'modes': list(MODES), 'seed': 0, 'drone_speed': 2.0, 'jitter_s': 1.0,
     'z_band': None, 'bounds': None, 'margin': 12.0, 'circle_radius': [2.0, 4.0],
-    'max_turn_rate': 0.35, 'vz_max': 0.3,
+    'max_turn_rate': 0.35, 'vz_max': 0.3, 'detector': None,
+    'guard': None, 'spawn': 'timed',
 }
 
 
@@ -79,6 +88,13 @@ def validate_block(block):
         raise ValueError("birds.jitter_s, vz_max and margin must be >= 0")
     if not cfg['modes'] or any(m not in MODES for m in cfg['modes']):
         raise ValueError(f"birds.modes must be a non-empty list of {MODES}, got {cfg['modes']!r}")
+    cfg['detector'] = bird_detector.validate(cfg['detector'])      # None when off
+    from modules import bird_guard                                 # (imported here: it imports the teacher)
+    cfg['guard'] = bird_guard.validate(cfg['guard'])               # None when off
+    if cfg['guard'] is not None and cfg['detector'] is None:
+        raise ValueError("birds.guard needs birds.detector (the guard uses tracked birds only)")
+    if cfg['spawn'] not in SPAWNS:
+        raise ValueError(f"birds.spawn must be one of {SPAWNS}, got {cfg['spawn']!r}")
     if cfg['z_band'] is not None and not (len(cfg['z_band']) == 2 and cfg['z_band'][0] < cfg['z_band'][1]):
         raise ValueError("birds.z_band must be [lo, hi]")
     return cfg
@@ -180,6 +196,10 @@ class BirdField:
         self.k += 1
         return self.positions()
 
+    def velocities(self):
+        """True velocities now (forward difference over one control step), (n, 3)."""
+        return (self.positions(self.k + 1) - self.positions(self.k)) / self.dt
+
     @classmethod
     def generate(cls, cfg, paths, dt, seed_parts=(), t_dep=None):
         """cfg: validated environment.birds; paths: one (m, 3) array per drone (its straight line or
@@ -201,6 +221,15 @@ class BirdField:
         seg = [np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1) for p in paths]
         total = np.array([s.sum() for s in seg])
         birds = []
+        if cfg['spawn'] == 'random':                       # straight crossings of the arena, unrelated to the drones
+            box_lo, box_hi = allp[:, :2].min(axis=0) - 2.0, allp[:, :2].max(axis=0) + 2.0
+            t_end = float(max(total[d] / cfg['drone_speed'] + t_dep[d] for d in range(len(paths)))) + cfg['jitter_s']
+            for _ in range(cfg['count']):
+                xy = rng.uniform(box_lo, box_hi)
+                aim = np.array([xy[0], xy[1], float(rng.uniform(z_band[0], z_band[1]))])
+                t_aim = float(rng.uniform(1.0, max(t_end, 1.5)))
+                birds.append(Bird.planned(rng, cfg, aim, t_aim, dt, 'cross', z_band, bounds))
+            return cls(birds, dt)
         for _ in range(cfg['count']):                      # one draw sequence per bird: bird i never depends on the count
             d = int(rng.integers(len(paths)))
             frac = float(rng.uniform(0.2, 1.0))

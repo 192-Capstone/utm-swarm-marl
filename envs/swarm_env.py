@@ -173,6 +173,10 @@ class SwarmEnv:
         # DRONE_RADIUS + bird radius of a bird has crashed (reason 'bird'; geometric, like obstacles).
         self.bird_cfg = birds_mod.config(config)
         self.birds = None                        # this episode's BirdField
+        self.detector = None                     # stage 3a: this episode's BirdDetector (None = off)
+        self._bird_tracks = None                 # what each drone tracks: (known, pos, vel), or None
+        self.bird_slots = True                   # tracked birds also fill the neighbour slots (detector.birds_in_slots)
+        self.last_obs_raw = None                 # the (noisy) state the last observation was built from (bird guard)
         self.bird_crashed = np.zeros(self.n_agents, dtype=bool)
         if self.bird_cfg is not None and config['environment'].get('simulator', 'pybullet') != 'pybullet':
             raise ValueError("environment.birds needs the PyBullet simulator")
@@ -409,9 +413,12 @@ class SwarmEnv:
             self.birds = birds if birds is not None else (self._make_birds(spawns, goals)
                                                           if self.bird_cfg is not None else None)
             self.adapter.set_birds(self.birds)
+        self._start_detector(spawns)
 
         raw       = self.adapter.get_raw_state()
         positions = self.adapter.get_positions()
+        if self.detector is not None:
+            self._detect(positions, np.array([raw[f'drone_{i}']['velocity'] for i in range(self.n_agents)]))
         if self.waiting.any():               # distances of waiting drones from their pads
             positions = np.where(self.waiting[:, None], self._spawns, positions)
         self.prev_dist    = np.linalg.norm(positions - self.goals, axis=1)
@@ -428,6 +435,38 @@ class SwarmEnv:
 
         self.obs_processor.reset_history()
         return self._build_obs(raw)
+
+    def _start_detector(self, spawns):
+        """Stage 3a: a fresh detector (own generator: [detector seed, episode hash], so bird paths, noise
+        and lag are paired with the runs without it) when environment.birds.detector is on."""
+        self.detector, self._bird_tracks, self.bird_slots = None, None, True
+        det = None if self.bird_cfg is None else self.bird_cfg['detector']
+        if det is None or self.birds is None or len(self.birds) == 0:
+            return
+        digest = self._episode_noise_seed(spawns)[1]
+        rng = np.random.default_rng([int(det['seed']), digest, 0xB1D])
+        pos = self.adapter.get_positions()
+        h = self.goals[:, :2] - pos[:, :2]
+        h = h / np.maximum(np.linalg.norm(h, axis=1, keepdims=True), 1e-9)
+        blocked = self.adapter.blocked_by_obstacle if det['mode'] == 'realistic' else None
+        self.bird_slots = bool(det['birds_in_slots'])
+        self.detector = birds_mod.bird_detector.BirdDetector(det, self.n_agents, len(self.birds),
+                                                             self.control_dt, rng, headings=h, blocked=blocked)
+
+    def _tracked_matrix(self):
+        """(drone, bird): the drone has a live track of that bird. Identity-indexed tracks say so directly; merged
+        (shared) tracks have no bird ids, so each is matched to the nearest true bird within 1 m (a statistic for
+        the evaluation, never seen by the drones)."""
+        known, tpos, _ = self._bird_tracks
+        if not self.detector.share:
+            return known
+        d = np.linalg.norm(tpos[:, :, None, :] - self.birds.positions()[None, None, :, :], axis=3)    # (n, K, B)
+        return (known[:, :, None] & (d < 1.0)).any(axis=1)
+
+    def _detect(self, positions, velocities):
+        """One detector step from the true state: what each drone now tracks."""
+        self._bird_tracks = self.detector.step(self._t_step, positions, velocities,
+                                               self.birds.positions(), self.birds.velocities())
 
     def _make_birds(self, spawns, goals):
         """This episode's birds, aimed at the drones' paths: the route a drone follows (its follower's
@@ -625,6 +664,8 @@ class SwarmEnv:
         if self.birds is not None:
             bird_dist, bird_seen = self.adapter.bird_sensing(positions)
             bird_collision = (bird_dist < scenario_manager.DRONE_RADIUS + self.birds.radii[None, :]).any(axis=1)
+            if self.detector is not None:
+                self._detect(positions, np.array([raw[f'drone_{i}']['velocity'] for i in range(self.n_agents)]))
         if self.crash_mode == 'remove':
             new = (np.array(drone_collision) | np.array(obstacle_collision)) & ~self.crashed
             if bird_collision is not None:
@@ -800,6 +841,8 @@ class SwarmEnv:
             info['bird_crashed'] = self.bird_crashed.tolist()
             info['bird_distance'] = bird_dist.tolist()          # (drone, bird) true centre distances
             info['bird_seen'] = bird_seen.tolist()              # at least one LiDAR ray of the drone hit the bird
+            if self.detector is not None:
+                info['bird_tracked'] = self._tracked_matrix().tolist()   # the drone has a live track of the bird
         if self.failure_cfg is not None:
             info['drone_failed'] = list(self.failed)
             info['drone_forced_down'] = self.forced_down.tolist()
@@ -914,13 +957,15 @@ class SwarmEnv:
     def _build_obs(self, raw):
         if self.noise_on:
             raw = self._noisy(raw)
+        self.last_obs_raw = raw
         extra = None
         if self.obs_processor.critic_version >= 2:
             # critic.version 2: the critic also sees each drone's settle state
             extra = {'settle_progress': np.minimum(self.settle_counter / self.settle_steps, 1.0),
                      'reached': np.asarray(self.drone_reached_goal, dtype=np.float32)}
         lf, ns, nm, gs = self.obs_processor.process(raw, self.curriculum_stage,
-                                                    critic_extra=extra)
+                                                    critic_extra=extra,
+                                                    bird_tracks=self._bird_tracks if self.bird_slots else None)
         return {
             'local_fixed':     lf,
             'neighbor_states': ns,

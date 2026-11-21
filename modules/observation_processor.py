@@ -224,6 +224,7 @@ class ObservationProcessor:
         curriculum_stage: int,
         drone_ids:        Optional[List[str]] = None,
         critic_extra:     Optional[Dict] = None,
+        bird_tracks:      Optional[Tuple] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Main processing function. Converts raw_state to all required tensors.
@@ -235,6 +236,10 @@ class ObservationProcessor:
                                If None, auto-detected from raw_state keys
             critic_extra     : critic.version 2 only, from SwarmEnv:
                                {'settle_progress': (N,) in [0, 1], 'reached': (N,) bool}
+            bird_tracks      : birds' stage 3a (envs/bird_detector.py), None = off (the neighbour
+                               inputs are then computed exactly as before):
+                               (known (N, B) bool, pos (N, B, 3), vel (N, B, 3)), what each drone
+                               tracks, world frame. Tracked birds become neighbour candidates
 
         Returns:
             local_fixed     : (N, 27)     tensor — own state per drone
@@ -267,6 +272,8 @@ class ObservationProcessor:
         # ── 2. KNN neighbor encoding ────────────────────────────────────────
         neighbor_states, neighbor_mask = self._build_neighbor_states(
             positions, velocities
+        ) if bird_tracks is None else self._build_neighbor_states_birds(
+            positions, velocities, bird_tracks
         )
 
         # ── 3. Build global state (N, 17) for critic ────────────────────────
@@ -447,6 +454,41 @@ class ObservationProcessor:
                 neighbor_mask[i, slot]        = False         # slot is populated
 
         return neighbor_states, neighbor_mask   # (N, K, 6), (N, K)
+
+    def _build_neighbor_states_birds(self, positions, velocities, bird_tracks):
+        """Like _build_neighbor_states, but each drone's candidates are the drones it knows about AND
+        the birds it tracks: the K nearest of both within the sensing radius, in the same units
+        (relative position / neighbor_pos_scale, relative velocity / neighbor_vel_scale). The slot does
+        not say which is which (the policy's input has no such flag)."""
+        N, K = positions.shape[0], self.k_neighbors_max
+        neighbor_states = np.zeros((N, K, 6), dtype=np.float32)
+        neighbor_mask = np.ones((N, K), dtype=bool)
+        t_known, t_pos, t_vel = bird_tracks
+        known_pos, known_vel, known = self.neighbour_source.observe(positions, velocities)
+        candidates = self.neighbour_index.candidates(known_pos[0])
+        for i in range(N):
+            rels, rvs = [], []
+            others = [j for j in candidates[i].tolist() if known[i, j]]
+            if others:
+                rels.append(known_pos[i, others] - positions[i])
+                rvs.append(known_vel[i, others] - velocities[i])
+            b = np.flatnonzero(t_known[i])
+            if len(b):
+                rels.append(np.asarray(t_pos[i, b], dtype=np.float32) - positions[i])
+                rvs.append(np.asarray(t_vel[i, b], dtype=np.float32) - velocities[i])
+            if not rels:
+                continue
+            rel, rv = np.concatenate(rels), np.concatenate(rvs)
+            dists = np.linalg.norm(rel, axis=1)
+            if self.sensing_radius is not None:
+                keep = dists <= self.sensing_radius
+                rel, rv, dists = rel[keep], rv[keep], dists[keep]
+            order = np.argsort(dists, kind='stable')[:K]
+            for slot, s in enumerate(order):
+                neighbor_states[i, slot, :3] = rel[s] / self.neighbor_pos_scale
+                neighbor_states[i, slot, 3:] = rv[s] / self.neighbor_vel_scale
+                neighbor_mask[i, slot] = False
+        return neighbor_states, neighbor_mask
 
     def _build_global_state(
         self,

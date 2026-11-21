@@ -212,6 +212,9 @@ def run(sc, record=None):
         cfg.setdefault('goal_hold', {}).update(engage_dist=e, release_dist=e + 0.2)
     if sc.get('birds') is not None:                     # birds: aimed at the routes, inside the map, seeded like the run
         cfg['environment']['birds'] = {'seed': sc['seed'], 'bounds': [list(b) for b in sky.bounds], **sc['birds'], 'enabled': True}
+        g = cfg['environment']['birds'].get('guard')
+        if g and g.get('enabled') and g.get('layer_spacing_m') is None:      # layers are 2 m apart: no evasion into another layer
+            g['layer_spacing_m'] = 2.0
     duration = float(sc['demand'].get('duration_s', sc['demand'].get('window', 30.0)))
     e7 = system_metrics(sky, reqs, duration)                      # before fly(): E1's decisions as filed
     ckpt = checkpoint_path(sc['sim']['checkpoint']) if sc['sim']['pilot'] == 'learned' else sc['sim']['checkpoint']

@@ -78,6 +78,7 @@ from eval_e1_flown import NEAR, plans                              # noqa: E402
 from envs.disturbances import FAILURE_TYPES, draw_failures          # noqa: E402
 from envs.swarm_env import LAND_RADIUS_M, SwarmEnv                 # noqa: E402
 from modules.goal_hold import GoalHoldPolicy, goal_hold_enabled    # noqa: E402
+from modules.bird_guard import BirdGuardPolicy, guard_enabled      # noqa: E402
 from preview_route import load_map                                 # noqa: E402
 from preview_strategic import random_requests                      # noqa: E402
 from record_rollout import disable_all_collision_physics           # noqa: E402
@@ -341,6 +342,8 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
         policy.restore_normalizer(env)
         if goal_hold_enabled(cfg):
             policy = GoalHoldPolicy(policy, cfg)
+        if guard_enabled(cfg):                    # stage 3a+: after goal-hold (environment.birds.guard)
+            policy = BirdGuardPolicy(policy, cfg)
     np.random.seed(seed)
     torch.manual_seed(seed)
     z0 = sky.s.start_z

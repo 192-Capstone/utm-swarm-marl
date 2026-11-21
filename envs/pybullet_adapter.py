@@ -219,6 +219,35 @@ class PyBulletAdapter:
         seen = np.stack([(self._last_obj == b).any(axis=1) for b in self.bird_ids], axis=1)
         return d, seen
 
+    def blocked_by_obstacle(self, starts, ends):
+        """True where a building / obstacle lies on the segment start -> end (the bird detector's
+        occlusion test, one batched ray cast). Drones and birds are ignored: a ray that first hits one
+        is cast again from just behind it."""
+        starts, ends = np.asarray(starts, dtype=float).copy(), np.asarray(ends, dtype=float)
+        n = len(starts)
+        blocked = np.zeros(n, dtype=bool)
+        if n == 0 or not self.obstacle_ids:
+            return blocked
+        ignore = set(self.drone_ids) | set(self.bird_ids) | {self.plane_id}
+        obst = set(self.obstacle_ids)
+        todo = np.arange(n)
+        for _ in range(6):
+            hits = p.rayTestBatch(starts[todo].tolist(), ends[todo].tolist(), physicsClientId=self.client)
+            again = []
+            for idx, h in zip(todo, hits):
+                if h[0] in obst:
+                    blocked[idx] = True
+                elif h[0] in ignore and h[0] >= 0:
+                    d = ends[idx] - starts[idx]
+                    L = np.linalg.norm(d)
+                    if L > 0.05:
+                        starts[idx] = starts[idx] + d * min(1.0, h[2] + 0.02 / L)   # just past the hit
+                        again.append(idx)
+            if not again:
+                break
+            todo = np.array(again)
+        return blocked
+
     def apply_actions(self, actions: dict):
         """actions: {'drone_i': [vx, vy, vz, yaw_rate]} (yaw_rate optional)."""
         for i, body in enumerate(self.drone_ids):
