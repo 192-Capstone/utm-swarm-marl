@@ -28,6 +28,7 @@
   --scene-ground: #0b0b0b; --scene-building: #2a2a2a; --scene-edge: #474747; --scene-pad: #2a2a2a; --scene-mark: #bdbdbd;
   color-scheme: dark }
 html, body { height: 100%; }
+[hidden] { display: none !important; }
 body { background: var(--ground); color: var(--text); font: 400 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
 .app { height: 100%; display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: var(--gap);
   padding-block: var(--gap); padding-left: max(var(--gap), env(safe-area-inset-left, 0px)); padding-right: max(var(--gap), env(safe-area-inset-right, 0px)); box-sizing: border-box; }
@@ -145,6 +146,7 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
       <select id="scene">
         <option value="ecity_rooftops">Over the rooftops &middot; 15 deliveries</option>
         <option value="ecity_demo">The plaza, low level &middot; 11 deliveries</option>
+        <option value="live">Live &middot; the UTM server (operators book)</option>
       </select>
       <p class="note">Live runs and what-if controls arrive with the UTM server.</p>
     </section>
@@ -225,16 +227,27 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const SCENES = ['ecity_rooftops', 'ecity_demo'];      // dashboard/data/<name>.json, from scripts/export_dashboard.py
-const NAME = SCENES.includes(location.hash.slice(1)) ? location.hash.slice(1) : SCENES[0];
-const D = await (await fetch(`data/${NAME}.json`)).json();
+const SCENES = ['ecity_rooftops', 'ecity_demo', 'live'];   // dashboard/data/<name>.json (scripts/export_dashboard.py);
+const NAME = SCENES.includes(location.hash.slice(1)) ? location.hash.slice(1) : SCENES[0];   // live: scripts/utm_server.py
+const LIVE = NAME === 'live';
+const D = LIVE ? await liveScene() : await (await fetch(`data/${NAME}.json`)).json();
+async function liveScene() {                       // the live UTM's scene, as a recording with no frames yet
+  const s = await (await fetch('api/scene')).json(), off = [0, 0, -50];
+  return { name: 'live', caption: 'Live: the UTM takes bookings from the operator consoles', live: s,
+    map: { bounds: s.bounds, layers: s.layers, buildings: s.buildings }, places: s.places,
+    drones: Array.from({ length: s.slots }, (_, i) => ({ id: '', slot: i, kind: 'flight', operator: '', start: [0, 0], goal: [0, 0],
+      from: '', to: '', t_dep: null, arrival: null })),
+    routes: {}, bookings: {}, hex: { cells: [], radius: 1, angle: 0 }, zones: [], hot: [{ t: 0, high: [] }], events: [], summary: {},
+    frames: { t: [0], pos: [Array.from({ length: s.slots }, () => off)], status: [Array(s.slots).fill(4)] } };
+}
 const $ = (id) => document.getElementById(id);
 $('scene').value = NAME;
 $('scene').onchange = (e) => { location.hash = e.target.value; location.reload(); };
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-const T = D.frames.t, P = D.frames.pos, S = D.frames.status, END = T[T.length - 1];
+const T = D.frames.t, P = D.frames.pos, S = D.frames.status;
+let END = T[T.length - 1];
 const DR = D.drones, N = DR.length, byId = Object.fromEntries(DR.map((d, i) => [d.id, i]));
-const emIdx = DR.findIndex(d => d.kind === 'emergency');
+let emIdx = DR.findIndex(d => d.kind === 'emergency');
 const v3 = (p) => new THREE.Vector3(p[0], p[2], -p[1]);           // world (x, y, z-up) -> three (x, z, -y)
 
 // ---------------------------------------------------------------- theme
@@ -256,7 +269,8 @@ renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadow
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 600);
 const controls = new OrbitControls(camera, canvas);
-controls.enableDamping = true; controls.enabled = false; controls.maxPolarAngle = Math.PI * 0.47;
+controls.enableDamping = true; controls.dampingFactor = 0.15; controls.zoomToCursor = true; controls.zoomSpeed = 1.4;
+controls.enabled = false; controls.maxPolarAngle = Math.PI * 0.47; controls.minDistance = 3;
 const hemi = new THREE.HemisphereLight(0xffffff, 0xcfcac0, 1.25); scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(-40, 70, 30); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
@@ -270,27 +284,43 @@ const ROOF = Math.max(0, ...D.map.buildings.map(b => b.z));
 // 760 m map). Camera, fog and shadows frame it; SC scales them from the 50 m plaza the view was made
 // for, DS the drones and pads so they still read from that far.
 const act = [];
-for (const d of DR) { act.push(d.start); if (d.kind !== 'intruder') act.push(d.goal); }
+for (const d of LIVE ? [] : DR) { act.push(d.start); if (d.kind !== 'intruder') act.push(d.goal); }
+for (const p of D.places || []) for (const q of p.pads) act.push(q);
 for (const v of Object.values(D.routes)) for (const x of v) for (const p of x.route) act.push(p);
 const ax0 = Math.min(...act.map(p => p[0])) - 15, ax1 = Math.max(...act.map(p => p[0])) + 15;
 const ay0 = Math.min(...act.map(p => p[1])) - 15, ay1 = Math.max(...act.map(p => p[1])) + 15;
 const acx = (ax0 + ax1) / 2, acy = (ay0 + ay1) / 2, aspan = Math.max(ax1 - ax0, ay1 - ay0, 50);
-const SC = aspan / 65, DS = Math.min(3, Math.max(1, SC * 0.55)), PS = Math.min(2.2, DS);
+const SC = aspan / 65, DS = Math.min(2, Math.max(1, SC * 0.45)), PS = Math.min(2.2, Math.max(1, SC * 0.55));
 camera.far = Math.max(600, aspan * 5); camera.updateProjectionMatrix();
 Object.assign(sun.shadow.camera, { left: -aspan * 0.7, right: aspan * 0.7, top: aspan * 0.7, bottom: -aspan * 0.7, far: aspan * 4 + 200 });
 sun.position.set(acx - 40 * SC, 70 * SC, -acy + 30 * SC); sun.target.position.set(acx, 0, -acy); scene.add(sun.target);
-const groundMat = new THREE.MeshStandardMaterial({ roughness: 1 });
+// textures, drawn here in grey so the theme colours tint them: a fine surface grain with a 10 m grid
+// on the ground, rows of windows on the walls (roofs plain)
+function canvasTex(w, h, draw) { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy(); return t; }
+const groundTex = canvasTex(256, 256, (g, w, h) => { g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 2600; i++) { const v = 228 + Math.floor(Math.random() * 27); g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(Math.random() * w, Math.random() * h, 2, 2); }
+  g.strokeStyle = 'rgba(0,0,0,0.10)'; g.lineWidth = 2; g.strokeRect(0, 0, w, h); });
+groundTex.repeat.set(span * 4 / 10, span * 4 / 10);
+const wallTex = canvasTex(64, 64, (g, w, h) => { g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.fillStyle = '#d4d4d4';
+  for (let y = 10; y < h; y += 24) for (let x = 6; x < w; x += 16) g.fillRect(x, y, 9, 12);
+  g.fillStyle = '#ececec'; g.fillRect(0, 0, w, 3); });
+const groundMat = new THREE.MeshStandardMaterial({ roughness: 1, map: groundTex });
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(span * 4, span * 4), groundMat);
 ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; ground.position.set(cx, 0, -cy); scene.add(ground);
 const plotMat = new THREE.MeshStandardMaterial({ roughness: 1 });
 const plot = new THREE.Mesh(new THREE.PlaneGeometry(bx1 - bx0, by1 - by0), plotMat);
 plot.rotation.x = -Math.PI / 2; plot.position.set(cx, 0.005, -cy); plot.receiveShadow = true; scene.add(plot);
 
-const bMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0 });
+const bMat = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 });          // the roofs
+const wallMats = [];                                 // walls: a window texture scaled to each building (3 m storeys)
 const eMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.55 });
 for (const b of D.map.buildings) {
   const g = new THREE.BoxGeometry(2 * b.h[0], b.z, 2 * b.h[1]);
-  const m = new THREE.Mesh(g, bMat); m.castShadow = m.receiveShadow = true;
+  const tex = wallTex.clone(); tex.needsUpdate = true; tex.repeat.set(Math.max(1, Math.round((b.h[0] + b.h[1]) / 2)), Math.max(1, Math.round(b.z / 3)));
+  const wall = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0, map: tex }); wallMats.push(wall);
+  const m = new THREE.Mesh(g, [wall, wall, bMat, bMat, wall, wall]); m.castShadow = m.receiveShadow = true;
   m.position.set(b.c[0], b.z / 2, -b.c[1]); m.rotation.y = b.yaw; scene.add(m);
   const e = new THREE.LineSegments(new THREE.EdgesGeometry(g), eMat); e.position.copy(m.position); e.rotation.copy(m.rotation); scene.add(e);
 }
@@ -303,7 +333,8 @@ const placeAt = (xy) => PLACES.find(p => p.pads.some(q => Math.hypot(q[0] - xy[0
 const route = (d) => d.from && d.to ? `${d.from} \u2192 ${d.to}` : '';
 const starts = DR.filter(d => d.kind === 'flight').map(d => d.start.join());
 const pads = new Map();
-for (const d of DR) for (const k of ['start', 'goal']) {
+for (const p of PLACES) for (const q of p.pads) pads.set(q.join(), p.kind === 'hub' ? 'depot' : p.kind === 'hospital' ? 'hospital' : 'drop');
+for (const d of LIVE ? [] : DR) for (const k of ['start', 'goal']) {
   const key = d[k].join();
   const named = placeAt(d[k]);                     // the scenario's places say what a pad is
   const kind = named ? (named.kind === 'hub' ? 'depot' : named.kind === 'hospital' ? 'hospital' : 'drop')
@@ -328,7 +359,7 @@ const HX = D.hex.cells, hexMat = new THREE.MeshBasicMaterial({ transparent: true
 const hexGeo = new THREE.CylinderGeometry(D.hex.radius * 0.94, D.hex.radius * 0.94, 0.9, 6, 1);
 hexGeo.rotateY(D.hex.angle);
 const hexes = new THREE.InstancedMesh(hexGeo, hexMat, HX.length);
-hexes.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(hexes);
+hexes.instanceMatrix.setUsage(THREE.DynamicDrawUsage); hexes.frustumCulled = false; scene.add(hexes);
 const zero = new THREE.Matrix4().makeScale(0, 0, 0), mtx = new THREE.Matrix4();
 for (let i = 0; i < HX.length; i++) hexes.setMatrixAt(i, zero);
 const layerZ = D.map.layers;
@@ -384,7 +415,8 @@ function paint() {
   scene.background = new THREE.Color(css('--scene-ground'));
   scene.fog = new THREE.Fog(css('--scene-ground'), 90 * SC, 220 * SC);
   groundMat.color.set(css('--scene-ground')); plotMat.color.set(css('--scene-ground')).offsetHSL(0, 0, theme === 'dark' ? 0.02 : 0.015);
-  bMat.color.set(css('--scene-building')); eMat.color.set(css('--scene-edge'));
+  bMat.color.set(css('--scene-building')).offsetHSL(0, 0, theme === 'dark' ? 0.04 : -0.03); eMat.color.set(css('--scene-edge'));
+  wallMats.forEach(m => m.color.set(css('--scene-building')));
   padMat.color.set(css('--scene-pad')); markMat.color.set(css('--scene-mark')); dangerMat.color.set(css('--danger'));
   hexMat.color.set(css('--data')); hexMat.opacity = theme === 'dark' ? 0.2 : 0.14;
   routeMat.color.set(css('--data')); routeEm.color.set(css('--danger')); routeIn.color.set(css('--muted'));
@@ -414,13 +446,14 @@ const zoneFor = (() => { const a = D.zones[0] && D.zones[0].active[0]; if (!a) r
 const emEv = D.events.find(e => e.type === 'replan' && e.why === 'emergency');
 // client nodes: each delivery operator (named by where its hub is) and whoever files the emergency
 const nodeName = (o) => !o || o === 'emergency' ? 'Emergency services' : o;
-const ops = [...new Set(DR.filter(d => d.kind === 'flight').map(d => d.operator))];
+const hubOf = (o) => (PLACES.find(p => p.kind === 'hub' && p.operator === o) || {}).name;
+const ops = LIVE ? D.live.operators.filter(hubOf) : [...new Set(DR.filter(d => d.kind === 'flight').map(d => d.operator))];
 const hubX = (o) => { const s = DR.filter(d => d.kind === 'flight' && d.operator === o).map(d => d.start[0]); return s.reduce((a, b) => a + b, 0) / s.length; };
 ops.sort((a, b) => hubX(a) - hubX(b));
-const hubOf = (o) => (PLACES.find(p => p.kind === 'hub' && p.operator === o) || {}).name;
 const NODES = ops.map((o, k) => ({ id: o, name: o, role: hubOf(o) ? `delivery operator, ${hubOf(o)}`
   : ops.length === 2 ? `delivery operator, ${k ? 'east' : 'west'} hub` : 'delivery operator' }));
-if (emIdx >= 0) NODES.push({ id: DR[emIdx].operator, name: nodeName(DR[emIdx].operator), role: 'files emergency flights' });
+if (LIVE) for (const o of D.live.operators) { if (!hubOf(o)) NODES.push({ id: o, name: o, role: 'files emergency flights' }); }
+else if (emIdx >= 0) NODES.push({ id: DR[emIdx].operator, name: nodeName(DR[emIdx].operator), role: 'files emergency flights' });
 const gaveWay = D.events.filter(e => e.type === 'replan' && e.status === 'approved' && (e.why || '').startsWith('displaced by'));
 const emNode = emIdx >= 0 ? nodeName(DR[emIdx].operator) : '';
 const wayText = gaveWay.length
@@ -490,12 +523,21 @@ addEventListener('keydown', (e) => {
   const m = { 1: 'director', 2: 'orbit', 3: 'overhead', 4: 'follow' }[e.key]; if (m) setCam(m);
 });
 let downAt = null;                                 // a drag or a scroll on the view: the viewer takes the camera
+let fYaw = 0, fPitch = 0.55, fDist = 1;            // follow: angle around the drone, height angle, distance
 canvas.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
 canvas.addEventListener('pointermove', (e) => {
-  if (downAt && cam !== 'orbit' && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) setCam('orbit');
+  if (!downAt) return;
+  if (cam === 'follow') {                         // stays on the drone: turn around it
+    fYaw += (e.clientX - downAt[0]) * 0.008; fPitch = Math.min(1.45, Math.max(0.08, fPitch + (e.clientY - downAt[1]) * 0.006));
+    downAt = [e.clientX, e.clientY]; return;
+  }
+  if (cam !== 'orbit' && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) setCam('orbit');
 });
 addEventListener('pointerup', () => { downAt = null; });
-canvas.addEventListener('wheel', () => { if (cam !== 'orbit') setCam('orbit'); }, { passive: true });
+canvas.addEventListener('wheel', (e) => {
+  if (cam === 'follow') { fDist = Math.min(5, Math.max(0.25, fDist * (1 + e.deltaY * 0.0015))); e.preventDefault(); return; }
+  if (cam !== 'orbit') setCam('orbit');
+}, { passive: false });
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
 canvas.addEventListener('click', (e) => {
   const r = canvas.getBoundingClientRect(); ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
@@ -516,9 +558,16 @@ function updateHexes() {
   const live = new Set();
   for (let i = 0; i < N; i++) {
     const d = DR[i], s = statusAt(i, t);
-    if (d.kind === 'intruder' || s === 2 || s === 3 || s === 4) continue;
+    if (d.kind === 'intruder' || s !== 1) continue;
     const b = bookAt(d.id, t); if (!b) continue;
-    for (const [k, t0, t1] of b.cells) if (t0 <= t + 6 && t1 >= t) live.add(k);
+    // the air it has booked around and ahead of where it really is (a drone early or late against its
+    // booking would otherwise show its cells behind or far ahead of it)
+    const p = posAt(i, t), q = posAt(i, Math.max(0, t - 0.5)), hx = p[0] - q[0], hy = p[1] - q[1], hn = Math.hypot(hx, hy) || 1;
+    for (const [k, t0, t1] of b.cells) {
+      if (t1 < t - 2) continue;
+      const [x, y] = HX[k], dx = x - p[0], dy = y - p[1], along = (dx * hx + dy * hy) / hn;
+      if (Math.hypot(dx, dy) < 10 && along > -2) live.add(k);
+    }
   }
   for (let k = 0; k < HX.length; k++) {
     if (live.has(k)) { const [x, y, L] = HX[k]; mtx.makeTranslation(x, layerZ[L] ?? 2, -y); hexes.setMatrixAt(k, mtx); }
@@ -577,7 +626,6 @@ function director(dt) {
   if (emIdx >= 0 && statusAt(emIdx, t) === 1) { focus = v3(posAt(emIdx, t)); dist = 30 * DS; pitch = 0.95; }
   else if (zz) { focus = new THREE.Vector3(zz.centre[0], 1.5, -zz.centre[1]); dist = 40 * DS; pitch = 0.98; }
   else { const intr = DR.findIndex((d, i) => d.kind === 'intruder' && statusAt(i, t) === 1 && t - d.t_dep < 6); if (intr >= 0) { focus = v3(posAt(intr, t)); dist = 38 * DS; pitch = 0.98; } }
-  if (!reduce && focus) orbitAng += dt * 0.05;
   const c = focus || new THREE.Vector3(acx, 1, -acy);
   wantLook.copy(c);
   wantPos.set(c.x + Math.cos(orbitAng) * dist * Math.cos(pitch), Math.max(c.y + dist * Math.sin(pitch), ROOF + 8), c.z + Math.sin(orbitAng) * dist * Math.cos(pitch));
@@ -589,15 +637,17 @@ function frameCamera(dt) {
   if (cam === 'overhead') { wantLook.set(acx, 0, -acy); wantPos.set(acx, aspan * 1.35, -acy + 0.01); }
   if (cam === 'follow') {
     const i = selected >= 0 ? selected : emIdx, st = statusAt(i, t);
+    let p, yaw = fYaw;                            // drag turns the view around the drone, scroll zooms
     if (st !== 1) {                               // on its pad or landed: watch the pad until it flies
-      const pad = st === 0 ? DR[i].start : DR[i].goal, p = new THREE.Vector3(pad[0], 0.4, -pad[1]);
-      if (!reduce) orbitAng += dt * 0.12;
-      wantLook.copy(p); wantPos.set(p.x + Math.cos(orbitAng) * 14 * DS, ROOF * 0.9 + 4 * DS, p.z + Math.sin(orbitAng) * 14 * DS);
+      const pad = st === 0 ? DR[i].start : DR[i].goal; p = new THREE.Vector3(pad[0], 0.4, -pad[1]);
     } else {
-      const p = v3(posAt(i, t)), q = v3(posAt(i, Math.max(0, t - 0.6)));
-      const dir = p.clone().sub(q); dir.y = 0; if (dir.lengthSq() < 1e-4) dir.set(1, 0, 0); dir.normalize();
-      wantLook.copy(p).addScaledVector(dir, 4 * DS); wantPos.copy(p).addScaledVector(dir, -9 * DS); wantPos.y += 7 * DS;
+      p = v3(posAt(i, t)); const q = v3(posAt(i, Math.max(0, t - 0.6)));
+      const dir = p.clone().sub(q); dir.y = 0;
+      if (dir.lengthSq() > 1e-4) yaw += Math.atan2(dir.z, dir.x) + Math.PI;   // from behind it, by default
     }
+    const R = 12 * DS * fDist;
+    wantLook.copy(p);
+    wantPos.set(p.x + Math.cos(yaw) * R * Math.cos(fPitch), p.y + R * Math.sin(fPitch), p.z + Math.sin(yaw) * R * Math.cos(fPitch));
   }
   const k = reduce ? 1 : 1 - Math.exp(-dt * (cam === 'follow' ? 4 : 1.6));
   camera.position.lerp(wantPos, k); look.lerp(wantLook, k); camera.lookAt(look);
@@ -606,7 +656,8 @@ function frameCamera(dt) {
 function updatePanels() {
   const f = frameAt(t), st = S[f];
   const fl = st.filter((s, i) => s === 1 && DR[i].kind !== 'intruder').length, wt = st.filter((s, i) => s === 0 && DR[i].kind !== 'intruder').length;
-  const ld = st.filter((s, i) => s === 2 && DR[i].kind !== 'intruder').length, al = hotAt(t).size;
+  const ld = LIVE ? liveFlights.filter(f => f.status === 'landed').length
+    : st.filter((s, i) => s === 2 && DR[i].kind !== 'intruder').length, al = hotAt(t).size;
   const c = `${fl}|${wt}|${ld}|${al}`;
   if (c !== lastCounts) {
     lastCounts = c;
@@ -624,8 +675,10 @@ function updatePanels() {
       return `<li><time>${fmt(e.t)}</time><span class="${k}">${who}${e.text}${more}</span></li>`; }).join('') : '<li class="empty">Flights are taking off on schedule.</li>';
   }
   const nk = NODES.map(n => {
-    const mine = DR.map((d, i) => [d, i]).filter(([d]) => d.operator === n.id && d.kind !== 'intruder');
-    const fly = mine.filter(([, i]) => st[i] === 1).length, done = mine.filter(([, i]) => st[i] === 2).length;
+    const mine = LIVE ? liveFlights.filter(f => f.operator === n.id)
+      : DR.map((d, i) => [d, i]).filter(([d]) => d.operator === n.id && d.kind !== 'intruder');
+    const fly = LIVE ? mine.filter(f => f.status === 'flying').length : mine.filter(([, i]) => st[i] === 1).length;
+    const done = LIVE ? mine.filter(f => f.status === 'landed').length : mine.filter(([, i]) => st[i] === 2).length;
     const rb = D.events.filter(e => e.type === 'replan' && e.status === 'approved' && e.node === n.id && e.why !== 'emergency' && e.t <= t).length;
     const hit = D.events.find(e => e.type === 'replan' && e.node === n.id && (e.why || '').startsWith('displaced by') && e.t <= t && t - e.t < 8);
     return { n, booked: mine.length, fly, done, rb, hit };
@@ -640,8 +693,10 @@ function updatePanels() {
   const ch = chapterAt(t);
   document.querySelectorAll('[data-ch]').forEach(b => b.toggleAttribute('aria-current', +b.dataset.ch === ch));
   document.querySelectorAll('[data-ch]').forEach(b => b.setAttribute('aria-current', +b.dataset.ch === ch ? 'step' : 'false'));
-  if ($('caption').dataset.ch !== String(ch)) { $('caption').dataset.ch = String(ch); $('caption').textContent = chapters[ch].cap; }
-  $('clock').innerHTML = `<b>${fmt(t)}</b> / ${fmt(END)}`;
+  if (LIVE) {
+    if ($('caption').dataset.ch !== 'live') { $('caption').dataset.ch = 'live'; $('caption').textContent = 'Live: drones fly as the operator consoles book them. The Planner books each request, the Monitor watches every flight once a second and the Responder re-plans when something goes wrong.'; }
+  } else if ($('caption').dataset.ch !== String(ch)) { $('caption').dataset.ch = String(ch); $('caption').textContent = chapters[ch].cap; }
+  $('clock').innerHTML = LIVE ? `<b>live</b> ${fmt(END)}` : `<b>${fmt(t)}</b> / ${fmt(END)}`;
   if (document.activeElement !== $('time')) $('time').value = String(t);
   if (selected >= 0) {
     const d = DR[selected], s = st[selected], hot = hotAt(t).has(d.id);
@@ -665,9 +720,47 @@ camera.position.set(acx + 40 * SC, 38 * SC, -acy + 40 * SC); camera.lookAt(look)
 setTheme(theme); resize(); director(0);
 camera.position.copy(wantPos);
 let last = performance.now();
+// ---------------------------------------------------------------- live (scripts/utm_server.py)
+let liveFlights = [], since = 0, lastFollow = '';
+let polling = false;
+async function pollLive() {
+  if (polling) return;                             // one at a time: events and frames are taken once
+  polling = true;
+  try {
+    const s = await (await fetch(`api/state?since=${since}`)).json();
+    since = s.n_events; liveFlights = s.flights; D.events.push(...s.events);
+    const pos = Array.from({ length: N }, () => [0, 0, -50]), st = Array(N).fill(4);
+    for (const f of s.flights) {
+      if (f.slot == null || (f.status !== 'waiting' && f.status !== 'flying')) continue;
+      Object.assign(DR[f.slot], { id: f.id, kind: f.kind, operator: f.operator, from: f.from, to: f.to, t_dep: f.t_dep,
+        arrival: f.arrival, start: f.route[0].slice(0, 2), goal: f.route[f.route.length - 1].slice(0, 2) });
+      D.routes[f.id] = [{ t: 0, route: f.route }];
+      pos[f.slot] = f.pos; st[f.slot] = f.status === 'flying' ? 1 : 0;
+    }
+    T.push(s.t); P.push(pos); S.push(st); END = s.t;
+    if (T.length > 400) { T.splice(0, 200); P.splice(0, 200); S.splice(0, 200); }
+    emIdx = DR.findIndex((d, i) => d.kind === 'emergency' && st[i] === 1);
+    const key = DR.map((d, i) => st[i] < 2 ? d.id : '').join();
+    if (key !== lastFollow) {
+      lastFollow = key;
+      $('follow').innerHTML = DR.map((d, i) => st[i] < 2 ? `<option value="${i}">Follow ${d.id} (${route(d) || kindWord(d)})</option>` : '').join('');
+    }
+  } catch (e) { $('title').innerHTML = '<b>The UTM server is not answering</b>'; }
+  polling = false;
+}
+if (LIVE) {
+  for (const id of ['story', 'run']) $(id).closest('section').hidden = true;
+  document.querySelector('.brand span').textContent = 'E-City, Bengaluru \u00b7 live';
+  document.querySelector('.field .note').textContent = 'Operators book from their consoles (operator.html); this view follows the UTM server.';
+  for (const el of document.querySelectorAll('#play, #speed, .track')) el.hidden = true;
+  $('title').innerHTML = '<b>Live UTM</b> &middot; <a href="operator.html" target="_blank" rel="noopener">open an operator console</a>';
+  setInterval(pollLive, 250);
+}
+
 renderer.setAnimationLoop((now) => {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
-  if (playing) { t += dt * speed; if (t >= END) { t = END; setPlaying(false); } }
+  if (LIVE) t = Math.max(0, END - 0.6);           // just behind the newest state, so motion is interpolated
+  else if (playing) { t += dt * speed; if (t >= END) { t = END; setPlaying(false); } }
   updateWorld(dt); frameCamera(dt); updatePanels();
   renderer.render(scene, camera);
 });
