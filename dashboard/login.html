@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --ground: #f4f3f1; --surface: #ffffff; --raised: #ebe9e5; --border: #dcd9d3;
+  --text: #1a1a1a; --muted: #6b6862; --ink: #1a1a1a;
+  --data: #1d5fbf; --data-soft: #e3ecf8; --danger: #c4242a; --danger-soft: #f8e1e1; --warn: #92400e; --warn-soft: #f6ead9;
+  --font: 'Geist', ui-sans-serif, system-ui, sans-serif; --r-card: 10px; --r-control: 6px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --ground: #000; --surface: #111; --raised: #1c1c1c; --border: #2a2a2a; --text: #ececec; --muted: #8f8f8f; --ink: #ececec;
+  --data: #5b9bff; --data-soft: #12223b; --danger: #ff5a5f; --danger-soft: #3a1214; --warn: #f0a24a; --warn-soft: #33230f; color-scheme: dark; } }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; min-height: 100vh; background: var(--ground); color: var(--text); font: 400 14px/1.45 var(--font); -webkit-font-smoothing: antialiased;
+  display: grid; place-items: center; padding: 16px; }
+.card { width: min(380px, 100%); background: var(--surface); border-radius: var(--r-card); padding: 20px; display: grid; gap: 14px; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand b { font-size: 16px; font-weight: 500; display: block; }
+.brand span { color: var(--muted); font-size: 12px; }
+label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+select, input, button { font: inherit; height: 36px; border-radius: var(--r-control); }
+select, input { border: 1px solid var(--border); background: var(--surface); color: var(--text); padding: 0 10px; }
+button { border: 0; background: var(--ink); color: var(--surface); cursor: pointer; font-weight: 500; }
+button:disabled { opacity: .5; cursor: progress; }
+.err { border-radius: var(--r-control); padding: 10px 12px; font-size: 13px; background: var(--danger-soft); color: var(--danger); }
+.note { color: var(--muted); font-size: 12px; margin: 0; }
+.authnote { position: fixed; top: 0; left: 0; right: 0; padding: 7px 16px; text-align: center; font-size: 13px; background: var(--warn-soft); color: var(--warn); }
+:focus-visible { outline: 2px solid var(--data); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<form class="card" id="f" autocomplete="off">
+  <div class="brand">
+    <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><polygon points="17,2 30,9.5 30,24.5 17,32 4,24.5 4,9.5" fill="none" stroke="var(--ink)" stroke-width="1.6"/><polygon points="17,9 23.5,12.75 23.5,20.25 17,24 10.5,20.25 10.5,12.75" fill="var(--ink)"/></svg>
+    <div><b>UTM access</b><span>Log in as an operator, or as the admin</span></div>
+  </div>
+  <label>Role <select id="role" required></select></label>
+  <label>Passcode <input id="code" type="password" required autocomplete="current-password"></label>
+  <div class="err" id="err" role="alert" hidden></div>
+  <button type="submit" id="go">Log in</button>
+  <p class="note">An operator sees and books only its own flights. The admin sees all. Demo-grade security (docs/access.md).</p>
+</form>
+<script>
+const $ = (id) => document.getElementById(id);
+// Back to where the visitor came from; a page of this site only (no other address).
+const next = (() => { const n = new URLSearchParams(location.search).get('next') || ''; return /^[A-Za-z0-9_.-]+\.html([?#][^\s]*)?$/.test(n) ? n : 'operator.html'; })();
+
+async function init() {
+  let scene = null;
+  try { const r = await fetch('api/scene'); if ((r.headers.get('content-type') || '').includes('json')) scene = await r.json(); } catch { }
+  if (!scene) {
+    $('f').replaceChildren(Object.assign(document.createElement('p'), { textContent: 'There is no UTM server here, so there is no login: the pages show the offline view (everything, as the admin). Start the server with python scripts/utm_server.py scenarios/ecity_rooftops.yaml to log in.' }));
+    return;
+  }
+  if (scene.no_auth) return location.replace(next);                      // --no-auth: nothing to log in to
+  $('role').replaceChildren(...scene.roles.map(r => new Option(r === 'admin' ? 'admin (sees everything)' : r, r)));
+  const me = await fetch('api/me').then(r => r.ok ? r.json() : null).catch(() => null);
+  if (me && me.role) $('role').value = me.role;
+  $('code').focus();
+}
+
+$('f').onsubmit = async (e) => {
+  e.preventDefault();
+  $('go').disabled = true; $('err').hidden = true;
+  try {
+    const r = await fetch('api/login', { method: 'POST', body: JSON.stringify({ role: $('role').value, passcode: $('code').value }) });
+    if (r.ok) return location.replace(next);
+    $('err').textContent = r.status === 401 ? 'Wrong role or passcode.' : 'The server refused the login.'; $('err').hidden = false;
+  } catch { $('err').textContent = 'The UTM server did not answer.'; $('err').hidden = false; }
+  $('go').disabled = false; $('code').select();
+};
+init();
+</script>
+</body>
+</html>

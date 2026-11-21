@@ -138,6 +138,7 @@ dt { color: var(--muted); } dd { margin: 0; text-align: right; font-variant-nume
   <span class="clock" id="pclock"></span>
 </div>
 
+<script src="auth.js"></script>
 <script src="track_logic.js"></script>
 <script>
 (() => {
@@ -146,7 +147,8 @@ const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const Q = new URLSearchParams(location.search);
 const P = { flight: Q.get('flight'), scene: Q.get('scene'), run: Q.get('run') };
-const getJSON = async (u) => { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok) throw new Error(`${u}: ${r.status}`); return r.json(); };
+const getJSON = async (u) => { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok) { const e = new Error(`${u}: ${r.status}`); e.status = r.status; throw e; } return r.json(); };
+const notYours = () => showMsg('This is not your flight', 'You are logged in as an operator and can only track your own deliveries. Open one from <a href="operator.html">your console</a> or <a href="flight_log.html">your flight log</a>.');
 
 // ---------------------------------------------------------------- theme (same key as the other pages)
 let theme = 'light', COL = {};
@@ -196,6 +198,8 @@ async function start() {
       return showMsg('Which flight?', 'Open <code>track.html?flight=f3</code> (live, from the UTM server) or <code>track.html?scene=ecity_demo&amp;flight=f3</code> (a replay).');
     }
   } catch (e) {
+    if (e.status === 403 && !P.scene) return notYours();
+    if (e.status === 403) return showMsg('Replay not available', 'Recorded scenes (<code>data/*.json</code>) hold every operator\'s flights, so only the admin can replay them. Track your live flights from your console.');
     const detail = mode === 'live' ? 'The UTM server is not answering. Start it with <code>python scripts/utm_server.py scenarios/ecity_rooftops.yaml</code>, or open a replay from the flight log.'
       : `${String(e.message || e)}. A replay needs <code>dashboard/data/&lt;scene&gt;.json</code> (<code>python scripts/export_dashboard.py &lt;recording&gt;</code>).`;
     return showMsg('Cannot track this flight', detail);
@@ -228,7 +232,7 @@ async function pollLive(first) {
   if (!f) {
     if (first) {                                                                  // not in memory: a refused booking, or logged earlier
       try { model = TL.trackModel(await getJSON(`api/track?flight=${encodeURIComponent(P.flight)}`), await getJSON('api/scene').catch(() => null)); mode = 'replay'; beginReplay(); $('main').hidden = false; requestAnimationFrame(loop); return false; }
-      catch (e) { showMsg(`Flight ${P.flight} was not found`, 'The UTM server has no flight with that id (yet). Book one from the <a href="operator.html">operator console</a>.'); return false; }
+      catch (e) { if (e.status === 403) { notYours(); return false; } showMsg(`Flight ${P.flight} was not found`, 'The UTM server has no flight with that id (yet). Book one from the <a href="operator.html">operator console</a>.'); return false; }
     }
     return true;
   }
@@ -497,7 +501,7 @@ function paintRejected() {
   $('feed').replaceChildren(...model.events.map(e => { const li = el('li'); li.append(el('time', '', `T+${Math.round(e.t)}`), el('span', 'bad', e.text)); return li; }));
 }
 
-start();
+Auth.init().then(start);
 })();
 </script>
 </body>

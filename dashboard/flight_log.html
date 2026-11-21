@@ -151,6 +151,7 @@ a.trk:hover { text-decoration: underline; }
   </div>
 </div>
 
+<script src="auth.js"></script>
 <script src="track_logic.js"></script>
 <script>
 (() => {
@@ -427,7 +428,8 @@ function show(f) {
   }
 }
 
-load();
+// An operator sees only its own flights (the server filters them), so there is no operator filter; the admin has it.
+Auth.init().then((me) => { if (!me.admin) $('f-op').closest('label').hidden = true; load(); });
 })();
 </script>
 </body>

@@ -220,6 +220,7 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
   </main>
 </div>
 
+<script src="auth.js"></script>
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
@@ -231,6 +232,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const SCENES = ['ecity_rooftops', 'ecity_demo', 'live'];   // dashboard/data/<name>.json (scripts/export_dashboard.py);
 const NAME = SCENES.includes(location.hash.slice(1)) ? location.hash.slice(1) : SCENES[0];   // live: scripts/utm_server.py
 const LIVE = NAME === 'live';
+const ME = await Auth.init();                      // login (docs/access.md): an operator sees only its own drones, and no recorded scenes
+if (!ME.admin && !LIVE) { location.hash = 'live'; location.reload(); await new Promise(() => { }); }
 const D = LIVE ? await liveScene() : await (await fetch(`data/${NAME}.json`)).json();
 async function liveScene() {                       // the live UTM's scene, as a recording with no frames yet
   const s = await (await fetch('api/scene')).json(), off = [0, 0, -50];

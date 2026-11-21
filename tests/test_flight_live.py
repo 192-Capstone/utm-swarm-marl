@@ -14,6 +14,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from utm import flight_db, scenario
+from utm.access import Access
 
 ROOT = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, os.path.join(ROOT, 'scripts'))
@@ -234,7 +235,7 @@ def server(rec):
     import utm_server
     fly(rec, flight(0))
     live = StubLive(rec, rec.path)
-    srv = ThreadingHTTPServer(('127.0.0.1', 0), utm_server.handler(live, os.path.join(ROOT, 'dashboard')))
+    srv = ThreadingHTTPServer(('127.0.0.1', 0), utm_server.handler(live, os.path.join(ROOT, 'dashboard'), Access(no_auth=True)))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield live, f'http://127.0.0.1:{srv.server_address[1]}'
     srv.shutdown()

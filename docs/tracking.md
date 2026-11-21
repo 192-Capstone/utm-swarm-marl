@@ -5,12 +5,19 @@ stepper, the details and the updates. Phone first (about 390 px wide), two colum
 
 | URL | what it shows | needs |
 |---|---|---|
-| `track.html?flight=f3` | the flight live, as the UTM server flies it | `scripts/utm_server.py` serving the page |
+| `track.html?flight=f3` | the flight live, as the UTM server flies it | `scripts/utm_server.py` serving the page, and a login |
 | `track.html?scene=ecity_demo&flight=f3` | a replay of a recorded run, with play / pause, a scrub bar and 1-16x speed | `dashboard/data/<scene>.json` (`python scripts/export_dashboard.py <recording>`); `data/flight_log.json` adds the outcome, the full history and the clock |
 | `track.html?run=<run id>&flight=f3` | a delivery the live server logged, replayed from its 1 Hz track (also a refused booking: only its reason) | the live server (`GET /api/track`) |
 
 Replay works without the server (`cd dashboard && python -m http.server`). Links: a **Track** button on every flight in
 `flight_log.html` (and in its detail drawer), and a **Track** link per booked flight in `operator.html`.
+
+## Who may track what
+With the UTM server, tracking needs a login (`login.html`, see `docs/access.md`). An operator can track **only its own
+flights**: `track.html` for another operator's flight shows **This is not your flight**, and `GET /api/track` answers 403 (also for
+an unknown id). The admin can track any flight. Replays of recorded scenes (`?scene=`) read `data/*.json`, which holds every
+operator's flights and is therefore admin-only; an operator tracks its live flights, and logged live ones with `?run=`.
+Without the server (static mode) there is no login: the page is the admin's offline view and says so in a banner.
 
 ## What is on the screen
 - **Map:** top-down, building footprints, no-fly zones (red while closed), the route (flown part solid, rest dashed), the

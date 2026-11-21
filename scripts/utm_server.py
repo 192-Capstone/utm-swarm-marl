@@ -11,8 +11,13 @@ bookings as they come, over a small HTTP API. The browser pages in dashboard/ ar
 From the scenario it takes the map, the places (hubs, drop points, hospital) and the utm / sim
 settings; its requests, emergencies, intruders and zones are not replayed: the consoles file them.
 
+Access (utm/access.py, docs/access.md): every call below except /api/scene needs a login (POST /api/login {role,
+passcode} sets a session cookie; GET /api/me, POST /api/logout). An operator sees and books only its own flights; the admin
+sees all; dashboard/data/ is admin-only. --access FILE picks the passcode file (deployment/access.yaml), --no-auth turns the
+login off (everyone is the admin).
+
 API (JSON):
-    GET  /api/scene                      map, places, layers, operators: what the consoles draw
+    GET  /api/scene                     map, places, layers, operators: what the consoles draw
     GET  /api/state?since=N              time, every flight (status, position, route) and the
                                          events from N on
     POST /api/request   {operator, to[, from, pad]}      a booking: the reply is E1's decision
@@ -32,7 +37,7 @@ import sys
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 import torch
@@ -47,6 +52,7 @@ from envs.swarm_env import SwarmEnv                                 # noqa: E402
 from modules.goal_hold import GoalHoldPolicy, goal_hold_enabled     # noqa: E402
 from record_rollout import disable_all_collision_physics           # noqa: E402
 from render_scenario import describe, short                        # noqa: E402
+from utm import access as access_mod                              # noqa: E402  (who may see what)
 from utm import flight_db, speeds                                  # noqa: E402  (the flight log, E1's flight profile)
 from utm import scenario as scn                                    # noqa: E402
 from utm.conformance import ConformanceMonitor                     # noqa: E402
@@ -311,7 +317,10 @@ class V6Server(ThreadingHTTPServer):
     address_family = socket.AF_INET6
 
 
-def handler(live, root):
+def handler(live, root, access):
+    """The HTTP side. `access` (utm/access.py) decides who may read and do what: every /api call except /api/scene,
+    /api/login and /api/me needs a session; operators see only their own flights; the dashboard's data/ folder
+    (every operator's flights) is for the admin only."""
     class H(SimpleHTTPRequestHandler):
         def __init__(self, *a, **k):
             super().__init__(*a, directory=root, **k)
@@ -319,52 +328,124 @@ def handler(live, root):
         def log_message(self, *a):
             pass
 
-        def _json(self, obj, code=200):
+        def _json(self, obj, code=200, cookie=None):
             body = json.dumps(obj).encode()
             self.send_response(code)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Cache-Control', 'no-store')
+            if cookie:
+                self.send_header('Set-Cookie', cookie)
             self.end_headers()
             self.wfile.write(body)
 
+        # -- who is asking
+        def _token(self):
+            return access_mod.cookie_token(self.headers.get('Cookie'))
+
+        def _role(self):
+            return access.role_of(self._token())
+
+        def _who(self, role):
+            return {'role': role, 'admin': access.is_admin(role), 'no_auth': access.no_auth}
+
+        def _need(self):
+            """The caller's role, or None after answering 401."""
+            role = self._role()
+            if role is None:
+                self._json({'status': 'error', 'reason': 'login required'}, 401)
+            return role
+
+        def _deny(self, why='not allowed'):
+            self._json({'status': 'error', 'reason': why}, 403)
+
         def do_GET(self):
             u = urlparse(self.path)
-            if u.path == '/api/scene':
-                return self._json(live.scene())
+            if u.path == '/api/scene':                                  # the map and places: public
+                scene = live.scene()
+                return self._json({**scene, 'roles': access.role_names(scene['operators']), 'no_auth': access.no_auth})
+            if u.path == '/api/me':
+                role = self._role()
+                return self._json(self._who(role) if role else {'status': 'error', 'reason': 'login required'}, 200 if role else 401)
             if u.path == '/api/state':
-                return self._json(live.state(int(parse_qs(u.query).get('since', ['0'])[0])))
+                role = self._need()
+                if role is None:
+                    return
+                st = live.state(int(parse_qs(u.query).get('since', ['0'])[0]))
+                return self._json(access_mod.filter_state(st, role, access.is_admin(role)))
             if u.path in ('/api/flightlog', '/api/track'):         # the flight log database (not with --no-db)
+                role = self._need()
+                if role is None:
+                    return
                 if not live.db_path:
                     return self._json({'status': 'error', 'reason': 'the flight log is off (--no-db)'}, 404)
-                q = parse_qs(u.query)
+                admin, q = access.is_admin(role), parse_qs(u.query)
                 db = flight_db.connect(live.db_path)               # a reader of its own: WAL, the simulation's writes go on
                 try:
                     active = live.rec.run_id if live.rec else None
                     if u.path == '/api/flightlog':
-                        return self._json(flight_db.flightlog_dict(db, active or '', live.snap['t']))
-                    return self._json(flight_db.track_dict(db, q.get('run', [active])[0], q['flight'][0]))
+                        log = flight_db.flightlog_dict(db, active or '', live.snap['t'])
+                        return self._json(access_mod.filter_flightlog(log, role, admin))
+                    tr = flight_db.track_dict(db, q.get('run', [active])[0], q['flight'][0])
+                    if not access_mod.may_see_track(tr, role, admin):
+                        return self._deny('not your flight')
+                    return self._json(tr)
                 except (KeyError, ValueError) as e:
+                    if not admin:                                  # an unknown flight looks like someone else's: no probing
+                        return self._deny('not your flight')
                     return self._json({'status': 'error', 'reason': str(e)}, 404)
                 finally:
                     db.close()
+            if u.path.startswith('/api/'):
+                return self._json({'status': 'error', 'reason': 'not found'}, 404)
+            if not access_mod.public_static(unquote(u.path)):         # data/*.json and anything else: admin only
+                role = self._role()
+                if role is None:
+                    return self._json({'status': 'error', 'reason': 'login required'}, 401)
+                if not access.is_admin(role):
+                    return self._deny('admin only')
             return super().do_GET()
+
+        do_HEAD = do_GET
 
         def do_POST(self):
             u = urlparse(self.path)
+            origin = self.headers.get('Origin')
+            if origin and urlparse(origin).netloc != self.headers.get('Host'):     # a page of another site: no
+                return self._deny('cross-site request')
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+                if u.path == '/api/login':
+                    if access.no_auth:
+                        return self._json(self._who(access.admin))
+                    token = access.login(str(body.get('role', '')), str(body.get('passcode', '')))
+                    if token is None:
+                        time.sleep(0.5)                                   # slows guessing a little
+                        return self._json({'status': 'error', 'reason': 'wrong role or passcode'}, 401)
+                    cookie = f'{access_mod.COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={int(access.ttl)}'
+                    return self._json(self._who(access.role_of(token)), cookie=cookie)
+                if u.path == '/api/logout':
+                    access.logout(self._token())
+                    return self._json({'status': 'ok'}, cookie=f'{access_mod.COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0')
+                if u.path not in ('/api/request', '/api/emergency'):
+                    return self._json({'status': 'error', 'reason': 'not found'}, 404)
+                role = self._need()
+                if role is None:
+                    return
+                admin = access.is_admin(role)
+                op = body.get('operator') if admin else role                # an operator books only as itself
+                if not admin and body.get('operator') not in (None, role):
+                    return self._deny(f'{role} cannot book for {body.get("operator")}')
                 if u.path == '/api/request':
-                    reply = live.request(body['operator'], body['to'], body.get('from'), body.get('pad'))
-                    live.note_reply(reply, body)
-                    return self._json(reply)
-                if u.path == '/api/emergency':
-                    reply = live.emergency(body['operator'], body['from'], body['to'], body.get('layer'))
-                    live.note_reply(reply, body)
-                    return self._json(reply)
+                    reply = live.request(op, body['to'], body.get('from'), body.get('pad'))
+                else:
+                    if not admin and role in live.hubs:                    # emergencies are filed by the emergency operator
+                        return self._deny(f'{role} is a delivery operator: it cannot file emergencies')
+                    reply = live.emergency(op, body['from'], body['to'], body.get('layer'))
+                live.note_reply(reply, {**body, 'operator': op})
+                return self._json(reply)
             except (KeyError, ValueError, TypeError) as e:
                 return self._json({'status': 'error', 'reason': str(e)}, 400)
-            self._json({'status': 'error', 'reason': 'not found'}, 404)
     return H
 
 
@@ -377,20 +458,36 @@ def main():
     ap.add_argument('--db', default=os.path.join(ROOT, 'eval_results', 'flight_log.db'),
                     help='the flight log database every booking, event and position is written to (utm/flight_db.py)')
     ap.add_argument('--no-db', action='store_true', help='do not write the flight log')
+    ap.add_argument('--access', default=os.path.join(ROOT, 'deployment', 'access.yaml'),
+                    help='the roles and their passcode hashes (utm/access.py, docs/access.md)')
+    ap.add_argument('--no-auth', action='store_true', help='NO LOGIN: everyone is the admin (a demo switch; a warning is shown)')
     a = ap.parse_args()
+    if a.no_auth:
+        access = access_mod.Access(no_auth=True)
+    else:
+        try:
+            access = access_mod.Access.load(os.path.abspath(a.access))
+        except (OSError, ValueError) as e:
+            sys.exit(f'no access file ({e}).\nCreate one (python -m utm.access set admin), or start with --no-auth '
+                     f'to run with no login at all (everyone is the admin).')
     sc = scn.load(os.path.abspath(a.scenario))
     db = None if a.no_db else os.path.abspath(a.db)
     os.chdir(ROOT)                                # the scenario's relative paths (config, checkpoint) are the repo's
     print('building the city and the planner...', flush=True)
     live = LiveUTM(sc, a.slots, a.speed, sc['seed'], db=db)
     threading.Thread(target=live.run, daemon=True).start()
-    h = handler(live, os.path.join(ROOT, 'dashboard'))
+    h = handler(live, os.path.join(ROOT, 'dashboard'), access)
     srv = ThreadingHTTPServer(('127.0.0.1', a.port), h)            # local only: both loopbacks, no network
     try:
         threading.Thread(target=V6Server(('::1', a.port), h).serve_forever, daemon=True).start()
     except OSError:
         pass                                      # no IPv6: 127.0.0.1 still works
     print(f'UTM live on http://localhost:{a.port}/  (operators: {", ".join(live.scene()["operators"])})', flush=True)
+    if a.no_auth:
+        print('*' * 78 + '\n* WARNING: --no-auth: NO LOGIN. Everyone who can reach this server is the admin\n'
+              '* and sees and books for every operator. Demo use only.\n' + '*' * 78, flush=True)
+    else:
+        print(f'login required: roles {", ".join(access.role_names(live.scene()["operators"]))} ({a.access})', flush=True)
     print(f'flight log: {db} (run {live.rec.run_id})' if db else 'flight log: off (--no-db)', flush=True)
     try:
         srv.serve_forever()

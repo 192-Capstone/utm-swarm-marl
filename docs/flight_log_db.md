@@ -125,6 +125,9 @@ python scripts/utm_server.py scenarios/ecity_rooftops.yaml --no-db              
 - **Concurrency:** every connection (`flight_db.connect`) uses WAL and a 5 s busy timeout. The simulation thread writes
   (one transaction per call, its own connection); the HTTP handlers and the CLI read with theirs and never block it.
 
+Access: the endpoints need a login and are filtered per operator (an operator gets only its own flights; the admin all, and
+`dashboard/data/` is admin-only): see `docs/access.md`.
+
 Endpoints: `GET /api/flightlog` is what `data/flight_log.json` is (every run in the database, imported and live) plus
 `live`, `active_run` and `now_t`; `flight_log.html` uses it when served by the server (refreshing every 3 s, with a LIVE
 badge) and falls back to the exported file when opened statically. `GET /api/track?flight=f3[&run=<run id>]` returns the
