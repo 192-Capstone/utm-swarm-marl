@@ -31,6 +31,7 @@ from envs import scenarios
 from envs import scenario_manager
 from envs.lidar import lidar_config
 from envs import disturbances
+from envs import birds as birds_mod
 
 
 # E1 flight profile for routes given with heights (SwarmEnv._update_carrots): the carrot stays
@@ -166,6 +167,19 @@ class SwarmEnv:
         self.curriculum_stage = int(config.get('training', {}).get('initial_curriculum_stage', 1))
         if not 1 <= self.curriculum_stage <= 4:
             raise ValueError("training.initial_curriculum_stage must be between 1 and 4")
+
+        # Birds (environment.birds, envs/birds.py; off by default: then nothing below runs, no random
+        # numbers are drawn and info has no new keys). Moving non-cooperative obstacles: a drone within
+        # DRONE_RADIUS + bird radius of a bird has crashed (reason 'bird'; geometric, like obstacles).
+        self.bird_cfg = birds_mod.config(config)
+        self.birds = None                        # this episode's BirdField
+        self.detector = None                     # stage 3a: this episode's BirdDetector (None = off)
+        self._bird_tracks = None                 # what each drone tracks: (known, pos, vel), or None
+        self.bird_slots = True                   # tracked birds also fill the neighbour slots (detector.birds_in_slots)
+        self.last_obs_raw = None                 # the (noisy) state the last observation was built from (bird guard)
+        self.bird_crashed = np.zeros(self.n_agents, dtype=bool)
+        if self.bird_cfg is not None and config['environment'].get('simulator', 'pybullet') != 'pybullet':
+            raise ValueError("environment.birds needs the PyBullet simulator")
 
         # Stage-2 static obstacles (config block 'obstacles'; None = empty world)
         self.obstacle_cfg = scenario_manager.obstacle_config(config)
@@ -338,7 +352,7 @@ class SwarmEnv:
         return self.start_episode(spawns, goals)
 
     def start_episode(self, spawns, goals, rng=None, obstacles='auto', routes=None, departures=None,
-                      failures=None):
+                      failures=None, birds=None):
         """Begin an episode with the given spawns and goals ({'drone_i': [x, y, z]}).
         reset() uses this, and so do the evaluation and analysis scripts that
         build their own scenarios, so nothing (obstacles included) is skipped.
@@ -355,6 +369,8 @@ class SwarmEnv:
                     missing drones take off at t = 0
         failures  : [{'drone': 'drone_i', 't': s, 'type': 'motor' | 'land' | 'comms'}] (needs
                     environment.failures.enabled; envs/disturbances.py draw_failures)
+        birds     : an envs/birds.py BirdField to use instead of the generated one (tests, hand-built
+                    scenes); without it birds are generated when environment.birds is on
         """
         if failures is not None and self.failure_cfg is None:
             raise ValueError("start_episode(failures=...) needs environment.failures.enabled")
@@ -392,9 +408,17 @@ class SwarmEnv:
         self._reset_failures(failures)
         self.followers = self._make_followers(spawns, goals, routes) if routes else None
         self._update_carrots()
+        self.bird_crashed = np.zeros(self.n_agents, dtype=bool)
+        if self.bird_cfg is not None or birds is not None or self.birds is not None:
+            self.birds = birds if birds is not None else (self._make_birds(spawns, goals)
+                                                          if self.bird_cfg is not None else None)
+            self.adapter.set_birds(self.birds)
+        self._start_detector(spawns)
 
         raw       = self.adapter.get_raw_state()
         positions = self.adapter.get_positions()
+        if self.detector is not None:
+            self._detect(positions, np.array([raw[f'drone_{i}']['velocity'] for i in range(self.n_agents)]))
         if self.waiting.any():               # distances of waiting drones from their pads
             positions = np.where(self.waiting[:, None], self._spawns, positions)
         self.prev_dist    = np.linalg.norm(positions - self.goals, axis=1)
@@ -411,6 +435,52 @@ class SwarmEnv:
 
         self.obs_processor.reset_history()
         return self._build_obs(raw)
+
+    def _start_detector(self, spawns):
+        """Stage 3a: a fresh detector (own generator: [detector seed, episode hash], so bird paths, noise
+        and lag are paired with the runs without it) when environment.birds.detector is on."""
+        self.detector, self._bird_tracks, self.bird_slots = None, None, True
+        det = None if self.bird_cfg is None else self.bird_cfg['detector']
+        if det is None or self.birds is None or len(self.birds) == 0:
+            return
+        digest = self._episode_noise_seed(spawns)[1]
+        rng = np.random.default_rng([int(det['seed']), digest, 0xB1D])
+        pos = self.adapter.get_positions()
+        h = self.goals[:, :2] - pos[:, :2]
+        h = h / np.maximum(np.linalg.norm(h, axis=1, keepdims=True), 1e-9)
+        blocked = self.adapter.blocked_by_obstacle if det['mode'] == 'realistic' else None
+        self.bird_slots = bool(det['birds_in_slots'])
+        self.detector = birds_mod.bird_detector.BirdDetector(det, self.n_agents, len(self.birds),
+                                                             self.control_dt, rng, headings=h, blocked=blocked)
+
+    def _tracked_matrix(self):
+        """(drone, bird): the drone has a live track of that bird. Identity-indexed tracks say so directly; merged
+        (shared) tracks have no bird ids, so each is matched to the nearest true bird within 1 m (a statistic for
+        the evaluation, never seen by the drones)."""
+        known, tpos, _ = self._bird_tracks
+        if not self.detector.share:
+            return known
+        d = np.linalg.norm(tpos[:, :, None, :] - self.birds.positions()[None, None, :, :], axis=3)    # (n, K, B)
+        return (known[:, :, None] & (d < 1.0)).any(axis=1)
+
+    def _detect(self, positions, velocities):
+        """One detector step from the true state: what each drone now tracks."""
+        self._bird_tracks = self.detector.step(self._t_step, positions, velocities,
+                                               self.birds.positions(), self.birds.velocities())
+
+    def _make_birds(self, spawns, goals):
+        """This episode's birds, aimed at the drones' paths: the route a drone follows (its follower's
+        waypoints), else its straight line from spawn to goal."""
+        paths = []
+        for i in range(self.n_agents):
+            key = f'drone_{i}'
+            if self.followers and key in self.followers:
+                paths.append(self.followers[key].w)
+            else:
+                paths.append(np.array([spawns[key], goals[key]], dtype=float))
+        return birds_mod.BirdField.generate(self.bird_cfg, paths, self.control_dt,
+                                            t_dep=None if self.departures is None
+                                            else np.where(np.isfinite(self.departures), self.departures, 0.0))
 
     def _make_followers(self, spawns, goals, routes):
         """A RouteFollower per routed drone (3D waypoints: height interpolated from spawn to goal
@@ -607,8 +677,17 @@ class SwarmEnv:
         obstacle_gap = [scenario_manager.distance_to_obstacles(self.layout, positions[i])
                         for i in range(self.n_agents)]
         obstacle_collision = [g < scenario_manager.DRONE_RADIUS for g in obstacle_gap]
+        bird_collision = None
+        if self.birds is not None:
+            bird_dist, bird_seen = self.adapter.bird_sensing(positions)
+            bird_collision = (bird_dist < scenario_manager.DRONE_RADIUS + self.birds.radii[None, :]).any(axis=1)
+            if self.detector is not None:
+                self._detect(positions, np.array([raw[f'drone_{i}']['velocity'] for i in range(self.n_agents)]))
         if self.crash_mode == 'remove':
             new = (np.array(drone_collision) | np.array(obstacle_collision)) & ~self.crashed
+            if bird_collision is not None:
+                new |= bird_collision & ~self.crashed
+                self.bird_crashed |= bird_collision & ~self.crashed
             if self._falling.any():                 # motor failure: down on the ground
                 new |= self._falling & (positions[:, 2] <= scenario_manager.DRONE_RADIUS + 0.05) & ~self.crashed
             if new.any():
@@ -691,7 +770,9 @@ class SwarmEnv:
         done, reason = self.episode_manager.check_done(
             positions.tolist(), self.goals.tolist(),
             [False] * self.n_agents if removing
-            else [a or b for a, b in zip(drone_collision, obstacle_collision)])
+            else [a or b for a, b in zip(drone_collision, obstacle_collision)]
+            if bird_collision is None
+            else [a or b or c for a, b, c in zip(drone_collision, obstacle_collision, bird_collision)])
         # EpisodeManager's own "success" path checks instantaneous position
         # only (no speed/settling) — it would let a swarm that happens to be
         # simultaneously inside every goal radius at full speed count as a
@@ -707,8 +788,16 @@ class SwarmEnv:
                 reason = 'collision'            # timed out after a crash: still a crash episode
         elif not done and all(self.drone_reached_goal):
             done, reason = True, 'success'
+        if bird_collision is not None and reason == 'collision':     # a crash with a bird and nothing else
+            if removing:
+                only_birds = not (self.crashed & ~self.bird_crashed).any()
+            else:
+                self.bird_crashed |= bird_collision
+                only_birds = not (any(drone_collision) or any(obstacle_collision))
+            if only_birds:
+                reason = 'bird'
         if done:
-            self.episode_manager.record_episode_result(reason or 'timeout')
+            self.episode_manager.record_episode_result('collision' if reason == 'bird' else (reason or 'timeout'))
 
         # 6. book-keeping for next step
         self.prev_dist    = curr_dist
@@ -764,6 +853,13 @@ class SwarmEnv:
                 'reward_components': {
                     k: float(v.sum()) for k, v in rewards.items() if k != 'total'
                 }}
+        if bird_collision is not None:
+            info['bird_collision'] = bird_collision.tolist()
+            info['bird_crashed'] = self.bird_crashed.tolist()
+            info['bird_distance'] = bird_dist.tolist()          # (drone, bird) true centre distances
+            info['bird_seen'] = bird_seen.tolist()              # at least one LiDAR ray of the drone hit the bird
+            if self.detector is not None:
+                info['bird_tracked'] = self._tracked_matrix().tolist()   # the drone has a live track of the bird
         if self.failure_cfg is not None:
             info['drone_failed'] = list(self.failed)
             info['drone_forced_down'] = self.forced_down.tolist()
@@ -878,13 +974,15 @@ class SwarmEnv:
     def _build_obs(self, raw):
         if self.noise_on:
             raw = self._noisy(raw)
+        self.last_obs_raw = raw
         extra = None
         if self.obs_processor.critic_version >= 2:
             # critic.version 2: the critic also sees each drone's settle state
             extra = {'settle_progress': np.minimum(self.settle_counter / self.settle_steps, 1.0),
                      'reached': np.asarray(self.drone_reached_goal, dtype=np.float32)}
         lf, ns, nm, gs = self.obs_processor.process(raw, self.curriculum_stage,
-                                                    critic_extra=extra)
+                                                    critic_extra=extra,
+                                                    bird_tracks=self._bird_tracks if self.bird_slots else None)
         return {
             'local_fixed':     lf,
             'neighbor_states': ns,

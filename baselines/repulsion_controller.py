@@ -86,6 +86,17 @@ def closest_point(ob, q):
     return c + local
 
 
+def cpa(p, rv, horizon):
+    """Closest point of approach if both keep their velocities. p: where i is relative to j (j -> i),
+    rv: i's velocity relative to j. Returns (t_star, c): when they are closest (0..horizon seconds) and
+    where i is relative to j then (the miss vector). Shared by the teacher below and modules/bird_guard.py;
+    the arithmetic is exactly what the teacher always did, so its outputs do not change."""
+    speed2 = float(rv @ rv)
+    t_star = float(np.clip(-(p @ rv) / speed2, 0.0, horizon)) if speed2 > 1e-6 else 0.0
+    c = p + rv * t_star
+    return t_star, c
+
+
 class RepulsionController:
     def __init__(self, config, cruise=1.5, k_goal=2.0, safe_dist=1.0, horizon=2.0,
                  k_avoid=2.0, close_dist=0.6, k_close=2.0,
@@ -221,9 +232,7 @@ class RepulsionController:
                 rv = velocities[i] - velocities[j]       # i's motion relative to j
                 d = np.linalg.norm(p)
                 # closest point of approach
-                speed2 = float(rv @ rv)
-                t_star = float(np.clip(-(p @ rv) / speed2, 0.0, self.horizon)) if speed2 > 1e-6 else 0.0
-                c = p + rv * t_star
+                t_star, c = cpa(p, rv, self.horizon)
                 dc = np.linalg.norm(c)
                 if dc < self.safe_dist and (t_star < self.horizon or d < self.safe_dist):
                     direction = c / dc if dc > 0.05 else self._right_of(rv)

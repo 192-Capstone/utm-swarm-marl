@@ -62,6 +62,7 @@ from record_rollout import (setup_crossing_scenario, setup_swap_scenario,
                             setup_headon_scenario, disable_all_collision_physics,
                             _apply_scenario)
 from modules.goal_hold import GoalHoldPolicy, goal_hold_enabled
+from modules.bird_guard import BirdGuardPolicy, guard_enabled
 
 SUITE_VERSION = "v1"
 SEP_THRESHOLDS = (0.2, 0.3, 0.4, 0.5)
@@ -71,6 +72,7 @@ SEP_THRESHOLDS = (0.2, 0.3, 0.4, 0.5)
 # not physical. Only for adapters that report episode_stats() (Webots Level 2 multi); PyBullet
 # output is unchanged.
 LOST_TILT_DEG = 60.0
+BIRD_BINS = (0.0, 2.0, 4.0, 6.0)      # drone-bird distance bins (m) for the LiDAR detection rate (--birds only)
 
 
 def lost_control(stats, i):
@@ -548,6 +550,11 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
     #                   behaviour at the goal never counts as passing.
     along_gap = np.full(n_agents, np.inf)
     close_steps = turnback_steps = 0
+    # Birds (only with --birds): closest drone-bird distance, and LiDAR detection: of the (drone, bird)
+    # pairs within the LiDAR range in a step, how many had at least one ray on the bird (by distance bin)
+    bird_min = np.inf
+    tracked_steps = 0                                                # pairs within the LiDAR range with a live track
+    det = np.zeros((len(BIRD_BINS) - 1, 2), dtype=np.int64)          # [bin] -> (pairs in range, pairs seen)
 
     for step in range(max_steps):
         lf = obs['local_fixed']
@@ -596,6 +603,17 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
             any_drone_collision = True
         if any(info.get('obstacle_collision', [])):
             any_obstacle_collision = True
+        if 'bird_distance' in info:
+            bd, bs = np.asarray(info['bird_distance']), np.asarray(info['bird_seen'])
+            live = ~env.crashed | np.asarray(info['bird_collision'])      # a parked drone is out of the world
+            if live.any():
+                bd, bs = bd[live], bs[live]
+                bird_min = min(bird_min, float(bd.min()))
+                if 'bird_tracked' in info:
+                    tracked_steps += int(((bd < BIRD_BINS[-1]) & np.asarray(info["bird_tracked"])[live]).sum())
+                for b in range(len(BIRD_BINS) - 1):
+                    m = (bd >= BIRD_BINS[b]) & (bd < BIRD_BINS[b + 1])
+                    det[b] += (int(m.sum()), int((m & bs).sum()))
         gaps = info.get('obstacle_distance', [])
         if gaps and min(gaps) < min_obs_gap:
             min_obs_gap = min(gaps)
@@ -607,7 +625,7 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
     pos = env.adapter.get_positions()
     final_dist = np.linalg.norm(pos - env.goals, axis=1)
     reason = info.get('reason')
-    outcome = 'success' if info.get('success') else (reason if reason in ('collision',) else 'timeout')
+    outcome = 'success' if info.get('success') else (reason if reason in ('collision', 'bird') else 'timeout')
 
     agents = []
     for i in range(n_agents):
@@ -647,6 +665,15 @@ def run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
         'alongside_close_steps': close_steps,
         'turnback_steps': turnback_steps,
     }
+    if env.birds is not None:
+        episode.update({'n_birds': len(env.birds), 'bird_crash': int(outcome == 'bird'),
+                        'min_bird_dist': round(bird_min, 4) if np.isfinite(bird_min) else '',
+                        'bird_pair_steps': int(det[:, 0].sum()), 'bird_seen_steps': int(det[:, 1].sum())})
+        if env.detector is not None:
+            episode['bird_tracked_steps'] = tracked_steps
+        for b in range(len(BIRD_BINS) - 1):
+            episode[f'bird_in_{BIRD_BINS[b]:g}_{BIRD_BINS[b + 1]:g}'] = int(det[b, 0])
+            episode[f'bird_seen_{BIRD_BINS[b]:g}_{BIRD_BINS[b + 1]:g}'] = int(det[b, 1])
     for t in SEP_THRESHOLDS:
         episode[f'sep_below_{t}'] = int(min_sep is not None and min_sep < t) if n_agents > 1 else ''
     stats = env.adapter.episode_stats() if hasattr(env.adapter, 'episode_stats') else None
@@ -802,6 +829,42 @@ def main():
                          "on the paths, which spreads the drones out)")
     ap.add_argument("--max-steps", type=int, default=None,
                     help="episode time limit override (e.g. 1000 to tell slow traffic from gridlock)")
+    ap.add_argument("--birds", type=int, default=0,
+                    help="N birds per episode (envs/birds.py), aimed at the drones' paths; default 0 = none, "
+                         "output unchanged. The episode's drones, noise and lag are the same as without birds")
+    ap.add_argument("--bird-speed", type=float, nargs=2, default=None, metavar=("LO", "HI"),
+                    help="bird speed range, m/s (default 1 3)")
+    ap.add_argument("--bird-radius", type=float, default=None, help="bird radius, m (default 0.12)")
+    ap.add_argument("--bird-detector", choices=["realistic", "oracle"], default=None,
+                    help="stage 3a: an onboard bird detector + tracker feeds tracked birds to the policy as "
+                         "neighbours (envs/bird_detector.py). oracle = perfect sensing within the range, an "
+                         "upper bound only. Needs --birds")
+    ap.add_argument("--bird-guard", action="store_true",
+                    help="stage 3a+: the bird guard (modules/bird_guard.py) takes over the command while a tracked "
+                         "bird is a threat; after goal-hold. Needs --bird-detector")
+    ap.add_argument("--no-bird-slots", action="store_true",
+                    help="tracked birds do NOT fill neighbour slots (only the guard uses them)")
+    ap.add_argument("--bird-spawn", choices=["timed", "random"], default=None,
+                    help="timed (default): birds aimed at a drone's path; random: straight crossings of the arena at "
+                         "random times, unrelated to the drones")
+    ap.add_argument("--detector-range", type=float, default=None, help="detector range, m (default 8)")
+    ap.add_argument("--detector-fov", type=float, default=None, help="detector horizontal field of view, deg (default 120)")
+    ap.add_argument("--detector-p", type=float, nargs=2, default=None, metavar=("NEAR", "FAR"),
+                    help="detection probability at 0 m and at the range (default 0.9 0.5)")
+    ap.add_argument("--detector-latency", type=int, default=None, help="detector latency, control steps (default 3)")
+    ap.add_argument("--detector-tracker", choices=["alphabeta", "kalman"], default=None, help="bird tracker (default alphabeta)")
+    ap.add_argument("--detector-share", action="store_true",
+                    help="stage 3a++: drones also use the tracks of drones within comms range, merged by geometry")
+    ap.add_argument("--guard-brake", type=float, nargs="+", default=None, metavar="SCALE",
+                    help="stage 3a++: guard brake candidates, command scales in [0, 1) (e.g. 0 0.5)")
+    ap.add_argument("--detector-set", action="append", default=[], metavar="KEY=VALUE",
+                    help="any other environment.birds.detector setting (repeatable), e.g. kalman_q=2")
+    ap.add_argument("--guard-set", action="append", default=[], metavar="KEY=VALUE",
+                    help="any environment.birds.guard setting (repeatable), e.g. miss_m=1.2")
+    ap.add_argument("--episode-offset", type=int, default=0,
+                    help="skip the first N episodes of every seed (their scenarios are still generated, so the "
+                         "episodes that follow are exactly those of a longer run; nothing is flown for the skipped "
+                         "ones). Default 0 = unchanged. Episode numbers in the CSV are absolute")
     ap.add_argument("--blind-neighbors", action="store_true",
                     help="ablation: MAPPO actor sees no other drones (all neighbour slots masked)")
     ap.add_argument("--blind-lidar", action="store_true",
@@ -872,6 +935,38 @@ def main():
         if obstacle_test or interaction:
             ap.error("--no-obstacles applies to the multi-drone scenarios")
         config.setdefault('obstacles', {})['enabled'] = False
+    if args.birds > 0:
+        config['environment']['birds'] = {'enabled': True, 'count': args.birds,
+                                          **({'speed': args.bird_speed} if args.bird_speed else {}),
+                                          **({'radius': args.bird_radius} if args.bird_radius else {})}
+        if args.bird_spawn:
+            config['environment']['birds']['spawn'] = args.bird_spawn
+        if args.bird_guard:
+            if not args.bird_detector:
+                ap.error("--bird-guard needs --bird-detector")
+            config['environment']['birds']['guard'] = {'enabled': True}
+            if args.guard_brake is not None:
+                config['environment']['birds']['guard']['brake'] = list(args.guard_brake)
+            for kv in args.guard_set:
+                k, v = kv.split('=', 1)
+                config['environment']['birds']['guard'][k] = yaml.safe_load(v)
+        if args.bird_detector:
+            config['environment']['birds']['detector'] = {
+                'enabled': True, 'mode': args.bird_detector, 'birds_in_slots': not args.no_bird_slots,
+                **({'range_m': args.detector_range} if args.detector_range else {}),
+                **({'fov_deg': args.detector_fov} if args.detector_fov else {}),
+                **({'p_near': args.detector_p[0], 'p_far': args.detector_p[1]} if args.detector_p else {}),
+                **({'latency_steps': args.detector_latency} if args.detector_latency is not None else {}),
+                **({'tracker': args.detector_tracker} if args.detector_tracker else {}),
+                **({'share': True} if args.detector_share else {})}
+            for kv in args.detector_set:
+                k, v = kv.split('=', 1)
+                config['environment']['birds']['detector'][k] = yaml.safe_load(v)
+    elif args.bird_detector or args.bird_guard or args.bird_spawn:
+        ap.error("--bird-detector / --bird-guard / --bird-spawn need --birds N")
+    if args.episode_offset < 0 or (args.episode_offset and (interaction or args.mode != "deterministic")):
+        ap.error("--episode-offset must be >= 0, needs --mode deterministic (a stochastic policy draws random numbers "
+                 "while flying) and does not apply to the 2-drone interaction scenarios")
     n_agents = config['environment']['n_agents']
     # A1 part 3: goal-hold handover, only when the config's goal_hold block enables it
     goal_hold = goal_hold_enabled(config)
@@ -892,6 +987,21 @@ def main():
            f"phys{args.collision_physics}_s{'-'.join(map(str, args.seeds))}_e{args.episodes}"
            + (f"_T{max_steps}" if args.max_steps is not None else "")
            + ("_noobs" if args.no_obstacles else "")
+           + (f"_o{args.episode_offset}" if args.episode_offset else "")
+           + (f"_birds{args.birds}" + (f"_bv{args.bird_speed[0]:g}-{args.bird_speed[1]:g}" if args.bird_speed else "")
+              if args.birds > 0 else "")
+           + (f"_{args.bird_spawn}" if args.bird_spawn and args.bird_spawn != 'timed' else "")
+           + (f"_det-{args.bird_detector}"
+              + (f"_r{args.detector_range:g}" if args.detector_range else "")
+              + (f"_f{args.detector_fov:g}" if args.detector_fov else "")
+              + (f"_p{args.detector_p[0]:g}-{args.detector_p[1]:g}" if args.detector_p else "")
+              + (f"_L{args.detector_latency}" if args.detector_latency is not None else "")
+              + ("_noslots" if args.no_bird_slots else "") + ("_guard" if args.bird_guard else "")
+              + (f"_{args.detector_tracker}" if args.detector_tracker else "") + ("_share" if args.detector_share else "")
+              + ("_brake" + "-".join(f"{x:g}" for x in args.guard_brake) if args.guard_brake is not None else "")
+              + "".join("_d-" + kv.replace("=", "") for kv in args.detector_set)
+              + "".join("_g-" + kv.replace("=", "") for kv in args.guard_set)
+              if args.bird_detector else "")
            + (f"_{args.simulator}" if args.simulator != "pybullet" else "")
            + ("_real" if args.webots_real else ""))
     out_dir = args.out_dir or os.path.join(args.results_root, tag)
@@ -925,6 +1035,9 @@ def main():
         ckpt_episode = None
     if goal_hold:
         policy = GoalHoldPolicy(policy, config)
+    guard = guard_enabled(config)               # stage 3a+: after goal-hold, so the guard has the final say
+    if guard:
+        policy = BirdGuardPolicy(policy, config)
     # clip_hits counts inputs pinned at the normalizer's limit; schema v2 has
     # no normalizer, so nothing can be clipped
     schema = env.obs_processor.schema
@@ -974,7 +1087,7 @@ def main():
         np.random.seed(seed)
         torch.manual_seed(seed)
         rng = np.random.RandomState(seed)
-        for ep in range(args.episodes):
+        for ep in range(args.episode_offset + args.episodes):
             if interaction:
                 obs, script, horizon, param = setup_interaction(env, rng, args.scenario, dt,
                                                                 max_steps, policy)
@@ -1003,8 +1116,11 @@ def main():
             else:
                 obs = env.reset()
             sid = scenario_hash(env)
-
+            if ep < args.episode_offset:           # skipped: the scenario was generated (same random stream), nothing flown
+                continue
             e, ags = run_episode(env, policy, obs, n_agents, max_steps, dt, physics_on, clip_val)
+            if guard:
+                e.update(policy.pop_episode())
             base = {'seed': seed, 'episode': ep, 'scenario_id': sid}
             episodes.append({**base, **e})
             agents.extend({**base, **a} for a in ags)
@@ -1023,6 +1139,9 @@ def main():
         summary = summarize(episodes, agents, n_agents, physics_on)
     summary['config'] = run_cfg
     summary['wall_time_s'] = round(time.time() - t0, 1)
+    if guard:
+        gs = policy.guard_stats
+        summary['bird_guard_stats'] = {**gs, 'active_frac': gs['active_steps'] / max(gs['drone_steps'], 1)}
     if goal_hold:
         st = policy.stats
         summary['goal_hold_stats'] = {
