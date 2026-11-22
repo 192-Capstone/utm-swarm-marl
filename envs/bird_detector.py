@@ -142,6 +142,25 @@ class BirdDetector:
         self._pending = []                                        # (step measured, detected, measured pos)
         self.visible = np.zeros(shape, dtype=bool)                # last step's visibility (tests, stats)
 
+    # ------------------------------------------------- a pool of birds (the live server)
+    def forget(self, slot):
+        """Bird slot `slot` is a new bird: drop its tracks and the measurements still in flight."""
+        self.hits[:, slot], self.last[:, slot] = 0, -10 ** 9
+        self.x[:, slot], self.v[:, slot] = 0.0, 0.0
+        if self.kalman:
+            self.pxx[:, slot] = self.pxv[:, slot] = self.pvv[:, slot] = 0.0
+        self._pending = [(k, det & (np.arange(self.b) != slot)[None, :], z) for k, det, z in self._pending]
+        self.visible[:, slot] = False
+
+    def idle(self):
+        """No bird is flying: nothing is tracked, and nothing is computed (the same answer step() would give)."""
+        self.hits[:] = 0
+        self.last[:] = -10 ** 9
+        self._pending.clear()
+        self._history.clear()
+        self.visible[:] = False
+        return np.zeros((self.n, self.b), dtype=bool), self.x.copy(), self.v.copy()
+
     # -------------------------------------------------------------- geometry
     def _update_heading(self, drone_vel):
         v = np.asarray(drone_vel, dtype=float)[:, :2]

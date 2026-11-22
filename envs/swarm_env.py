@@ -465,8 +465,20 @@ class SwarmEnv:
 
     def _detect(self, positions, velocities):
         """One detector step from the true state: what each drone now tracks."""
+        pool = self.birds if isinstance(self.birds, birds_mod.BirdPool) else None
+        if pool is not None and not self.detector.share and not pool.active().any():
+            self._bird_tracks = self.detector.idle()       # a pool with every bird parked: nothing to detect
+            return
         self._bird_tracks = self.detector.step(self._t_step, positions, velocities,
                                                self.birds.positions(), self.birds.velocities())
+
+    def launch_bird(self, bird):
+        """A bird of the BirdPool this episode was started with (start_episode(birds=BirdPool)) starts flying now:
+        its slot, or None when the pool is full."""
+        slot = self.birds.launch(bird)
+        if slot is not None and self.detector is not None:
+            self.detector.forget(slot)
+        return slot
 
     def _make_birds(self, spawns, goals):
         """This episode's birds, aimed at the drones' paths: the route a drone follows (its follower's

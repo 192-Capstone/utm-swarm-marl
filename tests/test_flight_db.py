@@ -209,7 +209,7 @@ def test_the_schedule_is_e1s_booking_and_injected_lateness_is_a_departure_delay(
     assert a['duration_s'] == pytest.approx(4.0, abs=0.6)                         # flown about as planned (4 s)
 
 
-def test_an_emergency_flight_with_no_named_operator_takes_the_site_it_leaves_from(tmp_path):
+def test_an_emergency_flight_with_no_named_operator_is_the_hospitals(tmp_path):
     rec = flight_log.FlightLog({'name': 'em', 'places': {'City Hospital': {'kind': 'hospital', 'at': [1.0, 1.0]}}})
     e = drone('emergency_0', 'emergency', 'emergency')
     e['start'] = [1.0, 1.0]
@@ -221,4 +221,4 @@ def test_an_emergency_flight_with_no_named_operator_takes_the_site_it_leaves_fro
     d = flight_db.connect(':memory:')
     flight_db.import_recording(d, path)
     row = by_id(d)['emergency_0']
-    assert (row['operator'], row['callsign']) == ('City Hospital', 'CIT-E00')
+    assert (row['operator'], row['callsign']) == ('Hospital', 'HOS-E00')

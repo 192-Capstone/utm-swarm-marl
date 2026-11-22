@@ -123,6 +123,7 @@ a.trk:hover { text-decoration: underline; }
     <div class="top">
       <span class="livepill" id="live" hidden><i></i><span id="livetxt">LIVE</span></span>
       <a href="index.html">&larr; UTM console</a>
+      <a href="operator.html" id="opLink" hidden>Operator console</a>
       <div class="seg" role="group" aria-label="Theme">
         <button type="button" data-theme-set="light" aria-pressed="true">Light</button>
         <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
@@ -429,7 +430,7 @@ function show(f) {
 }
 
 // An operator sees only its own flights (the server filters them), so there is no operator filter; the admin has it.
-Auth.init().then((me) => { if (!me.admin) $('f-op').closest('label').hidden = true; load(); });
+Auth.init().then((me) => { if (!me.admin) { $('f-op').closest('label').hidden = true; $('opLink').hidden = false; } load(); });   // operators: a way back to their console
 })();
 </script>
 </body>

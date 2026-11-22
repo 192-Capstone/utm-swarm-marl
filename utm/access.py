@@ -114,6 +114,9 @@ def cookie_token(header):
     return None
 
 
+BIRD_VISIBLE_M = 15.0       # an operator sees the birds this close to one of its flying drones
+
+
 def filter_state(state, role, admin=False):
     """/api/state for a role: its own flights, and the events of its own flights or addressed to it. The cursor
     (n_events) is the server's, so a polling page keeps its place."""
@@ -122,7 +125,12 @@ def filter_state(state, role, admin=False):
     flights = [f for f in state['flights'] if f.get('operator') == role]
     ids = {f['id'] for f in flights}
     events = [e for e in state['events'] if e.get('node') == role or e.get('flight') in ids]
-    return {**state, 'flights': flights, 'events': events}
+    out = {**state, 'flights': flights, 'events': events}
+    if 'birds' in state:                        # birds are environment, not data of anyone: an operator sees those near its drones
+        mine = [f['pos'] for f in flights if f.get('status') == 'flying' and f.get('pos')]
+        out['birds'] = [b for b in state['birds'] if any(
+            (b['pos'][0] - p[0]) ** 2 + (b['pos'][1] - p[1]) ** 2 + (b['pos'][2] - p[2]) ** 2 <= BIRD_VISIBLE_M ** 2 for p in mine)]
+    return out
 
 
 def filter_flightlog(log, role, admin=False):

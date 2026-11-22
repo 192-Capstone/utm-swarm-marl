@@ -104,7 +104,7 @@ jump to a flight or time.
 The live UTM server writes to the same database as things happen, so a delivery can be looked up and replayed afterwards.
 
 ```
-python scripts/utm_server.py scenarios/ecity_rooftops.yaml                       # logs to eval_results/flight_log.db
+python scripts/utm_server.py scenarios/ecity_rooftops.yaml                       # logs to eval_results/flight_log.db, the main log (the default: imports and live flights share it)
 python scripts/utm_server.py scenarios/ecity_rooftops.yaml --db my.db            # another file
 python scripts/utm_server.py scenarios/ecity_rooftops.yaml --no-db               # no logging; /api/flightlog is then 404
 ```
@@ -118,7 +118,8 @@ python scripts/utm_server.py scenarios/ecity_rooftops.yaml --no-db              
   `duration_s`), **Crashed**, **Cancelled** or **Returned** (E4 sent it back to its pad); `n_replans`, `cruise_z` follow E4's
   re-plans and `distance_m` the track. A refused booking is a **Rejected** row with id `r<n>` and its reason (the server
   hands `f<n>` to the next booking, so the ids would collide). Intruder and alert details are not logged live.
-- **events:** the server's events in the same table, plus a `takeoff` event; run-wide events have no flight.
+- **events:** the server's events in the same table, plus a `takeoff` event; run-wide events have no flight. With birds: "bird added near f3 (admin)" (type `bird_added`), "f3 avoided a bird (closest 1.2 m)" (`bird_avoided`, once per avoidance: from the guard taking over until it has been quiet 2 s; the distance is the closest centre-to-centre distance to any bird in that time) and "f3 hit a bird" (`crashed`, the flight is **Crashed**).
+- **Emergency operator:** an emergency flight whose scenario names no operator (ecity_demo, ecity_failures) is imported under the operator **Hospital** (callsign `HOS-E00`), as ecity_rooftops and the live server have it. Re-import a run to apply it to rows imported earlier.
 - **track:** `(run_id, flight_id, t, x, y, z)` once per simulated second while the flight is flying.
 - **Closing:** when the server stops (Ctrl+C), or at the next start after a crash, flights still Booked / In flight are closed as
   **Not departed** / **In flight at end**.

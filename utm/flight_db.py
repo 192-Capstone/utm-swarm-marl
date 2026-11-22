@@ -41,6 +41,7 @@ from utm import flight_log, speeds, strategic_planner  # noqa: E402
 
 DEFAULT_DB = os.path.join('eval_results', 'flight_log.db')
 EXPORT_SCHEMA = 'utm-flight-log-db/1'
+EMERGENCY_OPERATOR = 'Hospital'                   # who files an emergency flight when the scenario names no operator
 SCHEDULED = ('flight', 'emergency')               # kinds with a booked schedule
 SKIPPED = ('bird',)                               # not flights
 ALERT_WORDS = {'lost_link': 'lost its radio link', 'down': 'is down', 'emergency_landing': 'is making an emergency landing'}
@@ -308,9 +309,8 @@ def import_recording(db, path):
             filed = next((e['t'] for e in es if e['type'] == 'replan' and e.get('why') == 'emergency'), None)
         act_arr = arrived if status == 'Landed' else None
         operator = d.get('operator') or ''
-        if kind == 'emergency' and operator in ('', 'emergency'):     # the scenario named no operator: the site it leaves from
-            site = place.named(origin[1], origin[2])
-            operator = site if site and ' pad ' not in site else operator
+        if kind == 'emergency' and operator in ('', 'emergency'):     # the scenario named no operator: the emergency
+            operator = EMERGENCY_OPERATOR                              # operator, as ecity_rooftops and the live server call it
         rows.append(_row(
             run_id=run_id, flight_id=f, callsign=callsign(operator, kind, f), drone=f'D{i + 1:02d}',
             operator=operator, kind=kind, origin=origin[0], origin_x=origin[1], origin_y=origin[2],

@@ -7,6 +7,15 @@ company only its own partners and orders, and a central **admin** sees everythin
 > simple shared passcodes, sessions in memory, no lockout or audit log. The server listens on localhost only. It is there to
 > show the separation between operators, not to protect real data.
 
+## The demo command
+```
+python scripts/utm_server.py eval_results/demo/rooftops_demo.yaml          # then http://localhost:8770/login.html
+```
+It writes to the **main flight log**, `eval_results/flight_log.db` (the default; `--db FILE` for another, `--no-db` for none), so the
+recorded runs (imported with `scripts/flight_db.py import`) and the live flights are in one log. Birds are on (see
+`docs/birds_live.md`; `--no-birds` turns them off). Log in as `admin` (`admin-demo`) or an operator (`op0-demo`, `op1-demo`,
+`hospital-demo`, docs/access.md).
+
 ## Roles
 | Role | Is | May |
 |---|---|---|
@@ -56,6 +65,7 @@ The **server** decides. The pages only follow; a hand-typed URL or `curl` gets t
 | `GET /api/track?...` | 401 | own flight; **403** for another operator's flight (and for an unknown id, so ids cannot be probed) | any |
 | `POST /api/request` | 401 | books as itself; `operator` for someone else is **403** | books for the `operator` given |
 | `POST /api/emergency` | 401 | only the emergency operator, as itself | any operator |
+| `POST /api/bird` (adds birds) | 401 | **403** | allowed |
 | `GET /data/*.json` (every operator's flights) | 401 | **403** | served |
 | the pages (`*.html`, `*.js`) | served | served | served |
 
@@ -65,6 +75,8 @@ The **server** decides. The pages only follow; a hand-typed URL or `curl` gets t
 - A `POST` from a page of another site (an `Origin` that is not this server) is refused.
 - Live 3D console (`index.html#live`): the server's `/api/state` is already filtered, so an operator sees only its own drones,
   routes and events. The recorded scenes in that console read `data/*.json` and are for the admin; an operator is sent to `#live`.
+- Birds are environment: in `/api/state` an operator gets only the birds within 15 m of one of its own flying drones; the **Add bird**
+  panel of the 3D console is the admin's (`POST /api/bird`).
 - Not hidden: the number of free drones (`free` in `/api/state`), and flight ids named in the text of one of your own events
   (e.g. "displaced by f5"), since those events concern your flight. The public `/api/scene` lists all operators and places.
 - A flight from a recorded run in the database (an import) shows in the operator's flight log but cannot be replayed by it:

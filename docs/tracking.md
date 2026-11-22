@@ -12,6 +12,15 @@ stepper, the details and the updates. Phone first (about 390 px wide), two colum
 Replay works without the server (`cd dashboard && python -m http.server`). Links: a **Track** button on every flight in
 `flight_log.html` (and in its detail drawer), and a **Track** link per booked flight in `operator.html`.
 
+## The demo command
+```
+python scripts/utm_server.py eval_results/demo/rooftops_demo.yaml          # then http://localhost:8770/login.html
+```
+It writes to the **main flight log**, `eval_results/flight_log.db` (the default; `--db FILE` for another, `--no-db` for none), so the
+recorded runs (imported with `scripts/flight_db.py import`) and the live flights are in one log. Birds are on (see
+`docs/birds_live.md`; `--no-birds` turns them off). Log in as `admin` (`admin-demo`) or an operator (`op0-demo`, `op1-demo`,
+`hospital-demo`, docs/access.md).
+
 ## Who may track what
 With the UTM server, tracking needs a login (`login.html`, see `docs/access.md`). An operator can track **only its own
 flights**: `track.html` for another operator's flight shows **This is not your flight**, and `GET /api/track` answers 403 (also for
@@ -51,6 +60,11 @@ run (`runs.speeds`), and the live server serves them in `/api/scene`. If none is
 The page polls `/api/state` four times a second and eases the drone between polls. Its clock times map simulation seconds to the
 wall clock from the server's `clock` knots (see flight_log_db.md), so they stay right when the server runs faster than real time (`--speed`) or falls behind. The server keeps
 every flight in memory, so a delivered flight can still be opened; after a restart open it with `?run=<run id>`.
+
+**Birds:** while a bird is near, the map shows it (a red dot with a short trail) and a banner **Avoiding a bird** is shown while the
+flight's bird guard is active. Birds are environment, not anyone's data: an operator sees the birds within 15 m of its own flying
+drones. The flight's updates then read "bird added near f3 (admin)", "f3 avoided a bird (closest 1.2 m)" or "f3 hit a bird"
+(and the flight is Crashed).
 
 Recordings park a drone that has not left, or was removed after a crash, far off the map: a replay shows it on its pad until
 take-off and where it fell afterwards.

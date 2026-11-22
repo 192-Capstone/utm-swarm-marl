@@ -170,7 +170,7 @@ let model = null;                                  // replay: TrackLogic.replayM
 let geo = { buildings: [], bounds: null, zones: [], places: [] }, speeds = null, approximate = true;
 const eta = TL.makeEta();
 let minSeg = 0, routeKey = '', lastHeading = 0, lastT = null, fit = null, shown = null;
-const live = { since: 0, events: [], last: null, prev: null, simSpeed: 1, knots: [], hist: [], tLand: null, tTake: null, f: null, wall0: null, t0sim: null };
+const live = { birds: [], shownBirds: {}, since: 0, events: [], last: null, prev: null, simSpeed: 1, knots: [], hist: [], tLand: null, tTake: null, f: null, wall0: null, t0sim: null };
 const rp = { t: 0, playing: true, speed: 4 };
 
 function showMsg(title, html) { $('main').hidden = true; $('player').hidden = true; const m = $('msg'); m.hidden = false; m.innerHTML = `<b></b><span></span>`; m.firstChild.textContent = title; m.lastChild.innerHTML = html; }
@@ -245,7 +245,7 @@ async function pollLive(first) {
   live.hist.push([s.t, f.pos.slice()]); while (live.hist.length > 40) live.hist.shift();
   if (f.status === 'flying' && live.tTake == null) live.tTake = s.t;
   if (f.status === 'landed' && live.tLand == null) { const a = live.events.find(e => e.type === 'arrived'); live.tLand = a ? a.t : s.t; }
-  live.f = f;
+  live.f = f; live.birds = s.birds || [];                                         // birds near this operator's drones (the server filters)
   if (!shown) shown = f.pos.slice();
   return true;
 }
@@ -314,7 +314,10 @@ function paint(S, D) {
   if ($('chips').dataset.k !== ck) { $('chips').dataset.k = ck; $('chips').replaceChildren(...chips.map(([t, tone]) => el('span', 'chip ' + tone, t))); }
   // the exception banner
   const b = $('banner');
-  if (ex && !(D.waiting && ex.code === 'waiting')) {
+  if (mode === 'live' && live.f && live.f.guard && D.flying) {                      // the bird guard has the controls
+    b.hidden = false; b.className = 'banner warn'; const k = 'bird';
+    if (b.dataset.k !== k) { b.dataset.k = k; b.replaceChildren(el('b', '', 'Avoiding a bird'), el('span', '', 'The drone has seen a bird near its path and is steering clear of it. It carries on to its destination afterwards.')); }
+  } else if (ex && !(D.waiting && ex.code === 'waiting')) {
     b.hidden = false; b.className = 'banner ' + ex.tone; const k = ex.label + ex.detail;
     if (b.dataset.k !== k) { b.dataset.k = k; b.replaceChildren(el('b', '', ex.label), el('span', '', ex.detail)); }
   } else b.hidden = true;
@@ -449,6 +452,17 @@ function drawMap(S, D, wallDt) {
     const names = model && model.rejected ? ['', ''] : mode === 'live' ? [live.f.from, live.f.to] : [model.from, model.to];
     pin(c, ax, ay, COL.mark, 'P'); pin(c, bx, by, COL.ok, 'D');
     if (names[0]) label(c, names[0], ax, ay + 12); if (names[1]) label(c, names[1], bx, by + 12);
+  }
+  // birds near the drone (live): a red dot with a short trail
+  if (mode === 'live') {
+    const gone = new Set(live.birds.map(b => b.id));
+    for (const id in live.shownBirds) if (!gone.has(id)) delete live.shownBirds[id];
+    for (const b of live.birds) {
+      const sb = live.shownBirds[b.id] = (live.shownBirds[b.id] || b.pos.slice()).map((x, k) => x + (b.pos[k] - x) * Math.min(1, wallDt * 8));
+      if (b.trail.length) line(b.trail.concat([sb]), [], 2, 'rgba(229,50,45,.6)');
+      const [bx, by] = w(sb[0], sb[1]);
+      c.beginPath(); c.arc(bx, by, 6, 0, 7); c.fillStyle = '#e5322d'; c.fill(); c.lineWidth = 2; c.strokeStyle = COL.surface; c.stroke();
+    }
   }
   // the drone: halo, heading arrow
   const seg = route[j.seg], nxt = route[j.seg + 1];
