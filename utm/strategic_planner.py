@@ -149,6 +149,7 @@ class StrategicPlanner:
         self.plans = {}                   # flight id -> its FlightPlan (E4 re-planning)
         self.current = {}                 # flight id -> its booked Decision now
         self._grids = {}
+        self._routes = {}                 # route() results: the same pads and layer are planned once
         self._centres = {}
         self._edge = self.sky.edge_length()
         self._k = self.sky.k_for_radius(self.s.radius)
@@ -235,9 +236,13 @@ class StrategicPlanner:
         ('zone:<id>', see zone_keys) to fly around. snap: how far (m) start and goal may be from
         the nearest free grid cell (a drone re-planned mid-air may be inside a zone's margin)."""
         avoid = frozenset(z for z in avoid if any(k == layer for _, k in self.zone_keys[z]))
-        g = self._zone_grid(layer, avoid) if avoid else self._grid(layer)
-        p = plan(g, start, goal, snap)
-        return None if p is None else simplify(g, p)
+        key = (tuple(map(float, start)), tuple(map(float, goal)), layer, avoid, float(snap))
+        if key not in self._routes:                # the maps don't change, so neither does the answer
+            g = self._zone_grid(layer, avoid) if avoid else self._grid(layer)
+            p = plan(g, start, goal, snap)
+            self._routes[key] = None if p is None else simplify(g, p)
+        r = self._routes[key]
+        return None if r is None else list(r)
 
     def _clear_below(self, xy, layer):
         """A drone at xy may descend straight to this layer: no building of that layer's map (grown by
