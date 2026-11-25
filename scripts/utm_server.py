@@ -7,6 +7,7 @@ bookings as they come, over a small HTTP API. The browser pages in dashboard/ ar
 
     python scripts/utm_server.py scenarios/ecity_rooftops.yaml          # then http://localhost:8770/
     python scripts/utm_server.py scenarios/ecity_rooftops.yaml --slots 16 --speed 2 --port 8770
+    python scripts/utm_server.py scenarios/ecity_rooftops.yaml --lan     # other PCs on the network can open it
 
 From the scenario it takes the map, the places (hubs, drop points, hospital) and the utm / sim
 settings; its requests, emergencies, intruders and zones are not replayed: the consoles file them.
@@ -690,7 +691,10 @@ def main():
     ap.add_argument('--access', default=os.path.join(ROOT, 'deployment', 'access.yaml'),
                     help='the roles and their passcode hashes (utm/access.py, docs/access.md)')
     ap.add_argument('--no-auth', action='store_true', help='NO LOGIN: everyone is the admin (a demo switch; a warning is shown)')
+    ap.add_argument('--lan', action='store_true', help='listen on the network (teammates open http://<the IP of this PC>:port/); default: this PC only')
     a = ap.parse_args()
+    if a.lan:
+        print('WARNING: --lan: the server is open to the network, with no HTTPS (docs/access.md). Use it on a trusted network only.', flush=True)
     if a.no_auth:
         access = access_mod.Access(no_auth=True)
     else:
@@ -706,9 +710,9 @@ def main():
     live = LiveUTM(sc, a.slots, a.speed, sc['seed'], db=db, birds=not a.no_birds)
     threading.Thread(target=live.run, daemon=True).start()
     h = handler(live, os.path.join(ROOT, 'dashboard'), access)
-    srv = ThreadingHTTPServer(('127.0.0.1', a.port), h)            # local only: both loopbacks, no network
+    srv = ThreadingHTTPServer(('0.0.0.0' if a.lan else '127.0.0.1', a.port), h)   # local only unless --lan
     try:
-        threading.Thread(target=V6Server(('::1', a.port), h).serve_forever, daemon=True).start()
+        threading.Thread(target=V6Server(('::' if a.lan else '::1', a.port), h).serve_forever, daemon=True).start()
     except OSError:
         pass                                      # no IPv6: 127.0.0.1 still works
     print(f'UTM live on http://localhost:{a.port}/  (operators: {", ".join(live.scene()["operators"])})', flush=True)
