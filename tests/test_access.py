@@ -198,6 +198,14 @@ def test_an_operator_is_told_only_its_own_flights_at_risk():
     assert acc.filter_state(state, 'admin', True)['high'] == ['f0', 'f1']
 
 
+def test_only_the_admin_switches_the_pad_queue(srv):
+    srv.pad_queue = lambda on: {'status': 'ok', 'pad_queue': on}
+    path, body = '/api/padqueue', {'on': True}
+    assert Client(srv).post(path, body)[0] == 401
+    assert as_(srv, 'op0').post(path, body)[0] == 403
+    assert as_(srv, 'admin').post(path, body)[0] == 200
+
+
 def test_an_operator_cannot_open_anothers_track(srv):
     a, b = as_(srv, 'op0'), as_(srv, 'op1')
     assert a.get('/api/track?flight=f0')[0] == 200

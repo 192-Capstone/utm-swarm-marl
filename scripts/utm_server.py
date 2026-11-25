@@ -29,6 +29,9 @@ API (JSON):
     POST /api/zone      {polygon[, for_s]}               admin only: a no-fly zone from now on (local metres; E4
                                                          re-plans the flights it clashes with)
 
+    POST /api/padqueue  {on}                             admin only: drones bound for one pad line up (with the landing
+                                                         fix that keeps the line moving), or not; the state has 'pad_queue'
+
 Drones: the simulator has a fixed number of drones (--slots). They wait parked; an approved booking
 gets a free one, which waits on its pad until its booked departure (SwarmEnv.refly) and is free
 again once it has landed (or was cancelled or crashed). A booking with no drone free is refused.
@@ -81,6 +84,7 @@ BIRD_SPEED_M_S = (1.0, 3.0)
 BIRD_PLACE_T_S = 5.0                             # a bird sent to a place or point is there in this many seconds
 AVOID_QUIET_S = 2.0                              # a drone's guard quiet this long: that avoidance is over
 BIRD_TRAIL = 10                                  # snapshots (~1 s) of trail
+PAD_QUEUE_M, HOLD_STALL_M = 6.0, 2.0             # the pad queue's switch (/api/padqueue), where the scene has no values of its own
 AIM_AHEAD_S = (2.0, 16.0)                        # a bird aimed at a flight crosses its route where the drone is this many s from now
 LIVE_BIRDS = {'enabled': True, 'count': BIRD_POOL, 'radius': 0.12,
               'detector': {'enabled': True, 'mode': 'realistic', 'range_m': 12.0, 'fov_deg': 360.0, 'tracker': 'kalman',
@@ -113,7 +117,7 @@ class LiveUTM:
         disable_all_collision_physics(self.env, self.n)
         policy = es.MappoPolicy(cfg, args.checkpoint, torch.device('cpu'), True)
         policy.restore_normalizer(self.env)
-        self.policy = GoalHoldPolicy(policy, cfg) if goal_hold_enabled(cfg) else policy
+        self.policy = self.hold = GoalHoldPolicy(policy, cfg) if goal_hold_enabled(cfg) else policy
         self.guard = None
         if birds:
             if guard_enabled(cfg):                 # after goal-hold, as eval_layered.fly() does
@@ -236,6 +240,20 @@ class LiveUTM:
             reply = self._reply(fid, d, operator, frm, to)
             self._apply(acts[1:])
             return reply
+
+    def pad_queue(self, on):
+        """The admin's switch: drones bound for one pad line up (SwarmEnv pad_queue_m), and goal-hold takes in one that
+        stops short of its pad (stall_dist), so a stuck drone cannot hold up the line. Off: neither."""
+        with self.lock:
+            on = bool(on)
+            if on != (self.env.pad_queue_m is not None):
+                sim = self.sc['sim']
+                self.env.pad_queue_m = float(sim.get('pad_queue_m') or PAD_QUEUE_M) if on else None
+                self.env._pad_queue = {}
+                if hasattr(self.hold, 'stall_dist'):
+                    self.hold.stall_dist = float(sim.get('hold_stall_m') or HOLD_STALL_M) if on else 0.0
+                self._event('pad_queue', f"Pad queue {'on' if on else 'off'} (admin)")
+            return {'status': 'ok', 'pad_queue': on}
 
     def zone(self, polygon, for_s=None):
         with self.lock:
@@ -516,7 +534,7 @@ class LiveUTM:
     def state(self, since=0):
         """The newest snapshot (no lock: the simulation is not held up) and the events from `since` on."""
         snap, ev = self.snap, self.events[since:]          # events only grow: a slice is safe
-        return {**snap, 'events': ev, 'n_events': since + len(ev), 'zones': list(self.zones)}
+        return {**snap, 'events': ev, 'n_events': since + len(ev), 'zones': list(self.zones), 'pad_queue': self.env.pad_queue_m is not None}
 
 
 class V6Server(ThreadingHTTPServer):
@@ -655,6 +673,13 @@ def handler(live, root, access):
                     if not access.is_admin(role):
                         return self._deny('admin only')
                     return self._json(live.zone(body['polygon'], body.get('for_s')))
+                if u.path == '/api/padqueue':                              # the pad queue's switch: the admin only
+                    role = self._need()
+                    if role is None:
+                        return
+                    if not access.is_admin(role):
+                        return self._deny('admin only')
+                    return self._json(live.pad_queue(body['on']))
                 if u.path not in ('/api/request', '/api/emergency'):
                     return self._json({'status': 'error', 'reason': 'not found'}, 404)
                 role = self._need()

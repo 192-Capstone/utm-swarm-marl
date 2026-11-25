@@ -47,6 +47,11 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 .field select { width: 100%; height: 36px; border-radius: var(--r-control); border: 1px solid var(--border); background: var(--surface);
   color: var(--text); font: inherit; padding: 0 10px; }
 .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+.onoff { display: inline-flex; align-items: center; gap: 10px; border: 0; background: none; padding: 4px 0; font: inherit; font-weight: 500; color: var(--text); cursor: pointer; }
+.onoff i { width: 40px; height: 22px; border-radius: 11px; background: var(--muted); position: relative; transition: background .15s; }
+.onoff i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+.onoff[aria-checked="true"] i { background: var(--data); } .onoff[aria-checked="true"] i::after { left: 21px; }
+.onoff:disabled { opacity: .5; cursor: default; }
 .birdform { display: grid; gap: 8px; }
 .birdform label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
 .birdform select, .birdform input[type=range] { width: 100%; }
@@ -216,6 +221,11 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
     <section id="selbox" hidden>
       <h2>Selected drone</h2>
       <div class="sel" id="sel"></div>
+    </section>
+    <section id="queuebox" hidden>
+      <h2>Pad queue</h2>
+      <button type="button" class="onoff" id="queueBtn" role="switch" aria-checked="false"><i></i><span id="queueTxt">Off</span></button>
+      <p class="note" id="queueMsg" aria-live="polite">Off: two drones bound for one pad may reach it together.</p>
     </section>
     <section id="birdbox" hidden>
       <h2>Add bird</h2>
@@ -910,6 +920,7 @@ async function pollLive() {
     for (const k in guardSlot) delete guardSlot[k];
     for (const f of s.flights) if (f.guard && f.slot != null) guardSlot[f.slot] = true;
     if (BIRDS_ON) fillBirdTargets(s.flights);
+    if (ME.admin && !$('queueBtn').disabled) showQueue(!!s.pad_queue);
     const pos = Array.from({ length: N }, () => [0, 0, -50]), st = Array(N).fill(4);
     for (const f of s.flights) {
       if (f.slot == null || (f.status !== 'waiting' && f.status !== 'flying')) continue;
@@ -928,6 +939,23 @@ async function pollLive() {
     }
   } catch (e) { $('title').innerHTML = '<b>The UTM server is not answering</b>'; }
   polling = false;
+}
+// The pad queue's switch (admin): the server says whether it is on, so every open console agrees.
+function showQueue(on) {
+  $('queueBtn').setAttribute('aria-checked', String(on)); $('queueTxt').textContent = on ? 'On' : 'Off';
+  $('queueMsg').textContent = on ? 'On: drones bound for one pad wait 6 m apart until the one ahead has landed.' : 'Off: two drones bound for one pad may reach it together.';
+}
+if (LIVE && ME.admin) {
+  $('queuebox').hidden = false;
+  $('queueBtn').onclick = async () => {
+    const on = $('queueBtn').getAttribute('aria-checked') !== 'true';
+    $('queueBtn').disabled = true;
+    try {
+      const r = await fetch('api/padqueue', { method: 'POST', body: JSON.stringify({ on }) }), j = await r.json();
+      if (r.ok) showQueue(j.pad_queue); else $('queueMsg').textContent = j.reason || 'The server refused.';
+    } catch { $('queueMsg').textContent = 'The UTM server did not answer.'; }
+    $('queueBtn').disabled = false;
+  };
 }
 const BIRDS_ON = LIVE && ME.admin && !!(D.live && D.live.birds && D.live.birds.on);      // birds are the admin's to add
 if (LIVE && D.live.birds && D.live.birds.on) $('birdLegend').hidden = false;

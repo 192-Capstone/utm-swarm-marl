@@ -65,6 +65,17 @@ def test_the_scene_lists_places_and_client_nodes(live):
     assert s['operators'][0] == 'op0' and s['slots'] == 2 and s['buildings']
 
 
+def test_the_pad_queue_switch(live):
+    assert live.state()['pad_queue'] is False and live.env.pad_queue_m is None and live.hold.stall_dist == 0.0
+    n = len(live.events)
+    assert live.pad_queue(True) == {'status': 'ok', 'pad_queue': True}
+    assert live.state()['pad_queue'] and live.env.pad_queue_m == 6.0 and live.hold.stall_dist == 2.0
+    live.pad_queue(True)                                            # already on: nothing happens
+    live.pad_queue(False)
+    assert not live.state()['pad_queue'] and live.env.pad_queue_m is None and live.hold.stall_dist == 0.0
+    assert [e['text'] for e in live.events[n:]] == ['Pad queue on (admin)', 'Pad queue off (admin)']
+
+
 def test_a_zone_is_listed_and_logged(live):
     assert live.zone([[0, 0], [1, 0]])['status'] == 'error'         # two corners are no zone
     r = live.zone([[30, 30], [34, 30], [34, 34]], for_s=20)
