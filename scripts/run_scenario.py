@@ -191,8 +191,8 @@ def planner_for(sc):
     return layout, bounds, sky
 
 
-def sim_setup(sc, sky=None):
-    """The simulator config and the flight options (args) the scenario flies with (sky: for the birds' map bounds)."""
+def sim_setup(sc, bounds=None):
+    """The simulator config and the flight options (args) the scenario flies with."""
     with open(sc['sim']['config'], encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
     cfg.pop('scenario_mix', None)
@@ -205,8 +205,9 @@ def sim_setup(sc, sky=None):
     if sc['sim']['hold_engage_m'] is not None:          # goal-hold: engage here, release 0.2 m further out
         e = float(sc['sim']['hold_engage_m'])
         cfg.setdefault('goal_hold', {}).update(engage_dist=e, release_dist=e + 0.2)
-    if sc.get('birds') is not None and sky is not None:     # birds: aimed at the routes, inside the map, seeded like the run
-        cfg['environment']['birds'] = {'seed': sc['seed'], 'bounds': [list(b) for b in sky.bounds], **sc['birds'], 'enabled': True}
+    if sc.get('birds') is not None:                     # birds: aimed at the routes, inside the map, seeded like the run
+        bounds = bounds if bounds is not None else planner_for(sc)[1]
+        cfg['environment']['birds'] = {'seed': sc['seed'], 'bounds': [list(b) for b in bounds], **sc['birds'], 'enabled': True}
         g = cfg['environment']['birds'].get('guard')
         if g and g.get('enabled') and g.get('layer_spacing_m') is None:      # layers are 2 m apart: no evasion into another layer
             g['layer_spacing_m'] = 2.0
@@ -241,7 +242,7 @@ def run(sc, record=None):
 
     duration = float(sc['demand'].get('duration_s', sc['demand'].get('window', 30.0)))
     e7 = system_metrics(sky, reqs, duration)                      # before fly(): E1's decisions as filed
-    cfg, args = sim_setup(sc, sky)
+    cfg, args = sim_setup(sc, bounds)
     rec = FlightLog(sc, progress_s=10.0)
     out = ev.fly(cfg, args, layout, sky, flights, extra, late, slow, sc['utm']['mode'], sc['sim']['pilot'],
                  sc['seed'], rec=rec, zones=zones, failures=failure_schedule(sc, flights, late))
