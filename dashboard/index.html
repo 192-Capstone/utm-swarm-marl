@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>UTM E-City Console</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -30,8 +31,13 @@
 html, body { height: 100%; }
 [hidden] { display: none !important; }
 body { background: var(--ground); color: var(--text); font: 400 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
-.app { height: 100%; display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: var(--gap);
+.app { position: relative; height: 100%; display: grid; grid-template-columns: var(--side, 300px) minmax(0, 1fr); gap: var(--gap);
   padding-block: var(--gap); padding-left: max(var(--gap), env(safe-area-inset-left, 0px)); padding-right: max(var(--gap), env(safe-area-inset-right, 0px)); box-sizing: border-box; }
+.grip { position: absolute; top: var(--gap); bottom: var(--gap); left: calc(var(--gap) + var(--side, 300px)); width: var(--gap); cursor: col-resize; touch-action: none; z-index: 4; }
+.grip::after { content: ""; position: absolute; left: 50%; top: 50%; width: 3px; height: 44px; margin: -22px 0 0 -1.5px; border-radius: 2px; background: var(--border); transition: background .15s ease; }
+.grip:hover::after, .grip.drag::after { background: var(--muted); }
+.app.collapsed { grid-template-columns: minmax(0, 1fr); gap: 0; }
+.app.collapsed .side, .app.collapsed .grip { display: none; }
 .side { display: flex; flex-direction: column; gap: 22px; overflow-y: auto; padding: 8px 8px 8px 4px; min-width: 0; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand svg { flex: none; }
@@ -79,6 +85,29 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 .nodes .row .n b { color: var(--text); font-size: 13px; }
 .nodes .row.hit { box-shadow: inset 3px 0 0 var(--danger); }
 .nodes .row.hit small { color: var(--danger); }
+.flights { background: var(--surface); border-radius: var(--r-card); max-height: 252px; overflow-y: auto; padding: 4px 0; }
+.flights h3 { margin: 0; padding: 8px 12px 2px; font-size: 12px; font-weight: 500; color: var(--muted); position: sticky; top: 0; background: var(--surface); }
+.flights button { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; text-align: left; padding: 6px 12px;
+  border: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; transition: background .14s ease; }
+.flights button:hover:not(:disabled) { background: var(--raised); }
+.flights button:disabled { cursor: default; opacity: .55; }
+.flights button[aria-current="true"] { background: var(--raised); box-shadow: inset 3px 0 0 var(--ink); }
+.flights .fid { font-family: var(--mono); font-size: 12px; }
+.flights .froute { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flights .none { padding: 8px 12px; color: var(--muted); font-size: 13px; }
+.toasts { position: absolute; left: 12px; bottom: 68px; display: grid; gap: 6px; width: min(340px, calc(100% - 24px)); pointer-events: none; z-index: 3; }
+.toast { pointer-events: auto; cursor: pointer; background: var(--surface); border-radius: var(--r-control); padding: 8px 12px; font-size: 13px;
+  box-shadow: inset 3px 0 0 var(--warn), 0 4px 16px rgba(0,0,0,.18); animation: in .25s ease-out both; }
+.toast.danger { box-shadow: inset 3px 0 0 var(--danger), 0 4px 16px rgba(0,0,0,.18); }
+.toast small { display: block; color: var(--muted); font-size: 12px; }
+.toast.out { opacity: 0; transition: opacity .4s ease; }
+.nodes a { color: var(--data); font-size: 12px; text-decoration: none; }
+.drawbar { position: absolute; left: 50%; bottom: 68px; transform: translateX(-50%); display: flex; gap: 8px; white-space: nowrap; max-width: calc(100% - 24px); flex-wrap: wrap; justify-content: center; align-items: center; background: var(--surface);
+  border-radius: var(--r-control); padding: 6px 8px 6px 12px; font-size: 13px; box-shadow: 0 0 0 1.5px var(--danger); }
+.drawbar select, .drawbar button { height: 28px; border: 0; border-radius: 4px; font: inherit; font-size: 13px; padding: 0 10px; cursor: pointer; background: var(--raised); color: var(--text); }
+.drawbar button.go { background: var(--danger); color: #fff; }
+.drawbar button:disabled { opacity: .45; cursor: default; }
+.stage.drawing canvas { cursor: crosshair; }
 .sel { background: var(--surface); border-radius: var(--r-card); padding: 12px 14px; display: grid; gap: 8px; }
 .sel dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
 .sel dt { color: var(--muted); }
@@ -136,6 +165,7 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 @media (prefers-reduced-motion: reduce) { .feed li { animation: none; } * { transition: none !important; } }
 @media (max-width: 860px) {
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 62svh auto; height: auto; min-height: 100%; }
+  .grip { display: none; }
   .stage { order: -1; }
   .side { overflow: visible; }
   .bar.top .title { display: none; }
@@ -175,6 +205,14 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
       <h2>Client nodes</h2>
       <div class="nodes" id="nodes"></div>
     </section>
+    <section id="alertbox" hidden>
+      <h2>Active alerts</h2>
+      <div class="flights" id="alerts"></div>
+    </section>
+    <section>
+      <h2>Flights</h2>
+      <div class="flights" id="flights"></div>
+    </section>
     <section id="selbox" hidden>
       <h2>Selected drone</h2>
       <div class="sel" id="sel"></div>
@@ -209,11 +247,16 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
     </section>
   </aside>
 
+  <div class="grip" id="grip" role="separator" aria-orientation="vertical" aria-label="Resize the panel (double-click to reset)"></div>
+
   <main class="stage" id="stage">
     <canvas id="gl" aria-label="3D view of E-City with the drones, their routes and booked airspace"></canvas>
     <div class="labels" id="labels"></div>
     <div class="bar top">
-      <div class="title" id="title"></div>
+      <div style="display: flex; gap: 8px;">
+        <button type="button" class="pick" id="sideToggle" aria-label="Hide the panel" title="Hide / show the panel">&#9776;</button>
+        <div class="title" id="title"></div>
+      </div>
       <div style="display: flex; gap: 8px; flex-wrap: wrap;">
         <div class="seg" role="group" aria-label="Camera">
           <button type="button" data-cam="director" aria-pressed="true">Director</button>
@@ -221,6 +264,7 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
           <button type="button" data-cam="overhead" aria-pressed="false">Overhead</button>
           <button type="button" data-cam="follow" aria-pressed="false">Follow</button>
         </div>
+        <button type="button" class="pick" id="drawBtn" hidden>Draw zone</button>
         <label class="sr-only" for="follow">Drone to follow</label>
         <select id="follow" class="pick" hidden></select>
         <div class="seg" role="group" aria-label="Theme">
@@ -228,6 +272,15 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
           <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
         </div>
       </div>
+    </div>
+    <div class="toasts" id="toasts" aria-live="assertive"></div>
+    <div class="drawbar" id="drawbar" hidden>
+      <span id="drawHint">Click the corners of the zone</span>
+      <label class="sr-only" for="drawFor">Closed for</label>
+      <select id="drawFor"><option value="60">1 min</option><option value="240" selected>4 min</option><option value="">until cancelled</option></select>
+      <button type="button" id="drawUndo">Undo</button>
+      <button type="button" class="go" id="drawGo" disabled>Close zone</button>
+      <button type="button" id="drawX" aria-label="Cancel">Cancel</button>
     </div>
     <div class="bar bottom">
       <button type="button" class="play" id="play" aria-label="Pause"><svg viewBox="0 0 14 14"><rect x="2" y="1" width="3.5" height="12"/><rect x="8.5" y="1" width="3.5" height="12"/></svg></button>
@@ -293,7 +346,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 600);
+const camera = new THREE.PerspectiveCamera(38, 1, 0.5, 600);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true; controls.dampingFactor = 0.15; controls.zoomToCursor = true; controls.zoomSpeed = 1.4;
 controls.enabled = false; controls.maxPolarAngle = Math.PI * 0.47; controls.minDistance = 3;
@@ -335,9 +388,23 @@ const wallTex = canvasTex(64, 64, (g, w, h) => { g.fillStyle = '#fff'; g.fillRec
 const groundMat = new THREE.MeshStandardMaterial({ roughness: 1, map: groundTex });
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(span * 4, span * 4), groundMat);
 ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; ground.position.set(cx, 0, -cy); scene.add(ground);
-const plotMat = new THREE.MeshStandardMaterial({ roughness: 1 });
+const plotMat = new THREE.MeshStandardMaterial({ roughness: 1, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
 const plot = new THREE.Mesh(new THREE.PlaneGeometry(bx1 - bx0, by1 - by0), plotMat);
 plot.rotation.x = -Math.PI / 2; plot.position.set(cx, 0.005, -cy); plot.receiveShadow = true; scene.add(plot);
+
+// streets: where buildings stand close (within ~14 m of a wall) the ground between them is shaded as a street,
+// each building keeping a 2.5 m pavement; open ground stays plain. Drawn from the footprints at 1 px per metre.
+const streetTex = (() => {
+  const W = Math.ceil(bx1 - bx0), H = Math.ceil(by1 - by0), c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'); g.fillStyle = g.strokeStyle = '#fff'; g.lineJoin = 'round';
+  const foot = (b, grow) => { g.save(); g.translate(b.c[0] - bx0, by1 - b.c[1]); g.rotate(-b.yaw); g.beginPath(); g.rect(-b.h[0], -b.h[1], 2 * b.h[0], 2 * b.h[1]); g.fill(); g.lineWidth = grow; g.stroke(); g.restore(); };
+  D.map.buildings.forEach(b => foot(b, 28));
+  g.globalCompositeOperation = 'destination-out'; D.map.buildings.forEach(b => foot(b, 5));
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); return t;
+})();
+const streetMat = new THREE.MeshBasicMaterial({ map: streetTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+const streets = new THREE.Mesh(new THREE.PlaneGeometry(bx1 - bx0, by1 - by0), streetMat);
+streets.rotation.x = -Math.PI / 2; streets.position.set(cx, 0.009, -cy); scene.add(streets);
 
 const bMat = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 });          // the roofs
 const wallMats = [];                                 // walls: a window texture scaled to each building (3 m storeys)
@@ -397,7 +464,7 @@ const routeEm = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.9 })
 const routeIn = new THREE.LineDashedMaterial({ dashSize: 0.6 * SC, gapSize: 0.5 * SC, transparent: true, opacity: 0.7 });
 const routes = DR.map(() => { const l = new THREE.Line(new THREE.BufferGeometry(), routeMat); l.visible = false; scene.add(l); return { line: l, ver: null }; });
 
-// drones: a small quadcopter, drawn ~5x real size so it reads from 60 m
+// drones: a small quadcopter, drawn ~5x real size so it reads from far (near real size when the camera is close)
 const droneMat = { flight: new THREE.MeshStandardMaterial({ roughness: 0.5 }), emergency: new THREE.MeshStandardMaterial({ roughness: 0.5 }),
   intruder: new THREE.MeshStandardMaterial({ roughness: 0.5 }) };
 const rotorMat = new THREE.MeshStandardMaterial({ transparent: true, opacity: 0.55, roughness: 0.6 });
@@ -423,22 +490,24 @@ const drones = DR.map((d, i) => {
   body.userData.idx = i; g.scale.setScalar(DS); g.visible = false; scene.add(g);
   const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.35 }));
   scene.add(trail);
-  return { g, body, hit, rotors, ring, sel, trail, parts, mat, guard: false };
+  return { g, body, hit, rotors, ring, sel, trail, parts, mat, guard: false, k: DS };
 });
 
 // no-fly zones: a translucent column with a solid outline, rising when it closes the area
 const zoneMat = new THREE.MeshStandardMaterial({ transparent: true, opacity: 0.16, depthWrite: false, roughness: 1 });
 const zoneEdge = new THREE.LineBasicMaterial();
-const zones = D.zones.map(z => {
+const zones = [];
+function addZone(z) {                              // the zone's real outline, extruded from the ground up
   const xy = z.polygon, x0 = Math.min(...xy.map(p => p[0])), x1 = Math.max(...xy.map(p => p[0]));
   const y0 = Math.min(...xy.map(p => p[1])), y1 = Math.max(...xy.map(p => p[1])), h = Math.max(...layerZ) + 1.5;
-  const geo = new THREE.BoxGeometry(x1 - x0, h, y1 - y0);
-  const g = new THREE.Group(); g.position.set((x0 + x1) / 2, 0, -(y0 + y1) / 2);
-  const m = new THREE.Mesh(geo, zoneMat); m.position.y = h / 2; g.add(m);
-  const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo), zoneEdge); e.position.y = h / 2; g.add(e);
+  const geo = new THREE.ExtrudeGeometry(new THREE.Shape(xy.map(p => new THREE.Vector2(p[0], p[1]))), { depth: h, bevelEnabled: false });
+  geo.rotateX(-Math.PI / 2);                       // world (x, y, z-up) -> three (x, z, -y), as v3()
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(geo, zoneMat), new THREE.LineSegments(new THREE.EdgesGeometry(geo), zoneEdge));
   g.visible = false; scene.add(g);
-  return { z, g, h, centre: [(x0 + x1) / 2, (y0 + y1) / 2] };
-});
+  zones.push({ z, g, h, centre: [(x0 + x1) / 2, (y0 + y1) / 2] });
+}
+D.zones.forEach(addZone);
 const zoneOn = (z, t) => z.t_on != null && t >= z.t_on && (!z.active.length || z.active.some(([a, b]) => a <= t && t < b));
 
 function paint() {
@@ -447,6 +516,7 @@ function paint() {
   groundMat.color.set(css('--scene-ground')); plotMat.color.set(css('--scene-ground')).offsetHSL(0, 0, theme === 'dark' ? 0.02 : 0.015);
   bMat.color.set(css('--scene-building')).offsetHSL(0, 0, theme === 'dark' ? 0.04 : -0.03); eMat.color.set(css('--scene-edge'));
   wallMats.forEach(m => m.color.set(css('--scene-building')));
+  streetMat.color.set(theme === 'dark' ? '#ffffff' : '#000000'); streetMat.opacity = theme === 'dark' ? 0.07 : 0.1;
   padMat.color.set(css('--scene-pad')); markMat.color.set(css('--scene-mark')); dangerMat.color.set(css('--danger'));
   hexMat.color.set(css('--data')); hexMat.opacity = theme === 'dark' ? 0.2 : 0.14;
   routeMat.color.set(css('--data')); routeEm.color.set(css('--danger')); routeIn.color.set(css('--muted'));
@@ -466,7 +536,12 @@ function posAt(i, t) {
   return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
 }
 const statusAt = (i, t) => S[frameAt(t)][i];
-const hotAt = (t) => { let h = D.hot[0]; for (const x of D.hot) { if (x.t <= t) h = x; else break; } return new Set(h ? h.high : []); };
+// alerts by severity. critical: a flight inside a zone or another flight's air, an intruder. warning: late or off its
+// route with traffic booked near it. Nothing else is shown (early, over its pad: the UTM handles them quietly).
+const sevOf = (e) => !e ? null : (e.state === 'unknown' || e.state === 'intrusion') ? 'critical' : (!e.state || e.state === 'late' || e.state === 'off_route') ? 'warning' : null;
+const alertFor = (id, t) => { let r = null; for (const e of D.events) if (e.type === 'alert' && e.risk === 'high' && e.flight === id && e.t <= t) r = e; return r; };
+const hotRaw = (t) => { let h = D.hot[0]; for (const x of D.hot) { if (x.t <= t) h = x; else break; } return h ? h.high : []; };
+const hotAt = (t) => new Set(hotRaw(t).filter(id => sevOf(alertFor(id, t))));
 const bookAt = (id, t) => { const v = D.bookings[id] || []; let b = null; for (const x of v) if (x.t <= t) b = x; return b; };
 const recentTags = (t) => { const m = {}; for (const e of D.events) if (e.type === 'replan' && e.flight && e.t <= t && t - e.t < 4) m[e.flight] = e.tag; return m; };
 
@@ -535,11 +610,13 @@ function setCam(c) {
 function select(i) {
   selected = i; drones.forEach((d, k) => d.sel.visible = k === i); $('selbox').hidden = i < 0;
   if (i >= 0) $('follow').value = String(i);
+  lastFlights = '';
 }
 const kindWord = (d) => d.kind === 'emergency' ? `emergency, ${nodeName(d.operator)}` : d.kind === 'intruder' ? 'intruder' : `delivery, ${d.operator}`;
 $('follow').innerHTML = DR.map((d, i) => `<option value="${i}">Follow ${d.id} (${route(d) || kindWord(d)})</option>`).join('');
 $('follow').onchange = (e) => select(+e.target.value);
 
+$('alerts').onclick = $('flights').onclick = (e) => { const b = e.target.closest('[data-fl]'); if (!b) return; select(+b.dataset.fl); setCam('follow'); lastFlights = ''; };
 $('play').onclick = () => setPlaying(!playing);
 $('speed').onclick = () => { speed = speeds[(speeds.indexOf(speed) + 1) % speeds.length]; $('speed').textContent = `${speed}\u00d7`; };
 $('time').oninput = (e) => { seek(+e.target.value); };
@@ -561,16 +638,21 @@ canvas.addEventListener('pointermove', (e) => {
     fYaw += (e.clientX - downAt[0]) * 0.008; fPitch = Math.min(1.45, Math.max(0.08, fPitch + (e.clientY - downAt[1]) * 0.006));
     downAt = [e.clientX, e.clientY]; return;
   }
-  if (cam !== 'orbit' && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) setCam('orbit');
+  if (!draw.on && cam !== 'orbit' && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) setCam('orbit');
 });
 addEventListener('pointerup', () => { downAt = null; });
 canvas.addEventListener('wheel', (e) => {
   if (cam === 'follow') { fDist = Math.min(5, Math.max(0.25, fDist * (1 + e.deltaY * 0.0015))); e.preventDefault(); return; }
-  if (cam !== 'orbit') setCam('orbit');
+  if (cam !== 'orbit' && !draw.on) setCam('orbit');
 }, { passive: false });
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
 canvas.addEventListener('click', (e) => {
-  const r = canvas.getBoundingClientRect(); ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  const r = canvas.getBoundingClientRect();
+  if (draw.on) {
+    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1); ray.setFromCamera(ndc, camera);
+    if (ray.ray.intersectPlane(ground0, hitPt)) { draw.pts.push([hitPt.x, -hitPt.z]); drawRefresh(); }
+    return;
+  } ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   ray.setFromCamera(ndc, camera);
   const hit = ray.intersectObjects(drones.filter(d => d.g.visible).map(d => d.hit))[0];
   if (hit) { select(hit.object.userData.idx); if (cam !== 'orbit') setCam('follow'); }
@@ -578,7 +660,7 @@ canvas.addEventListener('click', (e) => {
 
 // ---------------------------------------------------------------- per-frame updates
 const look = new THREE.Vector3(acx, 2, -acy), wantPos = new THREE.Vector3(), wantLook = new THREE.Vector3();
-let hexClock = -1, lastFeed = '', lastSel = '', lastCounts = '', lastNodes = '';
+let hexClock = -1, lastFeed = null, lastSel = '', lastCounts = '', lastNodes = '', lastFlights = '', lastAlerts = '';
 const labels = $('labels'), tagEls = DR.map(() => { const el = document.createElement('div'); el.className = 'tag'; el.hidden = true; labels.appendChild(el); return el; });
 const placeEls = PLACES.map(p => { const el = document.createElement('div'); el.className = `place ${p.kind}`; el.textContent = p.name;
   const c = p.pads.reduce((a, q) => [a[0] + q[0] / p.pads.length, a[1] + q[1] / p.pads.length], [0, 0]);
@@ -615,9 +697,12 @@ function updateWorld(dt) {
     if (dr.guard !== guarded) { dr.guard = guarded; for (const m of dr.parts) m.material = guarded ? guardMat : dr.mat; }
     if (flying) {
       dr.g.position.copy(v3(posAt(i, t)));
+      // drawn large from afar so it reads; shrinks to about its real size (0.2 of the model) as the camera comes close
+      dr.k = Math.min(DS, Math.max(0.2, camera.position.distanceTo(dr.g.position) / 40));
+      dr.g.scale.setScalar(dr.k); dr.hit.scale.setScalar(Math.max(1, 0.6 / dr.k)); dr.sel.scale.setScalar(Math.max(1, 0.4 / dr.k));
       if (!reduce) dr.rotors.forEach((r, k) => r.rotation.y += (k % 2 ? 1 : -1) * dt * 40);
       dr.ring.visible = hot.has(d.id);
-      if (dr.ring.visible) { const p = 1 + 0.12 * Math.sin(performance.now() / 180); dr.ring.scale.set(p, p, p); }
+      if (dr.ring.visible) { const p = (1 + 0.12 * Math.sin(performance.now() / 180)) * Math.max(1, 0.5 / dr.k); dr.ring.scale.set(p, p, p); }
       const pts = []; for (let k = 16; k >= 0; k--) { const tk = t - k * 0.25; if (tk >= 0 && statusAt(i, tk) === 1) pts.push(v3(posAt(i, tk))); }
       dr.trail.geometry.setFromPoints(pts); dr.trail.visible = pts.length > 1;
     } else dr.trail.visible = false;
@@ -703,7 +788,15 @@ function frameCamera(dt) {
     wantLook.copy(p);
     wantPos.set(p.x + Math.cos(yaw) * R * Math.cos(fPitch), p.y + R * Math.sin(fPitch), p.z + Math.sin(yaw) * R * Math.cos(fPitch));
   }
-  const k = reduce ? 1 : 1 - Math.exp(-dt * (cam === 'follow' ? 4 : 1.6));
+  if (cam === 'custom') {                         // scripted shots (window.utm)
+    const o = cust.orbit;
+    if (o) {
+      o.a += o.rate * dt;
+      const c = typeof o.c === 'string' ? posAt(DR.findIndex(d => d.id === o.c), t) : o.c;
+      wantLook.copy(v3(c)); wantPos.copy(v3([c[0] + Math.cos(o.a) * o.r, c[1] + Math.sin(o.a) * o.r, o.h]));
+    } else if (cust.pos) { wantPos.copy(v3(cust.pos)); wantLook.copy(v3(typeof cust.look === 'string' ? posAt(DR.findIndex(d => d.id === cust.look), t) : cust.look)); }
+  }
+  const k = reduce ? 1 : 1 - Math.exp(-dt * (cam === 'follow' ? 4 : cam === 'custom' ? 1.1 : 1.6));
   camera.position.lerp(wantPos, k); look.lerp(wantLook, k); camera.lookAt(look);
 }
 
@@ -718,7 +811,9 @@ function updatePanels() {
     $('counts').innerHTML = [[fl, 'flying'], [wt, 'on pad'], [ld, 'landed'], [al, 'alerts', al ? 'bad' : '']]
       .map(([v, l, cls]) => `<div class="${cls || ''}"><b>${v}</b><span>${l}</span></div>`).join('');
   }
-  const ev = D.events.filter(e => e.t <= t && (e.type !== 'alert' || e.risk === 'high')).slice(-7).reverse();
+  const seenAlert = new Set();                    // one line per flight's alert (it repeats as the state changes)
+  const ev = D.events.filter(e => e.t <= t && (e.type !== 'alert' || e.risk === 'high')).reverse()
+    .filter(e => e.type !== 'alert' || (!seenAlert.has(e.flight) && seenAlert.add(e.flight))).slice(0, 7);
   const key = ev.map(e => e.t + e.text).join();
   if (key !== lastFeed) {
     lastFeed = key;
@@ -742,7 +837,33 @@ function updatePanels() {
     lastNodes = nkey;
     $('nodes').innerHTML = nk.map(x => `<div class="row${x.hit ? ' hit' : ''}"><b>${x.n.name}</b>
       <span class="n"><b>${x.booked}</b> booked<br>${x.fly} flying &middot; ${x.done} landed</span>
-      <small>${x.hit ? `${x.hit.flight} re-booked for the emergency` : x.rb ? `${x.n.role} &middot; ${x.rb} re-booked` : x.n.role}</small></div>`).join('');
+      <small>${x.hit ? `${x.hit.flight} re-booked for the emergency` : x.rb ? `${x.n.role} &middot; ${x.rb} re-booked` : x.n.role}${LIVE ? ` &middot; <a href="operator.html?op=${encodeURIComponent(x.n.id)}" target="_blank" rel="noopener">open console</a>` : ''}</small></div>`).join('');
+  }
+  // the flights with a high-risk alert now, and why
+  const hotNow = [...hotAt(t)].map(id => DR.findIndex(d => d.id === id)).filter(i => i >= 0 && st[i] === 1)
+    .sort((a, b) => (sevOf(alertFor(DR[a].id, t)) === 'critical' ? 0 : 1) - (sevOf(alertFor(DR[b].id, t)) === 'critical' ? 0 : 1));
+  const akey = hotNow.map(i => i + sevOf(alertFor(DR[i].id, t))[0]).join() + '|' + selected;
+  if (akey !== lastAlerts) {
+    lastAlerts = akey; $('alertbox').hidden = !hotNow.length;
+    $('alerts').innerHTML = hotNow.map(i => {
+      const a = alertFor(DR[i].id, t), crit = sevOf(a) === 'critical';
+      return `<button type="button" data-fl="${i}"${i === selected ? ' aria-current="true"' : ''}><span class="fid">${DR[i].id}</span><span class="froute">${a ? a.text.replace(/^Alert: \S+ /, '') : ''}</span><span class="pill ${crit ? 'danger' : 'warn'}">${crit ? 'critical' : 'warning'}</span></button>`;
+    }).join('');
+  }
+  // every flight by operator; a click selects it and follows it
+  const rows = DR.map((d, i) => d.id && (LIVE ? st[i] < 2 : true) ? { i, d, s: st[i] } : null).filter(Boolean);
+  const gone = LIVE ? liveFlights.filter(f => f.slot == null || f.status === 'landed' || f.status === 'crashed' || f.status === 'cancelled').slice(-6) : [];
+  const fkey = rows.map(r => r.i + ':' + r.s).join() + '|' + selected + '|' + gone.map(f => f.id + f.status).join();
+  if (fkey !== lastFlights) {
+    lastFlights = fkey;
+    const word = ['on pad', 'flying', 'landed', 'crashed', 'cancelled'];
+    const grp = [...NODES.map(n => ({ title: n.name, own: (d) => d.operator === n.id && d.kind !== 'intruder' })), { title: 'Intruders', own: (d) => d.kind === 'intruder' }];
+    const html = grp.map(g => {
+      const mine = rows.filter(r => g.own(r.d));
+      return mine.length ? `<h3>${g.title}</h3>` + mine.map(r => `<button type="button" data-fl="${r.i}"${r.i === selected ? ' aria-current="true"' : ''}>
+        <span class="fid">${r.d.id}</span><span class="froute">${route(r.d) || kindWord(r.d)}</span><span class="pill ${r.s === 1 ? 'data' : r.s === 3 ? 'danger' : ''}">${word[r.s]}</span></button>`).join('') : '';
+    }).join('') + (gone.length ? '<h3>Finished</h3>' + gone.map(f => `<button type="button" disabled><span class="fid">${f.id}</span><span class="froute">${f.from} \u2192 ${f.to}</span><span class="pill">${f.status}</span></button>`).join('') : '');
+    $('flights').innerHTML = html || '<div class="none">No flights yet.</div>';
   }
   const ch = chapterAt(t);
   document.querySelectorAll('[data-ch]').forEach(b => b.toggleAttribute('aria-current', +b.dataset.ch === ch));
@@ -782,7 +903,8 @@ async function pollLive() {
   polling = true;
   try {
     const s = await (await fetch(`api/state?since=${since}`)).json();
-    since = s.n_events; liveFlights = s.flights; D.events.push(...s.events);
+    since = s.n_events; liveFlights = s.flights; D.events.push(...s.events); D.hot = [{ t: 0, high: s.high || [] }];
+    for (const z of s.zones || []) if (!zones.some(q => q.z.id === z.id)) { D.zones.push(z); addZone(z); }
     birdsNow = s.birds || [];
     for (const b of birdsNow) { const h = birdHist.get(b.id) || []; h.push([s.t, b.pos]); h.splice(0, h.length - 12); birdHist.set(b.id, h); }
     for (const k in guardSlot) delete guardSlot[k];
@@ -791,7 +913,7 @@ async function pollLive() {
     const pos = Array.from({ length: N }, () => [0, 0, -50]), st = Array(N).fill(4);
     for (const f of s.flights) {
       if (f.slot == null || (f.status !== 'waiting' && f.status !== 'flying')) continue;
-      Object.assign(DR[f.slot], { id: f.id, kind: f.kind, operator: f.operator, from: f.from, to: f.to, t_dep: f.t_dep,
+      Object.assign(DR[f.slot], { id: f.id, kind: f.kind, operator: f.operator, from: f.from, to: f.to, t_dep: f.t_off ?? f.t_dep,
         arrival: f.arrival, start: f.route[0].slice(0, 2), goal: f.route[f.route.length - 1].slice(0, 2) });
       D.routes[f.id] = [{ t: 0, route: f.route }];
       pos[f.slot] = f.pos; st[f.slot] = f.status === 'flying' ? 1 : 0;
@@ -845,11 +967,103 @@ if (LIVE) {
   setInterval(pollLive, 250);
 }
 
+// ---------------------------------------------------------------- notifications: alerts, zones, crashes as they happen
+let toastT = null; const alertAt = {};
+function toast(e) {
+  const el = document.createElement('div'), bad = e.type !== 'alert';
+  el.className = 'toast' + (bad ? ' danger' : '');
+  el.append(Object.assign(document.createElement('b'), { textContent: e.text }),
+    Object.assign(document.createElement('small'), { textContent: fmt(e.t) + (e.node ? ' \u00b7 sent to ' + nodeName(e.node) : '') }));
+  el.onclick = () => { const i = DR.findIndex(d => d.id === e.flight); if (i >= 0) { select(i); setCam('follow'); } el.remove(); };
+  $('toasts').prepend(el);
+  while ($('toasts').children.length > 4) $('toasts').lastChild.remove();
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 450); }, 9000);
+}
+function notify() {
+  if (toastT === null) toastT = LIVE ? t : 0;
+  if (t < toastT) toastT = t;                                  // seeked back
+  if (t - toastT > 3) { toastT = t; return; }                  // seeked forward: do not flood
+  const fresh = [];                                            // a flight's alert once per 30 s; a burst becomes one note
+  for (const e of D.events) if (e.t > toastT && e.t <= t) {
+    if (e.type === 'alert' && e.risk === 'high') { if (sevOf(e) === 'critical' && !(e.t - (alertAt[e.flight] ?? -99) < 30)) fresh.push(e); alertAt[e.flight] = e.t; }
+    else if (e.type === 'zone_on' || e.type === 'crashed') toast(e);
+  }
+  if (fresh.length > 2) toast({ type: 'alert', t: fresh[0].t, text: `${fresh.length} flights raised alerts`, flight: null });
+  else fresh.forEach(toast);
+  toastT = t;
+}
+
+// ---------------------------------------------------------------- draw a no-fly zone (live)
+const draw = { on: false, pts: [] }, drawGeo = new THREE.BufferGeometry();
+const drawLine = new THREE.Line(drawGeo, new THREE.LineBasicMaterial({ color: 0xc4242a, depthTest: false })), drawDots = new THREE.Group();
+drawLine.visible = false; scene.add(drawLine, drawDots);
+const ground0 = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hitPt = new THREE.Vector3();
+function drawRefresh() {
+  const p = draw.pts.map(q => new THREE.Vector3(q[0], 0.35, -q[1]));
+  if (p.length > 2) p.push(p[0]);
+  drawGeo.setFromPoints(p); drawLine.visible = p.length > 1;
+  drawDots.clear();
+  for (const q of draw.pts) { const m = new THREE.Mesh(new THREE.SphereGeometry(0.5 * SC, 12, 8), new THREE.MeshBasicMaterial({ color: 0xc4242a, depthTest: false })); m.position.set(q[0], 0.4, -q[1]); drawDots.add(m); }
+  $('drawGo').disabled = draw.pts.length < 3;
+  $('drawHint').textContent = draw.pts.length < 3 ? `Click the corners of the zone (${draw.pts.length})` : `${draw.pts.length} corners \u00b7 close it to file it`;
+}
+function drawMode(on) {
+  draw.on = on; draw.pts = []; $('drawbar').hidden = !on; stage.classList.toggle('drawing', on); $('drawBtn').setAttribute('aria-pressed', String(on));
+  if (on) setCam('overhead');
+  drawRefresh();
+}
+async function fileZone() {
+  const f = $('drawFor').value, body = { polygon: draw.pts.map(q => q.map(v => Math.round(v * 10) / 10)), for_s: f ? +f : null };
+  $('drawGo').disabled = true;
+  try { const r = await (await fetch('api/zone', { method: 'POST', body: JSON.stringify(body) })).json();
+    if (r.status === 'approved') { drawMode(false); setCam('director'); } else { $('drawHint').textContent = r.reason || 'The UTM refused the zone'; $('drawGo').disabled = false; }
+  } catch { $('drawHint').textContent = 'The UTM server did not answer'; $('drawGo').disabled = false; }
+}
+if (LIVE && ME.admin) {                                        // zones are the admin's to close (the server checks too)
+  $('drawBtn').hidden = false;
+  $('drawBtn').onclick = () => drawMode(!draw.on);
+  $('drawUndo').onclick = () => { draw.pts.pop(); drawRefresh(); };
+  $('drawX').onclick = () => drawMode(false);
+  $('drawGo').onclick = fileZone;
+  addEventListener('keydown', (e) => { if (!draw.on) return; if (e.key === 'Escape') drawMode(false); if (e.key === 'Enter' && draw.pts.length > 2) fileZone(); });
+}
+// ---------------------------------------------------------------- the left panel: drag its edge to resize, the button hides it
+const appEl = document.querySelector('.app'), grip = $('grip');
+let sideW = 300;
+try { sideW = +localStorage.getItem('utm-side') || 300; } catch { }
+function setSide(w) {
+  sideW = Math.min(640, Math.max(240, Math.round(w))); appEl.style.setProperty('--side', `${sideW}px`);
+  try { localStorage.setItem('utm-side', String(sideW)); } catch { }
+}
+setSide(sideW);
+let dragging = false;
+grip.onpointerdown = (e) => { dragging = true; grip.setPointerCapture(e.pointerId); grip.classList.add('drag'); e.preventDefault(); };
+grip.onpointermove = (e) => { if (dragging) setSide(e.clientX - appEl.getBoundingClientRect().left - 12); };
+grip.onpointerup = grip.onpointercancel = () => { dragging = false; grip.classList.remove('drag'); };
+grip.ondblclick = () => setSide(300);
+$('sideToggle').onclick = () => {
+  const c = appEl.classList.toggle('collapsed');
+  $('sideToggle').setAttribute('aria-label', c ? 'Show the panel' : 'Hide the panel');
+};
+
+// ---------------------------------------------------------------- camera hooks for recording the demo (window.utm)
+const cust = { pos: null, look: null, orbit: null };
+window.utm = {
+  seek: (x) => seek(x), play: (p) => setPlaying(p), time: () => t, end: () => END,
+  speed: (v) => { speed = v; $('speed').textContent = `${v}\u00d7`; },
+  cam: (c) => setCam(c),
+  follow: (id, o = {}) => { const i = DR.findIndex(d => d.id === id); if (i < 0) return false; select(i); setCam('follow');
+    if (o.yaw != null) fYaw = o.yaw; if (o.pitch != null) fPitch = o.pitch; if (o.dist != null) fDist = o.dist; return true; },
+  view: (pos, look) => { cust.pos = pos; cust.look = look; cust.orbit = null; setCam('custom'); },       // world metres, z up
+  orbit: (centre, r, h, rate, a0) => { cust.orbit = { c: centre, r, h, rate, a: a0 || 0 }; setCam('custom'); },   // centre: [x, y, z] or a flight id
+  posAt: (id, at) => posAt(DR.findIndex(d => d.id === id), at ?? t),
+};
+
 renderer.setAnimationLoop((now) => {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   if (LIVE) t = Math.max(0, END - 0.6);           // just behind the newest state, so motion is interpolated
   else if (playing) { t += dt * speed; if (t >= END) { t = END; setPlaying(false); } }
-  updateWorld(dt); frameCamera(dt); updatePanels();
+  updateWorld(dt); frameCamera(dt); updatePanels(); notify();
   renderer.render(scene, camera);
 });
 </script>

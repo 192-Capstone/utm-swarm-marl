@@ -81,7 +81,7 @@ def main():
                         ev['later'] = round(float(e['arrival']) - float(arr[e['flight']]), 1)   # arrives this much later
                     arr[e['flight']] = e['arrival']
             if e['type'] == 'alert':
-                ev['risk'] = e['risk']
+                ev.update(risk=e['risk'], state=e['state'], other=e.get('other'))
             if e['type'] == 'zone_on':
                 ev['zone'] = e['zone']
             events.append(ev)

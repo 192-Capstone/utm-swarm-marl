@@ -56,13 +56,19 @@ td.id { font-family: var(--mono); }
 .feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
 .feed li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
 .feed time { color: var(--muted); font-variant-numeric: tabular-nums; }
-.feed .bad { color: var(--danger); } .feed .note { color: var(--warn); }
+.feed .bad { color: var(--danger); } .feed .note { color: var(--warn); } .feed .alert { color: var(--warn); font-weight: 500; }
 .empty { color: var(--muted); }
+.toasts { position: fixed; top: 12px; right: 12px; display: grid; gap: 8px; width: min(360px, calc(100vw - 24px)); z-index: 5; }
+.toast { background: var(--surface); border-radius: var(--r-control); padding: 10px 14px; font-size: 13px; box-shadow: inset 3px 0 0 var(--warn), 0 6px 20px rgba(0,0,0,.25); cursor: pointer; }
+.toast.bad { box-shadow: inset 3px 0 0 var(--danger), 0 6px 20px rgba(0,0,0,.25); }
+.toast small { display: block; color: var(--muted); font-size: 12px; }
+.pill.alert { background: var(--warn-soft); color: var(--warn); }
 .clock { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
 :focus-visible { outline: 2px solid var(--data); outline-offset: 2px; }
 </style>
 </head>
 <body>
+<div class="toasts" id="toasts" aria-live="assertive"></div>
 <div class="wrap">
   <header>
     <div><b id="who">Operator console</b><span id="role">connecting to the UTM&hellip;</span></div>
@@ -95,7 +101,7 @@ td.id { font-family: var(--mono); }
 const $ = (id) => document.getElementById(id);
 const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-let scene = null, me = null, op = new URLSearchParams(location.search).get('op'), since = 0, notes = [], flights = [], busy = false;
+const alertAt = {}; let high = new Set(), scene = null, me = null, op = new URLSearchParams(location.search).get('op'), since = 0, notes = [], flights = [], busy = false;
 
 async function init() {
   me = await Auth.init();                      // logged in as an operator: that operator only; the admin (or the offline view) may pick
@@ -144,13 +150,28 @@ $('go').onclick = async () => {
   $('go').disabled = false; poll();
 };
 
+function toast(e) {
+  const el = document.createElement('div'); el.className = 'toast' + (e.type === 'crashed' ? ' bad' : '');
+  el.innerHTML = `<b>${esc(e.text)}</b><small>${fmt(e.t)} \u00b7 from the UTM to ${esc(op)}</small>`;
+  el.onclick = () => el.remove(); $('toasts').prepend(el);
+  while ($('toasts').children.length > 4) $('toasts').lastChild.remove();
+  setTimeout(() => el.remove(), 12000);
+}
+
 async function poll() {
   if (busy) return;                          // one request at a time: events are taken once
   busy = true;
   try {
     const s = await (await fetch(`api/state?since=${since}`)).json();
+    const first = since === 0;
     since = s.n_events; flights = s.flights;
     notes.push(...s.events);
+    high = new Set(s.high || []);
+    const mineIds = new Set(flights.filter(f => f.operator === op).map(f => f.id));
+    for (const e of s.events) if ((e.type === 'alert' || e.type === 'crashed') && (e.node === op || mineIds.has(e.flight))) {
+      if (e.type === 'alert') { const quiet = e.t - (alertAt[e.flight] ?? -99) < 30 || !(e.state === 'intrusion' || e.state === 'unknown'); alertAt[e.flight] = e.t; if (quiet) continue; }
+      if (!first || s.t - e.t < 10) toast(e);                // the page has just opened: old alerts are in the notices only
+    }
     $('clock').textContent = `UTM time ${fmt(s.t)} \u00b7 ${s.free} drones free`;
     render();
   } catch (e) { $('clock').textContent = 'UTM server not reachable'; }
@@ -160,13 +181,13 @@ async function poll() {
 function render() {
   const mine = flights.filter(f => f.operator === op).reverse();
   $('mine').innerHTML = mine.length ? mine.map(f => `<tr><td class="id">${esc(f.id)} <a href="track.html?flight=${encodeURIComponent(f.id)}" target="_blank" rel="noopener">Track</a></td><td>${esc(f.from)} \u2192 ${esc(f.to)}</td>
-    <td><span class="pill ${f.status}">${f.status === 'waiting' ? 'on its pad' : f.status}</span></td><td>${fmt(f.t_dep)}</td>
+    <td><span class="pill ${high.has(f.id) ? 'alert' : f.status}">${high.has(f.id) ? 'alert' : f.status === 'waiting' ? 'on its pad' : f.status}</span></td><td>${fmt(f.t_off ?? f.t_dep)}</td>
     <td>${fmt(f.arrival)}</td><td>${f.layer_z} m</td><td>${f.replans}</td></tr>`).join('')
     : '<tr><td colspan="7" class="empty">No flights yet.</td></tr>';
   const ids = new Set(flights.filter(f => f.operator === op).map(f => f.id));
   const mineNotes = notes.filter(e => e.node === op || ids.has(e.flight)).slice(-12).reverse();
   $('feed').innerHTML = mineNotes.length ? mineNotes.map(e => {
-    const k = e.type === 'rejected' || e.type === 'crashed' ? 'bad' : e.type === 'replan' ? 'note' : '';
+    const k = e.type === 'rejected' || e.type === 'crashed' ? 'bad' : e.type === 'alert' ? 'alert' : e.type === 'replan' ? 'note' : '';
     const more = e.later >= 1 ? ` (+${Math.round(e.later)} s)` : '';
     return `<li><time>${fmt(e.t)}</time><span class="${k}">${esc(e.text)}${more}</span></li>`; }).join('')
     : '<li class="empty" style="grid-template-columns:1fr">Nothing yet.</li>';
