@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Track a delivery</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* Tracks one delivery drone like a delivery app tracks its partner: a map, a big ETA, a status stepper, the details and
+   the updates. Same tokens, fonts and cards as the other dashboard pages. Phone first (~390 px), two columns from 900 px.
+   Live (track.html?flight=f3, from the UTM server) or replay (track.html?scene=ecity_demo&flight=f3, from data/). */
+:root {
+  --ground: #f4f3f1; --surface: #ffffff; --raised: #ecebe8; --border: #e4e2dd; --text: #0a0a0a;
+  --muted: #6b6b6b; --ink: #141414; --data: #1d5fbf; --danger: #c4242a; --warn: #92400e; --ok: #1a7f4b;
+  --data-soft: #e3ecf8; --danger-soft: #fbe9e9; --warn-soft: #fbf1e3; --ok-soft: #e4f3ea;
+  --scene-ground: #e9e7e1; --scene-building: #fbfaf7; --scene-edge: #c9c6bd; --scene-mark: #3d3d3d;
+  --font: "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --r-card: 12px; --r-control: 6px; --gap: 12px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --ground: #000000; --surface: #111111; --raised: #222222; --border: #1d1d1d; --text: #ffffff;
+  --muted: #a8a8a8; --ink: #ffffff; --data: #5b9bff; --danger: #ff5a5f; --warn: #e5a93b; --ok: #4cc38a;
+  --data-soft: #0f1d33; --danger-soft: #2c1517; --warn-soft: #2b2414; --ok-soft: #0f2a1d;
+  --scene-ground: #0b0b0b; --scene-building: #2a2a2a; --scene-edge: #474747; --scene-mark: #bdbdbd; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --ground: #000000; --surface: #111111; --raised: #222222; --border: #1d1d1d; --text: #ffffff;
+  --muted: #a8a8a8; --ink: #ffffff; --data: #5b9bff; --danger: #ff5a5f; --warn: #e5a93b; --ok: #4cc38a;
+  --data-soft: #0f1d33; --danger-soft: #2c1517; --warn-soft: #2b2414; --ok-soft: #0f2a1d;
+  --scene-ground: #0b0b0b; --scene-building: #2a2a2a; --scene-edge: #474747; --scene-mark: #bdbdbd; color-scheme: dark }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body { background: var(--ground); color: var(--text); font: 400 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+.app { max-width: 1240px; margin: 0 auto; display: grid; gap: var(--gap); grid-template-columns: minmax(0, 1fr);
+  padding: max(10px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) 76px max(12px, env(safe-area-inset-left, 0px)); }
+.top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.top a.back { color: var(--data); text-decoration: none; font-size: 13px; white-space: nowrap; }
+.top .title { min-width: 0; flex: 1; }
+.top .title b { font-size: 16px; font-weight: 500; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.top .title span { color: var(--muted); font-size: 12px; }
+.livepill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: var(--danger);
+  background: var(--danger-soft); border-radius: 999px; padding: 3px 9px; }
+.livepill i { width: 7px; height: 7px; border-radius: 50%; background: var(--danger); animation: pulse 1.4s ease-in-out infinite; }
+.seg { display: inline-flex; background: var(--surface); border-radius: var(--r-control); padding: 3px; gap: 2px; }
+.seg button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 4px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--raised); color: var(--text); }
+.grid { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 1fr); align-items: start; }
+.mapcard { position: relative; border-radius: var(--r-card); overflow: hidden; background: var(--scene-ground); height: 46vh; min-height: 280px; }
+.mapcard canvas { display: block; width: 100%; height: 100%; }
+.mapnote { position: absolute; left: 10px; bottom: 10px; background: var(--surface); border-radius: var(--r-control); padding: 4px 9px; font-size: 12px; color: var(--muted); }
+.panel { display: grid; gap: var(--gap); min-width: 0; }
+.card { background: var(--surface); border-radius: var(--r-card); padding: 14px 16px; display: grid; gap: 10px; min-width: 0; }
+.card h2 { margin: 0; font-size: 12px; font-weight: 500; color: var(--muted); letter-spacing: .02em; }
+.eta .big { font-size: 28px; line-height: 1.15; font-weight: 500; letter-spacing: -.01em; }
+.eta .sub { color: var(--muted); font-size: 13px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; background: var(--raised); color: var(--text); }
+.chip.ok { background: var(--ok-soft); color: var(--ok); } .chip.warn { background: var(--warn-soft); color: var(--warn); }
+.chip.bad { background: var(--danger-soft); color: var(--danger); } .chip.info { background: var(--data-soft); color: var(--data); }
+.banner { border-radius: var(--r-card); padding: 12px 16px; display: grid; gap: 2px; background: var(--raised); }
+.banner b { font-weight: 500; font-size: 15px; } .banner span { font-size: 13px; opacity: .85; }
+.banner.bad { background: var(--danger-soft); color: var(--danger); } .banner.warn { background: var(--warn-soft); color: var(--warn); }
+.banner.info { background: var(--data-soft); color: var(--data); }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; }
+.steps li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: center; position: relative; padding: 7px 0; }
+.steps li + li::before { content: ""; position: absolute; left: 10px; top: -11px; width: 2px; height: 22px; background: var(--border); }
+.steps li.done + li::before, .steps li.done + li.current::before { background: var(--ok); }
+.steps .dot { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border); display: grid; place-items: center; background: var(--surface); position: relative; z-index: 1; }
+.steps .done .dot { background: var(--ok); border-color: var(--ok); }
+.steps .done .dot::after { content: ""; width: 9px; height: 5px; border-left: 2px solid #fff; border-bottom: 2px solid #fff; transform: rotate(-45deg) translate(1px, -1px); }
+.steps .current .dot { border-color: var(--data); } .steps .current .dot::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--data); animation: pulse 1.4s ease-in-out infinite; }
+.steps .failed .dot { background: var(--danger); border-color: var(--danger); } .steps .failed .dot::after { content: "\00d7"; color: #fff; font-size: 15px; line-height: 1; }
+.steps .todo { color: var(--muted); } .steps .current { font-weight: 500; } .steps .failed { color: var(--danger); font-weight: 500; }
+.steps time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; font-size: 13px; }
+dt { color: var(--muted); } dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.feed li { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; font-size: 13px; }
+.feed time { color: var(--muted); font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.feed small { display: block; font-size: 11px; }
+.feed .bad { color: var(--danger); } .feed .warn { color: var(--warn); } .feed .run { color: var(--muted); font-style: italic; }
+.empty { color: var(--muted); }
+.player { position: fixed; left: 0; right: 0; bottom: 0; background: var(--surface); box-shadow: 0 -1px var(--border); display: flex; gap: 10px; align-items: center;
+  padding: 10px max(12px, env(safe-area-inset-right, 0px)) max(10px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px)); z-index: 5; }
+.player button { border: 0; border-radius: 999px; background: var(--ink); color: var(--surface); width: 36px; height: 36px; cursor: pointer; display: grid; place-items: center; flex: none; }
+.player button svg { width: 14px; height: 14px; fill: currentColor; }
+.player .speed { width: auto; border-radius: var(--r-control); background: var(--raised); color: var(--text); font: inherit; font-size: 12px; padding: 0 10px; height: 30px; }
+.player input { flex: 1; min-width: 0; accent-color: var(--ink); }
+.player .clock { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.msg { background: var(--surface); border-radius: var(--r-card); padding: 28px 20px; text-align: center; color: var(--muted); }
+.msg b { display: block; color: var(--text); font-weight: 500; font-size: 16px; margin-bottom: 6px; }
+.msg code { font-family: var(--mono); font-size: 12px; background: var(--raised); padding: 2px 6px; border-radius: 4px; }
+:focus-visible { outline: 2px solid var(--data); outline-offset: 2px; }
+@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+@media (min-width: 900px) {
+  .app { padding-bottom: 80px; }
+  .grid { grid-template-columns: minmax(0, 1.45fr) minmax(330px, 1fr); }
+  .mapcard { height: calc(100vh - 150px); min-height: 460px; position: sticky; top: 10px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <a class="back" id="back" href="flight_log.html">&larr; Flight log</a>
+    <div class="title"><b id="callsign">Tracking&hellip;</b><span id="sub"></span></div>
+    <span class="livepill" id="livepill" hidden><i></i>LIVE</span>
+    <div class="seg" role="group" aria-label="Theme">
+      <button type="button" data-theme-set="light" aria-pressed="true">Light</button>
+      <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+    </div>
+  </header>
+  <div class="msg" id="msg" hidden></div>
+  <main class="grid" id="main" hidden>
+    <section class="mapcard"><canvas id="map" aria-label="Top-down map of the delivery: the route, the drone, pick-up and drop-off"></canvas>
+      <div class="mapnote" id="mapnote"></div></section>
+    <section class="panel">
+      <div class="card eta" aria-live="polite">
+        <div class="big" id="eta">&hellip;</div>
+        <div class="sub" id="etasub"></div>
+        <div class="chips" id="chips"></div>
+      </div>
+      <div class="banner" id="banner" hidden></div>
+      <div class="card"><h2>Delivery status</h2><ol class="steps" id="steps"></ol></div>
+      <div class="card"><h2>Details</h2><dl id="dl"></dl></div>
+      <div class="card"><h2>Updates</h2><ol class="feed" id="feed"></ol></div>
+    </section>
+  </main>
+</div>
+<div class="player" id="player" hidden>
+  <button type="button" id="play" aria-label="Pause"></button>
+  <button type="button" class="speed" id="speed" aria-label="Playback speed">4&times;</button>
+  <input type="range" id="scrub" min="0" max="1000" value="0" aria-label="Time">
+  <span class="clock" id="pclock"></span>
+</div>
+
+<script src="auth.js"></script>
+<script src="track_logic.js"></script>
+<script>
+(() => {
+const TL = TrackLogic;
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const Q = new URLSearchParams(location.search);
+const P = { flight: Q.get('flight'), scene: Q.get('scene'), run: Q.get('run') };
+const getJSON = async (u) => { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok) { const e = new Error(`${u}: ${r.status}`); e.status = r.status; throw e; } return r.json(); };
+const notYours = () => showMsg('This is not your flight', 'You are logged in as an operator and can only track your own deliveries. Open one from <a href="operator.html">your console</a> or <a href="flight_log.html">your flight log</a>.');
+
+// ---------------------------------------------------------------- theme (same key as the other pages)
+let theme = 'light', COL = {};
+try { theme = localStorage.getItem('utm-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch { }
+function setTheme(t) {
+  theme = t; document.documentElement.dataset.theme = t;
+  try { localStorage.setItem('utm-theme', t); } catch { }
+  document.querySelectorAll('[data-theme-set]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.themeSet === t)));
+  const css = getComputedStyle(document.documentElement), v = (n) => css.getPropertyValue(n).trim();
+  COL = { ground: v('--scene-ground'), building: v('--scene-building'), edge: v('--scene-edge'), mark: v('--scene-mark'), ink: v('--ink'),
+    data: v('--data'), danger: v('--danger'), ok: v('--ok'), surface: v('--surface'), text: v('--text'), muted: v('--muted') };
+}
+document.querySelectorAll('[data-theme-set]').forEach(b => b.onclick = () => setTheme(b.dataset.themeSet));
+setTheme(theme);
+
+// ---------------------------------------------------------------- state
+let mode = null;                                   // 'live' | 'replay'
+let model = null;                                  // replay: TrackLogic.replayModel / trackModel
+let geo = { buildings: [], bounds: null, zones: [], places: [] }, speeds = null, approximate = true;
+const eta = TL.makeEta();
+let minSeg = 0, routeKey = '', lastHeading = 0, lastT = null, fit = null, shown = null;
+const live = { birds: [], shownBirds: {}, since: 0, events: [], last: null, prev: null, simSpeed: 1, knots: [], hist: [], tLand: null, tTake: null, f: null, wall0: null, t0sim: null };
+const rp = { t: 0, playing: true, speed: 4 };
+
+function showMsg(title, html) { $('main').hidden = true; $('player').hidden = true; const m = $('msg'); m.hidden = false; m.innerHTML = `<b></b><span></span>`; m.firstChild.textContent = title; m.lastChild.innerHTML = html; }
+
+async function start() {
+  try {
+    if (P.scene && P.flight) {                                                    // replay from dashboard/data/
+      mode = 'replay'; model = await TL.loadReplay(getJSON, '', P);
+      $('back').href = 'flight_log.html';
+    } else if (P.run && P.flight) {                                               // a delivery the live server logged
+      mode = 'replay';
+      const [tr, sc] = await Promise.all([getJSON(`api/track?run=${encodeURIComponent(P.run)}&flight=${encodeURIComponent(P.flight)}`), getJSON('api/scene').catch(() => null)]);
+      model = TL.trackModel(tr, sc);
+    } else if (P.flight) {                                                        // live, from the UTM server
+      mode = 'live';
+      const sc = await getJSON('api/scene');
+      geo = { buildings: sc.buildings, bounds: sc.bounds, zones: [], places: sc.places };
+      const r = TL.resolveSpeeds(sc.speeds); speeds = r.speeds; approximate = r.approximate;
+      live.knots = Array.isArray(sc.clock) ? sc.clock.slice() : [];
+      live.simSpeed = sc.speed > 0 ? sc.speed : 1;                             // the server's pace, so the clock is right from the first poll
+      $('back').href = 'operator.html'; $('back').textContent = '← Operator console';
+      if (!(await pollLive(true))) return;
+      setInterval(() => pollLive(false).catch(() => { }), 250);
+    } else {
+      return showMsg('Which flight?', 'Open <code>track.html?flight=f3</code> (live, from the UTM server) or <code>track.html?scene=ecity_demo&amp;flight=f3</code> (a replay).');
+    }
+  } catch (e) {
+    if (e.status === 403 && !P.scene) return notYours();
+    if (e.status === 403) return showMsg('Replay not available', 'Recorded scenes (<code>data/*.json</code>) hold every operator\'s flights, so only the admin can replay them. Track your live flights from your console.');
+    const detail = mode === 'live' ? 'The UTM server is not answering. Start it with <code>python scripts/utm_server.py scenarios/ecity_rooftops.yaml</code>, or open a replay from the flight log.'
+      : `${String(e.message || e)}. A replay needs <code>dashboard/data/&lt;scene&gt;.json</code> (<code>python scripts/export_dashboard.py &lt;recording&gt;</code>).`;
+    return showMsg('Cannot track this flight', detail);
+  }
+  if (mode === 'replay') beginReplay();
+  $('main').hidden = false; $('livepill').hidden = mode !== 'live';
+  requestAnimationFrame(loop);
+}
+
+function beginReplay() {
+  if (model.rejected) {                                                           // never flew: only the reason
+    $('main').hidden = false; document.querySelector('.mapcard').hidden = true;
+    return;
+  }
+  geo = model.geo; speeds = model.speeds; approximate = model.approximate;
+  rp.t = model.t0; $('player').hidden = false;
+  const sc = $('scrub'); sc.oninput = () => { rp.t = model.t0 + (model.t1 - model.t0) * sc.value / 1000; eta.reset(); };
+  $('play').onclick = () => { rp.playing = !rp.playing; if (rp.playing && rp.t >= model.t1) rp.t = model.t0; };
+  const speedsList = [1, 2, 4, 8, 16];
+  $('speed').onclick = () => { rp.speed = speedsList[(speedsList.indexOf(rp.speed) + 1) % speedsList.length]; $('speed').textContent = `${rp.speed}×`; };
+  $('speed').textContent = `${rp.speed}×`;
+}
+
+// ---------------------------------------------------------------- live: the UTM server's /api/state
+async function pollLive(first) {
+  const s = await getJSON(`api/state?since=${live.since}`), wall = performance.now();
+  live.since = s.n_events;
+  live.events.push(...s.events.filter(e => e.flight === P.flight));
+  const f = s.flights.find(x => x.id === P.flight);
+  if (!f) {
+    if (first) {                                                                  // not in memory: a refused booking, or logged earlier
+      try { model = TL.trackModel(await getJSON(`api/track?flight=${encodeURIComponent(P.flight)}`), await getJSON('api/scene').catch(() => null)); mode = 'replay'; beginReplay(); $('main').hidden = false; requestAnimationFrame(loop); return false; }
+      catch (e) { if (e.status === 403) { notYours(); return false; } showMsg(`Flight ${P.flight} was not found`, 'The UTM server has no flight with that id (yet). Book one from the <a href="operator.html">operator console</a>.'); return false; }
+    }
+    return true;
+  }
+  if (live.last) {
+    const dw = (wall - live.last.wall) / 1000, dt = s.t - live.last.t;
+    if (dw > 0.05 && dt > 0) live.simSpeed += 0.3 * (Math.min(10, Math.max(0.2, dt / dw)) - live.simSpeed);
+  } else { live.wall0 = wall; }
+  live.prev = live.last; live.last = { t: s.t, wall, pos: f.pos.slice() };
+  const kn = live.knots; if (!kn.length || s.t - kn[kn.length - 1][0] >= 1) kn.push([s.t, Date.now() / 1000]);
+  live.hist.push([s.t, f.pos.slice()]); while (live.hist.length > 40) live.hist.shift();
+  if (f.status === 'flying' && live.tTake == null) live.tTake = s.t;
+  if (f.status === 'landed' && live.tLand == null) { const a = live.events.find(e => e.type === 'arrived'); live.tLand = a ? a.t : s.t; }
+  live.f = f; live.birds = s.birds || [];                                         // birds near this operator's drones (the server filters)
+  if (!shown) shown = f.pos.slice();
+  return true;
+}
+const simNow = () => live.last.t + Math.min(1.2, (performance.now() - live.last.wall) / 1000 * live.simSpeed);
+const liveClock = (t) => TL.clockFn({ clock: live.knots, speed: live.simSpeed, start_epoch: Date.now() / 1000 - simNow() / live.simSpeed })(t);   // sim s -> wall clock: the server's knots, then this page's polls
+
+// ---------------------------------------------------------------- one frame's numbers (live and replay alike)
+function snapshot(wallDt) {
+  let view, t, clockOf, events, cls, outcome = null, tLand = null, tTake = null;
+  if (mode === 'live') {
+    const f = live.f; t = simNow();
+    const target = f.pos;                                                           // eased towards the newest position
+    shown = shown.map((v, k) => v + (target[k] - v) * Math.min(1, wallDt * 6));
+    view = { pos: shown, status: f.status, route: f.route, t_dep: f.t_dep, arrival: f.arrival, replans: f.replans, t };
+    clockOf = liveClock; events = live.events; cls = TL.classifyEvents(events); tLand = live.tLand; tTake = live.tTake;
+  } else {
+    t = rp.t; view = model.at(t); clockOf = model.clockOf; cls = model.classes; outcome = model.outcome; tLand = model.tLand; tTake = model.tTakeoff;
+    events = model.events.filter(e => e.t <= t);
+  }
+  return { view, t, clockOf, events, cls, outcome, tLand, tTake };
+}
+
+function derive(S) {
+  const v = S.view, route = v.route;
+  if (lastT === null || S.t < lastT - 0.01 || S.t - lastT > 3) { eta.reset(); minSeg = 0; }
+  lastT = S.t;
+  const key = route.length ? `${route.length}:${route[route.length - 1].join(',')}:${route[1] ? route[1].join(',') : ''}` : '';
+  if (key !== routeKey) { routeKey = key; minSeg = 0; }                             // a re-plan: a new route, tracked from its start
+  const rem = TL.remaining(route, v.pos, speeds, mode === 'live' ? minSeg : 0);
+  if (mode === 'live') minSeg = rem.seg;
+  const flying = v.status === 'flying', waiting = v.status === 'waiting';
+  let e = { left_s: 0, late_s: null, arrival: null };
+  if (flying || waiting) e = eta.update(S.t, waiting ? (v.t_dep || 0) - S.t : 0, rem.time_s, v.arrival);
+  const vertical0 = route.length > 1 && Math.hypot(route[1][0] - route[0][0], route[1][1] - route[0][1]) < 0.05;
+  const climbing = flying && rem.seg === 0 && vertical0;
+  const returned = S.cls.returned || S.outcome === 'Returned';
+  const reached = climbing ? 2 : e.left_s <= TL.ARRIVING_S && v.status !== 'waiting' ? 4 : 3;
+  const st = TL.stage({ status: v.status, now: S.t, t_dep: v.t_dep, left_s: e.left_s, late_s: e.late_s, climbing, rerouted: S.cls.rerouted,
+                        returned, reached, reason: '' });
+  return { rem, e, st, flying, waiting, returned };
+}
+
+// ---------------------------------------------------------------- the panels
+const set = (node, text) => { if (node.textContent !== text) node.textContent = text; };
+const clockText = (S, t) => S.clockOf ? TL.fmtClock(S.clockOf(t)) : `T+${Math.round(t)} s`;
+
+function paint(S, D) {
+  const v = S.view, st = D.st, ex = st.exception;
+  // the big line
+  const lateDone = S.tLand != null && v.arrival != null ? S.tLand - v.arrival : null;
+  let big = TL.etaLine({ status: v.status === 'forced_down' ? 'forced_down' : v.status, left_s: D.e.left_s, returned: D.returned,
+    clock_arr: S.tLand != null && S.clockOf ? S.clockOf(S.tLand) : null, t_arr: S.tLand });
+  if (big === null) big = ex ? ex.label : '';
+  set($('eta'), big);
+  let sub = '';
+  if (D.waiting && ex) sub = `${ex.label}: ${ex.detail}`;
+  else if (D.flying && S.clockOf) sub = `Expected at ${TL.fmtClock(S.clockOf(D.e.arrival))}`;
+  else if (v.status === 'landed' && !D.returned) { const n = TL.lateNote(lateDone, true); sub = n ? n.text : ''; }
+  else if (ex) sub = ex.detail;
+  set($('etasub'), sub);
+  const chips = [];
+  if (D.flying || D.waiting) { const n = TL.lateNote(D.e.late_s, false); if (n && n.tone === 'ok' && D.flying) chips.push([n.text, 'ok']); }
+  st.notes.forEach(n => chips.push([n.label, n.tone]));
+  if (approximate && (D.flying || D.waiting)) chips.push(['ETA approximate (default speeds)', '']);
+  const ck = chips.map(c => c.join('|')).join('\n');
+  if ($('chips').dataset.k !== ck) { $('chips').dataset.k = ck; $('chips').replaceChildren(...chips.map(([t, tone]) => el('span', 'chip ' + tone, t))); }
+  // the exception banner
+  const b = $('banner');
+  if (mode === 'live' && live.f && live.f.guard && D.flying) {                      // the bird guard has the controls
+    b.hidden = false; b.className = 'banner warn'; const k = 'bird';
+    if (b.dataset.k !== k) { b.dataset.k = k; b.replaceChildren(el('b', '', 'Avoiding a bird'), el('span', '', 'The drone has seen a bird near its path and is steering clear of it. It carries on to its destination afterwards.')); }
+  } else if (ex && !(D.waiting && ex.code === 'waiting')) {
+    b.hidden = false; b.className = 'banner ' + ex.tone; const k = ex.label + ex.detail;
+    if (b.dataset.k !== k) { b.dataset.k = k; b.replaceChildren(el('b', '', ex.label), el('span', '', ex.detail)); }
+  } else b.hidden = true;
+  // the stepper
+  const times = { 1: null, 2: S.tTake, 5: S.tLand };
+  const sk = st.steps.map(s => s.state).join() + (S.tTake != null) + (S.tLand != null) + (mode === 'live' ? '' : S.clockOf ? 'c' : '');
+  if ($('steps').dataset.k !== sk) {
+    $('steps').dataset.k = sk;
+    $('steps').replaceChildren(...st.steps.map((s, i) => {
+      const li = el('li', s.state), dot = el('span', 'dot'), t = el('time', '', times[i] != null && s.state !== 'todo' ? clockText(S, times[i]) : '');
+      const label = i === 5 && D.returned ? 'Back at base' : s.label;
+      li.append(dot, el('span', '', label), t); return li; }));
+  }
+  // details
+  const rows = [];
+  const f = mode === 'live' ? live.f : null;
+  const cs = mode === 'live' ? TL.callsign(f.operator, f.kind, f.id) : model.callsign;
+  const operator = mode === 'live' ? f.operator : model.operator, from = mode === 'live' ? f.from : model.from, to = mode === 'live' ? f.to : model.to;
+  const layer = mode === 'live' ? null : model.layer, z = mode === 'live' ? f.layer_z : model.cruise_z;
+  rows.push(['Drone', (mode === 'live' ? `D${String(f.slot + 1).padStart(2, '0')}` : model.drone) || '–']);
+  rows.push(['Operator', operator || '–']);
+  rows.push(['From → To', `${from || '?'} → ${to || '?'}`]);
+  rows.push(['Layer / height', z == null ? '–' : `${layer != null ? 'L' + layer + ' · ' : ''}${Number(z.toFixed(1))} m`]);
+  rows.push(['Height now', `${v.pos[2].toFixed(1)} m`]);
+  rows.push(['Speed', D.flying ? `${speedNow(S).toFixed(1)} m/s` : '–']);
+  rows.push(['Distance left', D.flying || D.waiting ? `${Math.round(D.rem.dist_m)} m` : v.status === 'landed' && !D.returned ? '0 m' : '–']);
+  const flown = v.status === 'landed' && mode === 'replay' && model.distance_m ? model.distance_m : D.rem.flown_m;   // a finished flight: the logged distance
+  rows.push(['Distance flown', `${Math.round(flown)} m`]);
+  rows.push(['Booked take-off', v.t_dep == null ? '–' : clockText(S, v.t_dep)]);
+  rows.push(['Booked arrival', v.arrival == null ? '–' : clockText(S, v.arrival)]);
+  if (v.replans) rows.push(['Re-plans', String(v.replans)]);
+  const dk = rows.map(r => r.join(':')).join('|');
+  if ($('dl').dataset.k !== dk) { $('dl').dataset.k = dk; $('dl').replaceChildren(...rows.flatMap(([k, val]) => [el('dt', '', k), el('dd', '', val)])); }
+  set($('callsign'), cs || P.flight); set($('sub'), `${P.flight}${mode === 'replay' ? ' · replay' : ''}`);
+  document.title = `${cs || P.flight}: ${big || 'tracking'}`;
+  // the updates (newest first)
+  const evs = S.events.slice(), shownEvs = evs.sort((a, b) => b.t - a.t).slice(0, 30);
+  const fk = shownEvs.map(e => e.t + e.text).join('|');
+  if ($('feed').dataset.k !== fk) {
+    $('feed').dataset.k = fk;
+    $('feed').replaceChildren(...(shownEvs.length ? shownEvs.map(e => {
+      const li = el('li'), tm = el('time', '', S.clockOf ? TL.fmtClock(S.clockOf(e.t)) : `T+${Math.round(e.t)}`);
+      if (S.clockOf) tm.append(el('small', '', `T+${e.t.toFixed(0)} s`));
+      li.append(tm, el('span', /crash|forced|refused|failure/.test(e.type) ? 'bad' : e.type === 'alert' ? 'warn' : '', e.text)); return li; })
+      : [el('li', 'empty', 'Nothing yet.')]));
+  }
+  set($('mapnote'), mode === 'live' ? `UTM time ${Math.floor(S.t / 60)}:${String(Math.floor(S.t % 60)).padStart(2, '0')}` : '');
+}
+
+function speedNow(S) {
+  if (mode === 'live') {
+    const h = live.hist; if (h.length < 2) return 0;
+    const a = h.find(x => x[0] >= h[h.length - 1][0] - 3) || h[0], b = h[h.length - 1];
+    return b[0] > a[0] ? Math.hypot(b[1][0] - a[1][0], b[1][1] - a[1][1], b[1][2] - a[1][2]) / (b[0] - a[0]) : 0;
+  }
+  const p = model.at(S.t).pos, q = model.at(Math.max(0, S.t - 2)).pos;
+  return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) / 2;
+}
+
+// ---------------------------------------------------------------- the map
+const cv = $('map'), ctx = cv.getContext('2d');
+let CW = 0, CH = 0;
+function resize() {
+  const r = cv.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2);
+  CW = r.width; CH = r.height; cv.width = Math.round(CW * dpr); cv.height = Math.round(CH * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); fit = null;
+}
+new ResizeObserver(resize).observe(cv);
+
+function fitView(S) {
+  const pts = S.view.route.map(p => [p[0], p[1]]).concat([[S.view.pos[0], S.view.pos[1]]]);
+  if (!pts.length) return null;
+  let x0 = Math.min(...pts.map(p => p[0])), x1 = Math.max(...pts.map(p => p[0])), y0 = Math.min(...pts.map(p => p[1])), y1 = Math.max(...pts.map(p => p[1]));
+  if (fit) { x0 = Math.min(x0, fit.x0); x1 = Math.max(x1, fit.x1); y0 = Math.min(y0, fit.y0); y1 = Math.max(y1, fit.y1); }   // never zoom in on a re-plan
+  const m = Math.max(12, 0.18 * Math.max(x1 - x0, y1 - y0));
+  x0 -= m; x1 += m; y0 -= m; y1 += m;
+  const sx = CW / Math.max(50, x1 - x0), sy = CH / Math.max(50, y1 - y0), s = Math.min(sx, sy);
+  return { x0: x0 + m, x1: x1 - m, y0: y0 + m, y1: y1 - m, s, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 };
+}
+const W2S = (f) => (x, y) => [CW / 2 + (x - f.cx) * f.s, CH / 2 - (y - f.cy) * f.s];
+
+function pin(c, x, y, color, glyph) {
+  c.save(); c.translate(x, y);
+  c.fillStyle = color; c.beginPath(); c.arc(0, -16, 11, Math.PI * 0.82, Math.PI * 2.18); c.lineTo(0, 0); c.closePath(); c.fill();
+  c.fillStyle = '#fff'; c.font = '600 11px Geist, system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(glyph, 0, -16);
+  c.restore();
+}
+function label(c, text, x, y) {
+  c.font = '500 11px Geist, system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  const w = c.measureText(text).width + 10;
+  c.fillStyle = COL.surface; c.globalAlpha = 0.92; c.beginPath(); if (c.roundRect) c.roundRect(x - w / 2, y - 8, w, 16, 5); else c.rect(x - w / 2, y - 8, w, 16); c.fill(); c.globalAlpha = 1;
+  c.fillStyle = COL.text; c.fillText(text, x, y);
+}
+
+function drawMap(S, D, wallDt) {
+  if (!CW) return;
+  fit = fitView(S); if (!fit) return;
+  const w = W2S(fit), c = ctx, v = S.view, route = v.route;
+  c.clearRect(0, 0, CW, CH); c.fillStyle = COL.ground; c.fillRect(0, 0, CW, CH);
+  const pad = 40, inView = (x, y) => { const [sx, sy] = w(x, y); return sx > -pad && sx < CW + pad && sy > -pad && sy < CH + pad; };
+  // buildings: footprints, rotated
+  c.lineWidth = 1;
+  for (const b of geo.buildings) {
+    const [bx, by] = w(b.c[0], b.c[1]), r = Math.hypot(b.h[0], b.h[1]) * fit.s;
+    if (bx < -pad - r || bx > CW + pad + r || by < -pad - r || by > CH + pad + r) continue;
+    const cs = Math.cos(b.yaw), sn = Math.sin(b.yaw);
+    c.beginPath();
+    [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(([a, d], k) => {
+      const dx = a * b.h[0], dy = d * b.h[1], [sx, sy] = w(b.c[0] + dx * cs - dy * sn, b.c[1] + dx * sn + dy * cs);
+      k ? c.lineTo(sx, sy) : c.moveTo(sx, sy);
+    });
+    c.closePath(); c.fillStyle = COL.building; c.fill(); c.strokeStyle = COL.edge; c.stroke();
+  }
+  // zones: red while closed
+  for (const z of geo.zones || []) {
+    if (!z.polygon) continue;
+    const on = z.t_on != null && S.t >= z.t_on && (!z.active || !z.active.length || z.active.some(([a, b]) => S.t >= a && S.t < b));
+    c.beginPath(); z.polygon.forEach(([x, y], k) => { const [sx, sy] = w(x, y); k ? c.lineTo(sx, sy) : c.moveTo(sx, sy); }); c.closePath();
+    c.fillStyle = on ? 'rgba(196,36,42,.22)' : 'rgba(196,36,42,.05)'; c.fill();
+    c.setLineDash(on ? [] : [4, 4]); c.strokeStyle = COL.danger; c.lineWidth = on ? 1.6 : 1; c.stroke(); c.setLineDash([]);
+  }
+  // the route: flown solid, what is left dashed
+  const j = D.rem, cut = (() => { const a = route[j.seg], b = route[j.seg + 1] || a; return [a[0] + j.u * (b[0] - a[0]), a[1] + j.u * (b[1] - a[1])]; })();
+  const line = (pts, dash, width, color) => {
+    c.beginPath(); pts.forEach((p, k) => { const [sx, sy] = w(p[0], p[1]); k ? c.lineTo(sx, sy) : c.moveTo(sx, sy); });
+    c.setLineDash(dash); c.lineWidth = width; c.strokeStyle = color; c.lineJoin = 'round'; c.lineCap = 'round'; c.stroke(); c.setLineDash([]);
+  };
+  const flown = route.slice(0, j.seg + 1).concat([cut]), left = [cut].concat(route.slice(j.seg + 1));
+  if (route.length) { line(left, [7, 6], 3, COL.data); if (v.status !== 'waiting') line(flown, [], 4, COL.data); }
+  // pins: pick-up and drop-off
+  if (route.length) {
+    const a = route[0], b = route[route.length - 1], [ax, ay] = w(a[0], a[1]), [bx, by] = w(b[0], b[1]);
+    const names = model && model.rejected ? ['', ''] : mode === 'live' ? [live.f.from, live.f.to] : [model.from, model.to];
+    pin(c, ax, ay, COL.mark, 'P'); pin(c, bx, by, COL.ok, 'D');
+    if (names[0]) label(c, names[0], ax, ay + 12); if (names[1]) label(c, names[1], bx, by + 12);
+  }
+  // birds near the drone (live): a red dot with a short trail
+  if (mode === 'live') {
+    const gone = new Set(live.birds.map(b => b.id));
+    for (const id in live.shownBirds) if (!gone.has(id)) delete live.shownBirds[id];
+    for (const b of live.birds) {
+      const sb = live.shownBirds[b.id] = (live.shownBirds[b.id] || b.pos.slice()).map((x, k) => x + (b.pos[k] - x) * Math.min(1, wallDt * 8));
+      if (b.trail.length) line(b.trail.concat([sb]), [], 2, 'rgba(229,50,45,.6)');
+      const [bx, by] = w(sb[0], sb[1]);
+      c.beginPath(); c.arc(bx, by, 6, 0, 7); c.fillStyle = '#e5322d'; c.fill(); c.lineWidth = 2; c.strokeStyle = COL.surface; c.stroke();
+    }
+  }
+  // the drone: halo, heading arrow
+  const seg = route[j.seg], nxt = route[j.seg + 1];
+  if (seg && nxt && Math.hypot(nxt[0] - seg[0], nxt[1] - seg[1]) > 0.05) {
+    const want = Math.atan2(nxt[1] - seg[1], nxt[0] - seg[0]);
+    let d = want - lastHeading; d = Math.atan2(Math.sin(d), Math.cos(d)); lastHeading += d * Math.min(1, wallDt * 8);
+  }
+  const [dx, dy] = w(v.pos[0], v.pos[1]);
+  const t = performance.now() / 1000, halo = 13 + 3 * Math.sin(t * 3);
+  c.beginPath(); c.arc(dx, dy, halo, 0, 7); c.fillStyle = v.status === 'crashed' || v.status === 'forced_down' ? 'rgba(196,36,42,.25)' : 'rgba(29,95,191,.22)'; c.fill();
+  c.save(); c.translate(dx, dy); c.rotate(-lastHeading);
+  c.beginPath(); c.moveTo(11, 0); c.lineTo(-7, 7); c.lineTo(-3, 0); c.lineTo(-7, -7); c.closePath();
+  c.fillStyle = v.status === 'crashed' || v.status === 'forced_down' ? COL.danger : COL.ink; c.fill(); c.lineWidth = 2; c.strokeStyle = COL.surface; c.stroke();
+  c.restore();
+}
+
+// ---------------------------------------------------------------- loop
+let lastWall = performance.now(), lastPaint = 0;
+function loop(now) {
+  const dt = Math.min(0.1, (now - lastWall) / 1000); lastWall = now;
+  try {
+    if (mode === 'replay' && model && !model.rejected && rp.playing) {
+      rp.t += dt * rp.speed;
+      if (rp.t >= model.t1) { rp.t = model.t1; rp.playing = false; }
+    }
+    if (mode === 'replay' && model && model.rejected) { paintRejected(); }
+    else if (mode === 'live' ? live.f : model) {
+      const S = snapshot(dt), D = derive(S);
+      drawMap(S, D, dt);
+      if (now - lastPaint > 120) { lastPaint = now; paint(S, D); }
+      if (mode === 'replay') {
+        const k = Math.round(1000 * (rp.t - model.t0) / Math.max(1e-6, model.t1 - model.t0));
+        if (document.activeElement !== $('scrub')) $('scrub').value = Math.max(0, Math.min(1000, k));
+        set($('pclock'), S.clockOf ? TL.fmtClock(S.clockOf(rp.t)) : `T+${Math.round(rp.t)} s`);
+        const icon = rp.playing ? '<svg viewBox="0 0 14 14"><rect x="2" y="1" width="3.5" height="12"/><rect x="8.5" y="1" width="3.5" height="12"/></svg>' : '<svg viewBox="0 0 14 14"><path d="M3 1l9 6-9 6z"/></svg>';
+        if ($('play').dataset.i !== String(rp.playing)) { $('play').dataset.i = String(rp.playing); $('play').innerHTML = icon; $('play').setAttribute('aria-label', rp.playing ? 'Pause' : 'Play'); }
+      }
+    }
+  } catch (e) { console.error(e); }
+  requestAnimationFrame(loop);
+}
+
+function paintRejected() {
+  const st = TL.stage({ status: 'rejected', now: 0, reason: model.reason });
+  set($('eta'), 'Rejected'); set($('etasub'), model.reason || 'the Planner refused the booking');
+  set($('callsign'), model.callsign || P.flight); set($('sub'), `${P.flight} · ${model.from || '?'} → ${model.to || '?'}`);
+  $('steps').replaceChildren(...st.steps.map(s => { const li = el('li', s.state); li.append(el('span', 'dot'), el('span', '', s.label), el('time')); return li; }));
+  $('banner').hidden = false; $('banner').className = 'banner bad'; $('banner').replaceChildren(el('b', '', 'Rejected'), el('span', '', model.reason || 'no free slot'));
+  $('dl').replaceChildren(...[['Operator', model.operator || '–'], ['From → To', `${model.from || '?'} → ${model.to || '?'}`]].flatMap(([k, v]) => [el('dt', '', k), el('dd', '', v)]));
+  $('feed').replaceChildren(...model.events.map(e => { const li = el('li'); li.append(el('time', '', `T+${Math.round(e.t)}`), el('span', 'bad', e.text)); return li; }));
+}
+
+Auth.init().then(start);
+})();
+</script>
+</body>
+</html>

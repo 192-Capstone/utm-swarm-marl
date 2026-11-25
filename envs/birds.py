@@ -139,10 +139,14 @@ class Bird:
         return cls(lambda n: p0 + np.arange(n)[:, None] * dt * v, radius, 'straight', float(np.linalg.norm(v)))
 
     @classmethod
-    def planned(cls, rng, cfg, aim, t_aim, dt, mode, z_band, bounds):
-        """A bird of this mode that is at `aim` (x, y, z) at time t_aim."""
+    def planned(cls, rng, cfg, aim, t_aim, dt, mode, z_band, bounds, fold=True, heading=None):
+        """A bird of this mode that is at `aim` (x, y, z) at time t_aim. fold=False: x and y are not reflected at the
+        bounds (a bird that flies through and away, as the live server's birds do); z always stays in its band.
+        heading: the initial direction (rad) instead of a random one."""
         speed = float(rng.uniform(*cfg['speed']))
         theta0 = float(rng.uniform(0.0, 2.0 * np.pi))
+        if heading is not None:                  # (drawn anyway: the later draws do not depend on it)
+            theta0 = float(heading)
         vz = 0.0 if mode == 'circle' else float(rng.uniform(-cfg['vz_max'], cfg['vz_max']))
         if mode == 'circle':
             R = float(rng.uniform(*cfg['circle_radius']))
@@ -173,6 +177,8 @@ class Bird:
             xy, t = raw(n)
             xy = xy + offset
             z = aim[2] + vz * (t - ka * dt)
+            if not fold:
+                return np.stack([xy[:, 0], xy[:, 1], _fold(z, zlo, zhi)], axis=1)
             return np.stack([_fold(xy[:, 0], xlo, xhi), _fold(xy[:, 1], ylo, yhi), _fold(z, zlo, zhi)], axis=1)
 
         return cls(table, cfg['radius'], mode, speed, aim, ka * dt)
@@ -241,3 +247,87 @@ class BirdField:
             t_aim = max(0.5, t_dep[d] + s / cfg['drone_speed'] + jit)
             birds.append(Bird.planned(rng, cfg, aim, t_aim, dt, mode, z_band, bounds))
         return cls(birds, dt)
+
+
+PARK_AT = 1.0e4           # parked pool birds sit this far out (x, y), 50 m up: nothing senses them
+
+
+class _Parked:
+    """A bird that waits far away (a pool slot): the same place at every step, nothing to extend."""
+
+    def __init__(self, pos, radius):
+        self._pos, self.radius, self.t_aim = np.asarray(pos, dtype=float), float(radius), None
+
+    def position(self, k):
+        return self._pos
+
+
+class BirdPool(BirdField):
+    """A fixed pool of birds for a simulation that never restarts (the live UTM server): every slot starts parked
+    far away, launch() sets a free slot flying from now, and a bird that has left the area is parked again. The
+    detector, the PyBullet bodies and the arrays all keep their size, so a bird can be added while it runs.
+
+    A launched bird is retired once it is past its aim time and outside the bounds + margin_m, or after max_age_s."""
+
+    def __init__(self, size, dt, radius, bounds, margin_m=5.0, max_age_s=60.0):
+        self.size = int(size)
+        parked = [_Parked([PARK_AT + 10.0 * i, PARK_AT, 50.0], radius) for i in range(self.size)]
+        super().__init__(parked, dt)
+        self._parked = list(parked)
+        self.bounds, self.margin_m, self.max_age = bounds, float(margin_m), int(round(max_age_s / dt))
+        self.t0 = np.full(self.size, -1, dtype=np.int64)        # step a slot was launched at (-1: parked)
+        self.t_aim = np.zeros(self.size, dtype=np.int64)
+        self.born = [None] * self.size                          # a bird's own table is indexed from its launch
+        self._cache = (-1, None)
+
+    def active(self):
+        return self.t0 >= 0
+
+    def free_slots(self):
+        return [int(i) for i in np.flatnonzero(self.t0 < 0)]
+
+    def launch(self, bird):
+        """Puts `bird` (a table indexed from step 0 = now) into a free slot; returns the slot, or None when full."""
+        free = self.free_slots()
+        if not free:
+            return None
+        i = free[0]
+        self.birds[i], self.born[i] = bird, self.k
+        self.t0[i], self.t_aim[i] = self.k, int(round((bird.t_aim or 0.0) / self.dt))
+        self.radii[i] = bird.radius
+        self._cache = (-1, None)
+        return i
+
+    def park(self, i):
+        self.birds[i], self.born[i], self.t0[i] = self._parked[i], None, -1
+        self.radii[i] = self._parked[i].radius
+        self._cache = (-1, None)
+
+    def positions(self, k=None):
+        k = self.k if k is None else k
+        now = k == self.k                                       # (the cache is for the current step only)
+        if now and self._cache[0] == k:
+            return self._cache[1]
+        out = np.array([b.position(k if self.born[i] is None else max(k - self.born[i], 0))
+                        for i, b in enumerate(self.birds)], dtype=float).reshape(-1, 3)
+        if now:
+            self._cache = (k, out)
+        return out
+
+    def step(self):
+        self.k += 1
+        self._retire()
+        return self.positions()
+
+    def _retire(self):
+        act = np.flatnonzero(self.t0 >= 0)
+        if len(act) == 0:
+            return
+        pos = self.positions()
+        (xlo, xhi), (ylo, yhi) = self.bounds
+        m = self.margin_m
+        for i in act:
+            age = self.k - self.t0[i]
+            out = not (xlo - m <= pos[i, 0] <= xhi + m and ylo - m <= pos[i, 1] <= yhi + m)
+            if age > self.max_age or (age > self.t_aim[i] and out):
+                self.park(int(i))

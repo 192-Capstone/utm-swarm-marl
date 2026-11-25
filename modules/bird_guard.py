@@ -133,6 +133,7 @@ class BirdGuardPolicy:
         self._episode = None
         self.active = None
         self.quiet = None
+        self.skip_idle = False        # True (the live server): nothing tracked and nothing active -> hand the command back at once
         self.guard_stats = {'drone_steps': 0, 'active_steps': 0, 'activations': 0}
         self.ep = {'drone_steps': 0, 'active_steps': 0, 'activated': 0}
 
@@ -164,6 +165,8 @@ class BirdGuardPolicy:
         if tracks is None or raw is None:
             return actions
         known, tpos, tvel = tracks
+        if self.skip_idle and not known.any() and not self.active.any():       # (the step counters then stay at rest too)
+            return actions
         keys = [f'drone_{i}' for i in range(n_agents)]
         pos = np.array([raw[k]['position'] for k in keys], dtype=float)
         vel = np.array([raw[k]['velocity'] for k in keys], dtype=float)

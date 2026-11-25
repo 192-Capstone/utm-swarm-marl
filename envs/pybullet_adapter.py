@@ -93,6 +93,7 @@ class PyBulletAdapter:
         self.birds = None            # envs/birds.py BirdField of the episode (None: no birds, nothing below runs)
         self.bird_ids = []
         self._last_obj = None        # object id every LiDAR ray hit in the last scan (birds only)
+        self._bird_pos = None        # where the bodies were put last step (only birds that moved are moved again)
 
         # Every PyBullet call below passes physicsClientId=self.client. Without
         # it, calls go to world 0 by default, so a second adapter in the same
@@ -197,7 +198,7 @@ class PyBulletAdapter:
         is off, SwarmEnv decides a crash geometrically."""
         for b in self.bird_ids:
             p.removeBody(b, physicsClientId=self.client)
-        self.bird_ids, self.birds, self._last_obj = [], field, None
+        self.bird_ids, self.birds, self._last_obj, self._bird_pos = [], field, None, None
         if field is None:
             return
         for pos, r in zip(field.positions(0), field.radii):
@@ -306,8 +307,11 @@ class PyBulletAdapter:
 
     def step_simulation(self):
         if self.birds is not None:                   # birds move on one control step (kinematic)
-            for body, pos in zip(self.bird_ids, self.birds.step()):
-                p.resetBasePositionAndOrientation(body, pos.tolist(), [0, 0, 0, 1], physicsClientId=self.client)
+            new = self.birds.step()
+            old = self._bird_pos
+            for j in (range(len(new)) if old is None or old.shape != new.shape else np.flatnonzero((new != old).any(axis=1))):
+                p.resetBasePositionAndOrientation(self.bird_ids[j], new[j].tolist(), [0, 0, 0, 1], physicsClientId=self.client)
+            self._bird_pos = new.copy()               # (parked birds of a pool do not move: no call for them)
         for _ in range(self.action_repeat):
             p.stepSimulation(physicsClientId=self.client)
 
