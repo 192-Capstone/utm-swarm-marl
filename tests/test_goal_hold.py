@@ -212,6 +212,42 @@ def test_guard_close_obstacle():
 
 
 # ------------------------------------------------ F. episodes, pass-through
+def test_a_drone_that_stops_short_of_its_pad_is_taken_in():
+    class Obs:
+        goal_vector_cap, neighbor_pos_scale, velocity_scale, schema, ring_rays = 2.5, 3.0, 2.0, 'v3', 32
+
+    class Env:
+        obs_processor, lidar_range, control_dt, episode_index, goals = Obs(), 6.0, 0.032, 1, np.zeros((1, 3))
+        _landing = np.array([True])
+
+    class Inner:
+        def act(self, obs, env, n):
+            return {'drone_0': [0.0, 0.0, 0.0, 0.0]}                   # the policy hovers
+
+    def obs(dx, v=0.0):
+        lf = np.zeros((1, 74))
+        lf[0, 9], lf[0, 3] = dx / 2.5, v / 2.0
+        return {'local_fixed': lf, 'neighbor_states': np.zeros((1, 5, 6)), 'neighbor_mask': np.ones((1, 5), bool)}
+
+    def vx(p, env, dx, steps, v=0.0):
+        for _ in range(steps):
+            a = p.act(obs(dx, v), env, 1)['drone_0']
+        return a[0]
+
+    cfg = config(engage_dist=1.0, release_dist=1.2, stall_dist=2.0)
+    assert vx(GoalHoldPolicy(Inner(), cfg), Env(), 1.3, 60) == 0.0          # 1.9 s: not yet
+    p = GoalHoldPolicy(Inner(), cfg)
+    assert vx(p, Env(), 1.3, 70) == pytest.approx(0.3)                      # 2.2 s: held, 0.3 m/s to the pad
+    assert vx(p, Env(), 1.1, 1, v=0.3) == pytest.approx(0.3)                # and stays held while it moves in
+    assert vx(GoalHoldPolicy(Inner(), cfg), Env(), 1.3, 70, v=0.4) == 0.0   # moving: not stalled
+    assert vx(GoalHoldPolicy(Inner(), cfg), Env(), 2.2, 70) == 0.0          # too far
+    cruising = Env()
+    cruising._landing = np.array([False])
+    assert vx(GoalHoldPolicy(Inner(), cfg), cruising, 1.3, 70) == 0.0       # only while landing
+    off = config(engage_dist=1.0, release_dist=1.2)
+    assert vx(GoalHoldPolicy(Inner(), off), Env(), 1.3, 70) == 0.0          # off by default
+
+
 def test_new_episode_resets_and_attributes_pass_through():
     print_test_header('F', 'new episode / pass-through',
                       "hold state is cleared for a new episode; ckpt etc. come from the wrapped policy")

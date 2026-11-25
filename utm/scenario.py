@@ -50,6 +50,7 @@ for the dashboard. YAML, every key optional except map (defaults below).
            land_latch_m: 2.4, land_vz_max: 0.5,          # C5's landing options (null: off)
            land_wait_clear_m: 1.5,           # hold above the pad while another drone is low over it
            pad_queue_m: null,                # m: drones bound for one pad line up this far apart (null: off)
+           hold_stall_m: null,               # m: goal-hold also takes in a drone that stops this close to its pad
            cruise_z_bias: 0, altitude_cap: null, land_step_m: null}   # for cruise above ~6 m: 0.9, 3.5, 2
                                              #   (scripts/altitude_test.py: aim above the policy's ~0.8 m
                                              #   sag, keep its own-height input in its training range,
@@ -100,7 +101,7 @@ DEFAULTS = {
             'pilot': 'learned', 'simulator': 'pybullet', 'land_latch_m': 2.4, 'land_vz_max': 0.5,
             'land_wait_clear_m': 1.5, 'cruise_z_bias': 0.0, 'altitude_cap': None, 'land_step_m': None,
             'position_origin': None, 'hold_engage_m': None, 'land_vz_high': None, 'land_slow_m': None,
-            'los_below_cruise': False, 'pad_queue_m': None},
+            'los_below_cruise': False, 'pad_queue_m': None, 'hold_stall_m': None},
     'record': None,
 }
 FAILURE_TYPES = ('motor', 'land', 'comms')        # envs/disturbances.py FAILURE_TYPES

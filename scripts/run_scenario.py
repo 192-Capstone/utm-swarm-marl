@@ -209,6 +209,8 @@ def sim_setup(sc, bounds=None):
     if sc['sim']['hold_engage_m'] is not None:          # goal-hold: engage here, release 0.2 m further out
         e = float(sc['sim']['hold_engage_m'])
         cfg.setdefault('goal_hold', {}).update(engage_dist=e, release_dist=e + 0.2)
+    if sc['sim']['hold_stall_m'] is not None:           # goal-hold also takes in a drone that stops this close to its pad
+        cfg.setdefault('goal_hold', {})['stall_dist'] = float(sc['sim']['hold_stall_m'])
     if sc.get('birds') is not None:                     # birds: aimed at the routes, inside the map, seeded like the run
         bounds = bounds if bounds is not None else planner_for(sc)[1]
         cfg['environment']['birds'] = {'seed': sc['seed'], 'bounds': [list(b) for b in bounds], **sc['birds'], 'enabled': True}

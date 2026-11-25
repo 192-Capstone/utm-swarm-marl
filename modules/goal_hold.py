@@ -38,6 +38,12 @@ Config (off when the block is missing or enabled is false):
       neighbour_resume: 1.4    # m, the teacher's safe_dist
       obstacle_release: 0.5    # m
       obstacle_resume: 0.7     # m
+      stall_dist: 0            # m, off at 0: a drone landing on its pad (SwarmEnv, E1 profile) that stops
+                               #   this close, outside engage_dist, is held too: below stall_speed for
+                               #   stall_s, and from then on until it is inside engage_dist. Without it one
+                               #   hovered 1.2 m from its pad for 11 minutes, others waiting behind it
+      stall_speed: 0.15        # m/s, the settle speed
+      stall_s: 2.0             # s
 """
 
 import numpy as np
@@ -51,6 +57,9 @@ DEFAULTS = {
     'neighbour_resume': 1.4,
     'obstacle_release': 0.5,
     'obstacle_resume': 0.7,
+    'stall_dist': 0.0,
+    'stall_speed': 0.15,
+    'stall_s': 2.0,
 }
 
 # The 14-ray LiDAR's straight-up and straight-down rays (schema v2 only),
@@ -95,6 +104,7 @@ class GoalHoldPolicy:
 
         self.inner = inner
         self.holding = None          # per drone: inside the hold zone (with hysteresis)
+        self.still = self.stalled = None     # per drone: steps it has stood still short of its pad; held because of it
         self.guarded = None          # per drone: guard has handed control back to the policy
         self._episode = None         # the episode the hold state belongs to
         self.stats = {'drone_steps': 0, 'holding_steps': 0, 'guard_steps': 0}
@@ -113,6 +123,8 @@ class GoalHoldPolicy:
         dist = np.linalg.norm(goal_vec, axis=1)
 
         self.holding = (dist < self.engage_dist) | (self.holding & (dist < self.release_dist))
+        if self.stall_dist > 0:
+            self.holding |= self._stalled(obs, env, dist)
         too_close = (neighbour_dist < self.neighbour_release) | (obstacle_dist < self.obstacle_release)
         clear = (neighbour_dist >= self.neighbour_resume) & (obstacle_dist >= self.obstacle_resume)
         self.guarded = too_close | (self.guarded & ~clear)
@@ -134,6 +146,14 @@ class GoalHoldPolicy:
         return actions
 
     # ------------------------------------------------------------------ helpers
+    def _stalled(self, obs, env, dist):
+        """stall_dist: the drones that stopped short of the pad they are landing on."""
+        speed = np.linalg.norm(_as_numpy(obs['local_fixed'])[:, 3:6], axis=1) * env.obs_processor.velocity_scale
+        short = np.asarray(env._landing, dtype=bool)[:len(dist)] & (dist < self.stall_dist) & (dist >= self.engage_dist)
+        self.still = np.where(short & (speed < self.stall_speed), self.still + 1, 0)
+        self.stalled = short & (self.stalled | (self.still * env.control_dt >= self.stall_s))
+        return self.stalled
+
     def _start_episode_if_new(self, env, n_agents):
         # SwarmEnv counts its episodes; an env without the counter falls back
         # to "the goals changed".
@@ -143,6 +163,8 @@ class GoalHoldPolicy:
         if self.holding is None or len(self.holding) != n_agents or episode != self._episode:
             self.holding = np.zeros(n_agents, dtype=bool)
             self.guarded = np.zeros(n_agents, dtype=bool)
+            self.still = np.zeros(n_agents, dtype=int)
+            self.stalled = np.zeros(n_agents, dtype=bool)
             self._episode = episode
 
     def _sense(self, obs, env, n_agents):
