@@ -94,6 +94,8 @@ def describe(e):
     """One line of the event list, in plain words."""
     if e['type'] == 'zone_on':
         return 'No-fly zone closes the area'
+    if e['type'] == 'crashed':
+        return f"{e['flight']} hit a bird" if e.get('cause') == 'bird' else f"{e['flight']} crashed"
     if e['type'] == 'replan':
         f, r = e['flight'], reason(e['why'])
         if e['why'] == 'emergency':

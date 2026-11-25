@@ -27,6 +27,30 @@ def r(a, d=2):
     return np.round(np.asarray(a, dtype=float), d).tolist()
 
 
+def pad_moment(log, near=12.0):
+    """The moment the story points at on a shared pad: two drones bound for one pad that crash there
+    together, or (pad queue on) the pair of them that is near it together for longest. None if neither."""
+    t, pos, st = (np.asarray(log['frames'][k], dtype=float) for k in ('t', 'pos', 'status'))
+    goal = [np.asarray(d['goal'][:2], dtype=float) for d in log['drones']]
+    ids = [d['id'] for d in log['drones']]
+    lost = {}
+    for e in log['events']:
+        if e['type'] == 'crashed':
+            lost.setdefault(e['t'], []).append(ids.index(e['flight']))
+    for tc, pair in lost.items():
+        if len(pair) == 2 and np.hypot(*(goal[pair[0]] - goal[pair[1]])) < 0.5:
+            return {'kind': 'crash', 't': tc, 'until': tc + 6.0, 'first': ids[pair[0]], 'second': ids[pair[1]]}
+    best = None
+    for i in range(len(ids) if (log['scenario'].get('sim') or {}).get('pad_queue_m') else 0):
+        for j in range(i + 1, len(ids)):
+            if np.hypot(*(goal[i] - goal[j])) < 0.5:
+                both = (st[:, [i, j]] == 1).all(1) & (np.hypot(*(pos[:, [i, j], :2] - goal[i]).T) < near).all(0)
+                if both.any() and (best is None or both.sum() > best[0]):
+                    a, b = (i, j) if t[st[:, i] == 1][-1] < t[st[:, j] == 1][-1] else (j, i)      # a lands first
+                    best = (both.sum(), {'kind': 'queue', 't': float(t[both][0]), 'until': float(t[st[:, b] == 1][-1]) + 2.0, 'first': ids[a], 'second': ids[b]})
+    return best and best[1]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('recording')
@@ -112,7 +136,7 @@ def main():
                    for d in log['drones']],
         'routes': routes, 'bookings': books, 'zones': log['zones'],
         'frames': {'t': log['frames']['t'], 'pos': [r(p) for p in log['frames']['pos']], 'status': log['frames']['status']},
-        'hot': hot, 'events': events, 'summary': log['summary'],
+        'hot': hot, 'events': events, 'summary': log['summary'], 'pad': pad_moment(log),
         'speeds': speeds.from_scenario(sc.get('utm')),           # the flight profile E1 booked: the tracking page's ETA
     }
     path = a.out or os.path.join('dashboard', 'data', os.path.basename(a.recording).replace('.json.gz', '.json'))

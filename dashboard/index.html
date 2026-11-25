@@ -187,9 +187,12 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
       <h2><label for="scene">Scene</label></h2>
       <select id="scene">
         <option value="ecity_rooftops">Over the rooftops &middot; 15 deliveries</option>
+        <option value="ecity_rooftops_fixed">Over the rooftops &middot; all fixes on</option>
         <option value="ecity_demo">The plaza, low level &middot; 11 deliveries</option>
         <option value="ecity_distant">Distant hubs &middot; 15 deliveries</option>
         <option value="ecity_rush_hour">Rush hour &middot; 26 deliveries</option>
+        <option value="ecity_rush_hour_off">Rush hour &middot; pad queue off</option>
+        <option value="ecity_rush_hour_on">Rush hour &middot; pad queue on</option>
         <option value="live">Live &middot; the UTM server (operators book)</option>
       </select>
       <p class="note">Live runs and what-if controls arrive with the UTM server.</p>
@@ -314,7 +317,7 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const SCENES = ['ecity_rooftops', 'ecity_demo', 'ecity_distant', 'ecity_rush_hour', 'live'];   // dashboard/data/<name>.json (scripts/export_dashboard.py);
+const SCENES = ['ecity_rooftops', 'ecity_rooftops_fixed', 'ecity_demo', 'ecity_distant', 'ecity_rush_hour', 'ecity_rush_hour_off', 'ecity_rush_hour_on', 'live'];   // dashboard/data/<name>.json (scripts/export_dashboard.py);
 const NAME = SCENES.includes(location.hash.slice(1)) ? location.hash.slice(1) : SCENES[0];   // live: scripts/utm_server.py
 const LIVE = NAME === 'live';
 const ME = await Auth.init();                      // login (docs/access.md): an operator sees only its own drones, and no recorded scenes
@@ -582,7 +585,11 @@ const chapters = [
   firstIntr && { t: Math.max(0, firstIntr.t_dep - 1), what: 'An intruder appears', cap: 'A drone with no flight plan crosses the area. The Responder reserves a safety bubble ahead of it and re-books the flights in its way.', focus: byId[firstIntr.id] },
   zoneEv && { t: Math.max(0, zoneEv.t - 1.5), what: 'A no-fly zone closes an area', cap: `${zoneFor} part of the area is closed. The Responder re-routes flights around it and plans the next ones around it. The intruder ignores it.`, zone: true },
   emEv && { t: Math.max(0, emEv.t - 1), what: `${emNode} files an emergency`, cap: `${emNode} files a medical flight from its own client node. The Responder gives it priority: it is cleared at once and takes off within seconds.${wayText}`, focus: emIdx },
-  { t: Math.max(0, landAll - 4), what: back ? 'The last drones land' : 'Every delivery lands',
+  D.pad && D.pad.kind === 'crash' && { t: Math.max(0, D.pad.t - 8), what: 'Two drones reach one pad', focus: byId[D.pad.first],
+    cap: `${D.pad.first} and ${D.pad.second} are bound for the same pad and reach it together. With the pad queue off, nothing holds one of them back: they collide.` },
+  D.pad && D.pad.kind === 'queue' && { t: Math.max(0, D.pad.t - 4), what: 'Two drones queue for one pad', focus: byId[D.pad.second],
+    cap: `${D.pad.first} and ${D.pad.second} are bound for the same pad. With the pad queue on, ${D.pad.second} waits 6 m back until ${D.pad.first} has landed.` },
+  { t: Math.max(0, landAll - 4), what: back || D.summary.crashed ? 'The last drones land' : 'Every delivery lands',
     cap: `${D.summary.arrived ?? flights} of ${flights} deliveries arrived${back ? `, ${back} turned back to where ${back > 1 ? 'they' : 'it'} started (no way past the closed area)` : ''}, `
       + `with ${D.summary.crashed ?? 0} crashes. The UTM handled an intruder, a closed zone and an emergency on the way.` },
 ].filter(Boolean);
@@ -700,6 +707,9 @@ function updateHexes() {
 
 function updateWorld(dt) {
   const hot = hotAt(t), tags = recentTags(t);
+  boom.visible = !!PADM && PADM.kind === 'crash' && t >= PADM.t - 0.2 && t < PADM.until;
+  if (boom.visible) { boom.position.copy(padPos(PADM.a)); boom.scale.setScalar(1 + 0.5 * Math.min(1, t - PADM.t + 0.2)); }
+  if (padNow(t)) for (const i of [PADM.a, PADM.b]) tags[DR[i].id] = PADM.kind === 'queue' && i === PADM.b && statusAt(PADM.a, t) === 1 && t > PADM.t ? `waits for ${DR[PADM.a].id}` : '';
   for (let i = 0; i < N; i++) {
     const d = DR[i], s = statusAt(i, t), dr = drones[i], flying = s === 1;
     dr.g.visible = flying;
@@ -724,7 +734,7 @@ function updateWorld(dt) {
       if (d.kind === 'intruder') r.line.computeLineDistances();
     }
     const el = tagEls[i];
-    const text = guarded ? `${d.id} avoiding a bird` : d.kind === 'emergency' ? 'Emergency' : d.kind === 'intruder' ? 'Intruder, no plan' : tags[d.id] ? `${d.id} ${tags[d.id]}` : i === selected ? d.id : '';
+    const text = guarded ? `${d.id} avoiding a bird` : d.kind === 'emergency' ? 'Emergency' : d.kind === 'intruder' ? 'Intruder, no plan' : tags[d.id] ? `${d.id} ${tags[d.id]}` : i === selected || d.id in tags ? d.id : '';
     if (flying && text) {
       const p = dr.g.position.clone().project(camera), r = stage.getBoundingClientRect();
       const x = (p.x + 1) / 2 * r.width, y = (1 - p.y) / 2 * r.height;
@@ -768,10 +778,22 @@ function updateBirds() {
   }
 }
 
+// two drones at one pad (pad queue off: they collide; on: one waits): where they are, and whether the story is there now
+const PADM = D.pad ? { ...D.pad, a: byId[D.pad.first], b: byId[D.pad.second], end: D.pad.kind === 'crash' ? D.pad.t - 0.4 : Infinity } : null;
+const padNow = (x) => !!PADM && x >= PADM.t - 10 && x < PADM.until;
+const padPos = (i) => { let x = Math.min(t, PADM.end); while (x > 0.3 && statusAt(i, x) !== 1) x -= 0.3; return v3(posAt(i, x)); };
+const boom = new THREE.Mesh(new THREE.SphereGeometry(0.6, 20, 14), new THREE.MeshBasicMaterial({ color: 0xc4242a, transparent: true, opacity: 0.55, depthTest: false }));
+boom.visible = false; scene.add(boom);
 function director(dt) {
   // the camera goes where the story is: the zone as it closes, the emergency as it flies, an intruder, else a slow orbit
   let focus = null, dist = 72 * SC, pitch = 0.86;
   const zz = zones.find(z => z.z.t_on != null && t >= z.z.t_on - 1 && t < z.z.t_on + 7);
+  if (padNow(t)) {
+    const a = padPos(PADM.a), b = padPos(PADM.b), c = a.clone().add(b).multiplyScalar(0.5), far = Math.max(20, Math.min(60, a.distanceTo(b) * 1.7));
+    wantLook.copy(c);
+    wantPos.set(c.x + Math.cos(orbitAng) * far * 0.75, c.y + far * 0.66, c.z + Math.sin(orbitAng) * far * 0.75);
+    return;
+  }
   if (emIdx >= 0 && statusAt(emIdx, t) === 1) { focus = v3(posAt(emIdx, t)); dist = 30 * DS; pitch = 0.95; }
   else if (zz) { focus = new THREE.Vector3(zz.centre[0], 1.5, -zz.centre[1]); dist = 40 * DS; pitch = 0.98; }
   else { const intr = DR.findIndex((d, i) => d.kind === 'intruder' && statusAt(i, t) === 1 && t - d.t_dep < 6); if (intr >= 0) { focus = v3(posAt(intr, t)); dist = 38 * DS; pitch = 0.98; } }
