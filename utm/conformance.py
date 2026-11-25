@@ -136,9 +136,10 @@ class ConformanceMonitor:
         if key in self.p.blocked:
             return 'intrusion', key, 'blocked'
         skip = self.p.exempt.get(fid, ())
-        for lo, hi, owner in self.p.ledger.get(key, ()):
-            if owner != fid and owner not in skip and lo <= t < hi:
-                return 'intrusion', key, owner
+        hit = [owner for lo, hi, owner in self.p.ledger.get(key, ())
+               if owner != fid and owner not in skip and lo <= t < hi]
+        if hit:                                           # a zone is named before another flight (it is the worse intrusion)
+            return 'intrusion', key, next((o for o in hit if str(o).startswith('zone:')), hit[0])
         ivs = d.reservation.get(key)
         if not ivs:
             return 'off_route', key, None

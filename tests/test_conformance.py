@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 pytest.importorskip('h3')
 
-from utm.airspace_zones import Zone, apply_zones  # noqa: E402
+from utm.airspace_zones import Zone, apply_zones, zone_keys  # noqa: E402
 from utm.conformance import ConformanceMonitor  # noqa: E402
 from utm.strategic_planner import FlightPlan, StrategicPlanner  # noqa: E402
 
@@ -83,6 +83,20 @@ def test_intrusion_into_an_active_zone():
     d = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
     events = fly(ConformanceMonitor(sky), 'A', track(sky, d, offset=(0.0, 10.0)))
     assert any(e['state'] == 'intrusion' and e['other'] == 'zone:closed' for e in events)
+
+
+def test_a_zone_is_named_before_another_flight():
+    """A zone closed over air B has already booked: a drone in both is reported as in the zone."""
+    sky = StrategicPlanner([], B)
+    sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+    b = sky.submit(FlightPlan('B', (-15, 12), (15, 12)))
+    zone = Zone('closed', 'Street closure', polygon=[(-3, 9), (3, 9), (3, 15), (-3, 15)])
+    for k in zone_keys(zone, sky.sky, sky.s.n_layers):       # booked after B, as a live closure is
+        sky.ledger.setdefault(k, []).append((0.0, 200.0, 'zone:closed'))
+    mon = ConformanceMonitor(sky)                            # A's drone flies along B's route at B's time
+    named = {other for t, pos in track(sky, b) for state, _, other in [mon.classify('A', pos, t)] if state == 'intrusion'
+             and abs(pos[0]) < 2}
+    assert named == {'zone:closed'}
 
 
 def test_overstay_over_the_goal_pad():

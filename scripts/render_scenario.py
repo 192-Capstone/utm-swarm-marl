@@ -116,6 +116,13 @@ def describe(e):
             return f"{f} re-planned: {e['why'].split()[-1]} drifted into its air"
         return f"{f} re-planned ({r})"
     if e['type'] == 'alert' and e['risk'] == 'high':
+        other = str(e.get('other') or '')
+        if e['state'] == 'intrusion' and other.startswith('zone:'):
+            return f"Alert: {e['flight']} inside the no-fly zone"
+        if e['state'] == 'intrusion' and other == 'blocked':
+            return f"Alert: {e['flight']} inside a closed area"
+        if e['state'] == 'intrusion' and other:
+            return f"Alert: {e['flight']} in {other}'s air"
         return f"Alert: {e['flight']} {STATE_WORDS.get(e['state'], e['state'])}"
     return None
 
