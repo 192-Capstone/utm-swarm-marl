@@ -184,6 +184,20 @@ def test_the_flight_log_is_filtered_per_operator(srv):
     assert 'op0' not in json.dumps(log1['flights'])
 
 
+def test_only_the_admin_closes_a_zone(srv):
+    srv.zone = lambda polygon, for_s=None: {'status': 'approved', 'zone': 'zone_0'}
+    path, body = '/api/zone', {'polygon': [[0, 0], [1, 0], [1, 1]]}
+    assert Client(srv).post(path, body)[0] == 401
+    assert as_(srv, 'op0').post(path, body)[0] == 403
+    assert as_(srv, 'admin').post(path, body)[0] == 200
+
+
+def test_an_operator_is_told_only_its_own_flights_at_risk():
+    state = {'flights': [flight(0, 'op0'), flight(1, 'op1')], 'events': [], 'high': ['f0', 'f1']}
+    assert acc.filter_state(state, 'op0')['high'] == ['f0']
+    assert acc.filter_state(state, 'admin', True)['high'] == ['f0', 'f1']
+
+
 def test_an_operator_cannot_open_anothers_track(srv):
     a, b = as_(srv, 'op0'), as_(srv, 'op1')
     assert a.get('/api/track?flight=f0')[0] == 200

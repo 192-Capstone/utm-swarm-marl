@@ -127,6 +127,8 @@ def filter_state(state, role, admin=False):
     ids = {f['id'] for f in flights}
     events = [e for e in state['events'] if e.get('node') == role or e.get('flight') in ids]
     out = {**state, 'flights': flights, 'events': events}
+    if 'high' in state:                         # the flights at high risk: its own only
+        out['high'] = [f for f in state['high'] if f in ids]
     if 'birds' in state:                        # birds are environment, not data of anyone: an operator sees those near its drones
         mine = [f['pos'] for f in flights if f.get('status') == 'flying' and f.get('pos')]
         out['birds'] = [b for b in state['birds'] if any(

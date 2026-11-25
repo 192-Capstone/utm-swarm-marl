@@ -25,6 +25,8 @@ API (JSON):
     POST /api/bird      {flight | place | at:[x,y[,z]][, speed 1-3, count 1-4]}   admin only: birds join the simulation
                                          (aimed to cross a flight's route ahead of it, or to be at a place); the state then
                                          also lists the birds, and each flight whether its bird guard is active
+    POST /api/zone      {polygon[, for_s]}               admin only: a no-fly zone from now on (local metres; E4
+                                                         re-plans the flights it clashes with)
 
 Drones: the simulator has a fixed number of drones (--slots). They wait parked; an approved booking
 gets a free one, which waits on its pad until its booked departure (SwarmEnv.refly) and is free
@@ -60,6 +62,7 @@ from render_scenario import describe, short                        # noqa: E402
 from utm import access as access_mod                              # noqa: E402  (who may see what)
 from utm import flight_db, speeds                                  # noqa: E402  (the flight log, E1's flight profile)
 from utm import scenario as scn                                    # noqa: E402
+from utm.airspace_zones import Zone                                # noqa: E402
 from utm.conformance import ConformanceMonitor                     # noqa: E402
 from utm.contingency import ContingencyManager                     # noqa: E402
 from utm.strategic_planner import FlightPlan                       # noqa: E402
@@ -143,6 +146,8 @@ class LiveUTM:
         self.bird_trail = {}                      # pool slot -> its last positions
         self.n_birds = 0
         self.avoid = {}                           # drone slot -> [flight id, closest bird (m), last time its guard was active]
+        self.zones = []                           # no-fly zones filed so far
+        self.n_mon = 0                            # E3 events already published
         self.lock = threading.Lock()
         self.k, self.t = 0, 0.0
         self.every = max(1, int(round(1.0 / self.dt)))
@@ -230,6 +235,23 @@ class LiveUTM:
             reply = self._reply(fid, d, operator, frm, to)
             self._apply(acts[1:])
             return reply
+
+    def zone(self, polygon, for_s=None):
+        with self.lock:
+            xy = [(float(p[0]), float(p[1])) for p in polygon]
+            if len(xy) < 3:
+                return {'status': 'error', 'reason': 'a zone needs at least 3 corners'}
+            zid = f'zone_{len(self.zones)}'
+            z = Zone(zid, 'Live closure', polygon=xy, active=[[self.t, self.t + float(for_s)]] if for_s else [])
+            acts = self.e4.add_zone(z, self.t, self._airborne())
+            plans = [a['decision'].status == 'approved' for a in acts if a.get('kind') != 'log']
+            done, stuck = sum(plans), len(plans) - sum(plans)
+            self.zones.append({'id': zid, 'polygon': [list(p) for p in xy], 't_on': round(self.t, 2),
+                               'active': [[round(self.t, 2), round(self.t + float(for_s), 2)]] if for_s else []})
+            self._event('zone_on', 'No-fly zone closed' + (f' for {int(float(for_s))} s' if for_s else ' until further notice')
+                        + f': {done} flight{"" if done == 1 else "s"} re-planned' + (f', {stuck} with no free route yet' if stuck else ''), zone=zid)
+            self._apply(acts)
+            return {'status': 'approved', 'zone': zid, 'replanned': done}
 
     # ------------------------------------------------------------------ birds
     def _times(self, f):
@@ -388,6 +410,16 @@ class LiveUTM:
                 self.env.cancel(self.slot[fid])
             self._event('replan', text, **extra)
 
+    def _alerts(self):
+        """E3's high-risk alerts become events addressed to the flight's operator (the console and
+        the operator page show them as notifications)."""
+        for e in self.monitor.events[self.n_mon:]:
+            f = self.flights.get(e['flight'])
+            text = describe({'type': 'alert', 'flight': e['flight'], 'state': e['state'], 'risk': e['risk'], 'other': e['other']})
+            if e['state'] != 'ok' and e['risk'] == 'high' and text and f is not None:
+                self._event('alert', text, flight=e['flight'], node=f['operator'], risk='high', state=e['state'], other=None if e['other'] is None else str(e['other']))
+        self.n_mon = len(self.monitor.events)
+
     def _sync(self):
         """Flight statuses from the simulator; free the drones that are done."""
         pos = self.env.adapter.get_positions()
@@ -423,6 +455,7 @@ class LiveUTM:
             self.t = self.k * self.dt
             if self.k % self.every == 0:
                 self._apply(self.e4.step(self.t, self._airborne()))
+                self._alerts()
             if self.pool is not None:
                 self._birds_step()
             self._sync()
@@ -433,7 +466,8 @@ class LiveUTM:
                 guarded = {fid: bool(self.guard.active[i]) or i in self.avoid for fid, i in self.slot.items()} if self.guard is not None and self.guard.active is not None else {}
                 self.snap = {'t': round(self.t, 2), 'free': len(self.free),
                              'flights': [{**f, 'guard': guarded.get(f['id'], False)} if self.pool is not None else dict(f)
-                                         for f in self.flights.values()]}
+                                         for f in self.flights.values()],
+                             'high': [fid for fid, r in self.monitor.risk.items() if r == 'high' and fid in self.slot]}
                 if self.pool is not None:
                     self.snap['birds'] = self._birds_view()
 
@@ -481,7 +515,7 @@ class LiveUTM:
     def state(self, since=0):
         """The newest snapshot (no lock: the simulation is not held up) and the events from `since` on."""
         snap, ev = self.snap, self.events[since:]          # events only grow: a slice is safe
-        return {**snap, 'events': ev, 'n_events': since + len(ev)}
+        return {**snap, 'events': ev, 'n_events': since + len(ev), 'zones': list(self.zones)}
 
 
 class V6Server(ThreadingHTTPServer):
@@ -499,6 +533,11 @@ def handler(live, root, access):
 
         def log_message(self, *a):
             pass
+
+        def end_headers(self):
+            if not any(h.lower().startswith(b'cache-control') for h in getattr(self, '_headers_buffer', [])):
+                self.send_header('Cache-Control', 'no-cache')          # a page changed on disk is not shown from the browser's cache
+            super().end_headers()
 
         def _json(self, obj, code=200, cookie=None):
             body = json.dumps(obj).encode()
@@ -608,6 +647,13 @@ def handler(live, root, access):
                     code, reply = live.add_bird(body.get('flight'), body.get('place'), body.get('at'),
                                                 body.get('speed', 2.0), body.get('count', 1))
                     return self._json(reply, code)
+                if u.path == '/api/zone':                                  # a no-fly zone: the admin only
+                    role = self._need()
+                    if role is None:
+                        return
+                    if not access.is_admin(role):
+                        return self._deny('admin only')
+                    return self._json(live.zone(body['polygon'], body.get('for_s')))
                 if u.path not in ('/api/request', '/api/emergency'):
                     return self._json({'status': 'error', 'reason': 'not found'}, 404)
                 role = self._need()

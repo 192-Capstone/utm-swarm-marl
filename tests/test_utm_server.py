@@ -63,3 +63,10 @@ def test_the_scene_lists_places_and_client_nodes(live):
     s = live.scene()
     assert {p['name'] for p in s['places']} == {'Depot', 'Shop', 'Clinic'}
     assert s['operators'][0] == 'op0' and s['slots'] == 2 and s['buildings']
+
+
+def test_a_zone_is_listed_and_logged(live):
+    assert live.zone([[0, 0], [1, 0]])['status'] == 'error'         # two corners are no zone
+    r = live.zone([[30, 30], [34, 30], [34, 34]], for_s=20)
+    assert r['status'] == 'approved' and live.state()['zones'][-1]['id'] == r['zone']
+    assert live.events[-1]['type'] == 'zone_on' and 'for 20 s' in live.events[-1]['text']
