@@ -65,6 +65,18 @@ def test_the_scene_lists_places_and_client_nodes(live):
     assert s['operators'][0] == 'op0' and s['slots'] == 2 and s['buildings']
 
 
+def test_an_operator_flies_no_more_drones_than_it_has(live):
+    n = len(live.events)
+    assert live.set_fleet('op0', 1) == {'status': 'ok', 'operator': 'op0', 'size': 1} and live.state()['fleet'] == {'op0': 1}
+    a = live.request('op0', 'Shop')
+    b = live.request('op0', 'Shop')
+    assert a['status'] == 'approved' and b['status'] == 'rejected' and 'all 1 drones of op0 are out, the next is back' in b['reason']
+    live.set_fleet('op0', 99)                                       # no more than the simulator holds
+    assert live.fleet['op0'] == 2 and live.request('op0', 'Shop')['status'] == 'approved'
+    assert live.set_fleet('nobody', 1)['status'] == 'error'
+    assert [e['text'] for e in live.events[n:] if e['type'] == 'fleet'] == ['op0 now has 1 drones (was 2)', 'op0 now has 2 drones (was 1)']
+
+
 def test_the_pad_queue_switch(live):
     assert live.state()['pad_queue'] is False and live.env.pad_queue_m is None and live.hold.stall_dist == 0.0
     n = len(live.events)

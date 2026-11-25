@@ -118,7 +118,7 @@ a.trk:hover { text-decoration: underline; }
   <header>
     <div class="brand">
       <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><polygon points="17,2 30,9.5 30,24.5 17,32 4,24.5 4,9.5" fill="none" stroke="var(--ink)" stroke-width="1.6"/><polygon points="17,9 23.5,12.75 23.5,20.25 17,24 10.5,20.25 10.5,12.75" fill="var(--ink)"/></svg>
-      <div><b>Flight log</b><span>Every flight across the scenario runs &middot; E-City</span></div>
+      <div><b>Flight log</b><span>Planned and actual times of every flight &middot; choose a run below &middot; E-City</span></div>
     </div>
     <div class="top">
       <span class="livepill" id="live" hidden><i></i><span id="livetxt">LIVE</span></span>
@@ -157,7 +157,8 @@ a.trk:hover { text-decoration: underline; }
 <script>
 (() => {
 // Scenes index.html can replay (its SCENES list); keep in sync. index.html reads only #<scene> from the URL.
-const SCENES = ['ecity_rooftops_fixed', 'ecity_rooftops', 'ecity_rush_hour_off', 'ecity_rush_hour_on', 'ecity_birds_off', 'ecity_birds_on'];
+const NAMES = { ecity_city: '1. Full city', ecity_rooftops: '2. Before the fixes', ecity_rooftops_fixed: '2b. After the fixes', ecity_rush_hour_off: '3. Pad queue off', ecity_rush_hour_on: '4. Pad queue on', ecity_birds_off: '5. Birds, no guard', ecity_birds_on: '6. Birds, with the guard' };
+const SCENES = ['ecity_city', 'ecity_rooftops', 'ecity_rooftops_fixed', 'ecity_rush_hour_off', 'ecity_rush_hour_on', 'ecity_birds_off', 'ecity_birds_on'];
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
@@ -244,7 +245,7 @@ function setLog(log) {
   const uniq = (xs) => [...new Set(xs)].sort().map(v => [v, v]);
   opts('f-op', 'All operators', uniq(ROWS.map(f => f.operator).filter(Boolean)), keep.op);
   opts('f-status', 'All statuses', uniq(ROWS.map(f => f.status)), keep.st);
-  opts('f-run', 'All runs', DB.runs.map(r => [r.run_id, `${r.scenario}${r.source === 'live' ? ' (live)' : ''} · ${new Date(r.start_epoch * 1000).toLocaleString('en-GB', { hour12: false })}`]), keep.run);
+  opts('f-run', 'All runs', DB.runs.map(r => [r.run_id, `${NAMES[r.scenario] && r.source !== 'live' ? NAMES[r.scenario] : r.scenario}${r.source === 'live' ? ' (live)' : ''} · ${new Date(r.start_epoch * 1000).toLocaleString('en-GB', { hour12: false })}`]), keep.run);
   $('live').hidden = !DB.live; $('live').classList.toggle('lost', feedLost);
   $('livetxt').textContent = feedLost ? 'LIVE FEED LOST' : 'LIVE';
 }
@@ -257,6 +258,10 @@ async function load() {
     return emptyState(log ? 'The flight log has no flights yet.' : 'No flight log found.');
   }
   setLog(log);
+  // opened from a scene (?scene=...): that scene's newest run, or the newest live one; "All runs" shows the rest
+  const want = new URLSearchParams(location.search).get('scene');
+  const of = DB.runs.filter(r => want === 'live' ? r.source === 'live' : want && r.scenario === want && r.source !== 'live').sort((a, b) => b.start_epoch - a.start_epoch)[0];
+  if (of) $('f-run').value = of.run_id;
   ['f-op', 'f-status', 'f-run'].forEach(id => $(id).onchange = draw);
   $('f-q').oninput = draw;
   $('csv').onclick = downloadCsv;

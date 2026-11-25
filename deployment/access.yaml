@@ -1,10 +1,11 @@
 # DEMO ACCESS FILE: per-role passcodes for scripts/utm_server.py (docs/access.md).
-# The passcodes below are PUBLIC demo values (admin-demo, op0-demo, op1-demo, hospital-demo): not for production.
+# The passcodes below are PUBLIC demo values (admin-demo, op0-demo, op1-demo, op2-demo, hospital-demo): not for production.
 # Only salted PBKDF2 hashes are stored. Change one with:  python -m utm.access set <role>
-# A role is a scenario operator (op0, op1, Hospital) or the admin; an operator with no entry here cannot log in.
+# A role is a scenario operator (op0, op1, op2, Hospital) or the admin; an operator with no entry here cannot log in.
 admin: admin
 roles:
-  admin: 'pbkdf2_sha256$200000$f27c75e5cff826af0c04a71f0836ec39$691cd4a844be77ef4f4006263432fdd3a7fcf803765f9e33efff00d430568b33'
-  op0: 'pbkdf2_sha256$200000$5b08fdbbee2392f46e789f74c7a77b26$ac447752b17da2f053fc9e81a68942cb0bbe8ceed0955421387f291b8ced8082'
-  op1: 'pbkdf2_sha256$200000$b2e4200c655d6330d64164120af8a25d$1326af69fc4fd74c1bfc0a2dae6c21ad64583753a30b67171bb2df6afd52a40d'
-  Hospital: 'pbkdf2_sha256$200000$76e9856f2cc178ac7b723ea724b52c0f$7eda40703c40b3eaf3b8a5cf5caf97745dda18a80264b47c2eedf912ca60e02a'
+  admin: pbkdf2_sha256$200000$f27c75e5cff826af0c04a71f0836ec39$691cd4a844be77ef4f4006263432fdd3a7fcf803765f9e33efff00d430568b33
+  op0: pbkdf2_sha256$200000$5b08fdbbee2392f46e789f74c7a77b26$ac447752b17da2f053fc9e81a68942cb0bbe8ceed0955421387f291b8ced8082
+  op1: pbkdf2_sha256$200000$b2e4200c655d6330d64164120af8a25d$1326af69fc4fd74c1bfc0a2dae6c21ad64583753a30b67171bb2df6afd52a40d
+  Hospital: pbkdf2_sha256$200000$76e9856f2cc178ac7b723ea724b52c0f$7eda40703c40b3eaf3b8a5cf5caf97745dda18a80264b47c2eedf912ca60e02a
+  op2: pbkdf2_sha256$200000$c7aa9e77eb8263199874fbef5c232def$e882720437ae8333a1ffb979351225400efd96edb56f7f743c519b9ef46f620d

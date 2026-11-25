@@ -206,6 +206,16 @@ def test_only_the_admin_switches_the_pad_queue(srv):
     assert as_(srv, 'admin').post(path, body)[0] == 200
 
 
+def test_only_the_admin_sets_a_fleet_and_an_operator_sees_its_own(srv):
+    srv.set_fleet = lambda operator, size: {'status': 'ok', 'operator': operator, 'size': size}
+    path, body = '/api/fleet', {'operator': 'op0', 'size': 3}
+    assert Client(srv).post(path, body)[0] == 401
+    assert as_(srv, 'op0').post(path, body)[0] == 403
+    assert as_(srv, 'admin').post(path, body)[0] == 200
+    state = {'flights': [], 'events': [], 'fleet': {'op0': 3, 'op1': 4}}
+    assert acc.filter_state(state, 'op0')['fleet'] == {'op0': 3}
+
+
 def test_an_operator_cannot_open_anothers_track(srv):
     a, b = as_(srv, 'op0'), as_(srv, 'op1')
     assert a.get('/api/track?flight=f0')[0] == 200

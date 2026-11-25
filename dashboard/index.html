@@ -11,7 +11,7 @@
   --ground: #f4f3f1; --surface: #ffffff; --raised: #ecebe8; --border: #e4e2dd; --text: #0a0a0a;
   --muted: #6b6b6b; --ink: #141414; --data: #1d5fbf; --danger: #c4242a; --warn: #92400e;
   --data-soft: #e3ecf8; --danger-soft: #fbe9e9; --warn-soft: #fbf1e3;
-  --scene-ground: #c3cdb0; --scene-building: #fbfaf7; --scene-edge: #a9a69d; --scene-pad: #ffffff; --scene-mark: #3d3d3d; --scene-street: #868b90;
+  --scene-ground: #9fb77f; --scene-building: #fbfaf7; --scene-edge: #a9a69d; --scene-pad: #ffffff; --scene-mark: #3d3d3d; --scene-street: #868b90;
   --sky-top: #6fabe0; --sky-low: #e4eef3; --window: #8ea6ba; --tree: #6f9457;
   --font: "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
@@ -21,14 +21,14 @@
   --ground: #000000; --surface: #111111; --raised: #222222; --border: #1d1d1d; --text: #ffffff;
   --muted: #a8a8a8; --ink: #ffffff; --data: #5b9bff; --danger: #ff5a5f; --warn: #e5a93b;
   --data-soft: #0f1d33; --danger-soft: #2c1517; --warn-soft: #2b2414;
-  --scene-ground: #161d20; --scene-building: #4a525d; --scene-edge: #5d6672; --scene-pad: #39424d; --scene-mark: #d5dde6; --scene-street: #262c34;
+  --scene-ground: #18211f; --scene-building: #4a525d; --scene-edge: #5d6672; --scene-pad: #39424d; --scene-mark: #d5dde6; --scene-street: #262c34;
   --sky-top: #070b16; --sky-low: #1d2836; --window: #59636f; --tree: #24382a;
   color-scheme: dark } }
 :root[data-theme="dark"] {
   --ground: #000000; --surface: #111111; --raised: #222222; --border: #1d1d1d; --text: #ffffff;
   --muted: #a8a8a8; --ink: #ffffff; --data: #5b9bff; --danger: #ff5a5f; --warn: #e5a93b;
   --data-soft: #0f1d33; --danger-soft: #2c1517; --warn-soft: #2b2414;
-  --scene-ground: #161d20; --scene-building: #4a525d; --scene-edge: #5d6672; --scene-pad: #39424d; --scene-mark: #d5dde6; --scene-street: #262c34;
+  --scene-ground: #18211f; --scene-building: #4a525d; --scene-edge: #5d6672; --scene-pad: #39424d; --scene-mark: #d5dde6; --scene-street: #262c34;
   --sky-top: #070b16; --sky-low: #1d2836; --window: #59636f; --tree: #24382a;
   color-scheme: dark }
 html, body { height: 100%; }
@@ -110,6 +110,8 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 .toast.danger { box-shadow: inset 3px 0 0 var(--danger), 0 4px 16px rgba(0,0,0,.18); }
 .toast small { display: block; color: var(--muted); font-size: 12px; }
 .toast.out { opacity: 0; transition: opacity .4s ease; }
+.nodes .fleet { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.nodes .fleet button { width: 24px; height: 24px; border: 0; border-radius: var(--r-control); background: var(--raised); color: var(--text); font: inherit; font-size: 15px; line-height: 1; cursor: pointer; } .nodes .fleet button:disabled { opacity: .4; cursor: default; } .nodes .fleet b { font-size: 12px; }
 .nodes a { color: var(--data); font-size: 12px; text-decoration: none; }
 .drawbar { position: absolute; left: 50%; bottom: 68px; transform: translateX(-50%); display: flex; gap: 8px; white-space: nowrap; max-width: calc(100% - 24px); flex-wrap: wrap; justify-content: center; align-items: center; background: var(--surface);
   border-radius: var(--r-control); padding: 6px 8px 6px 12px; font-size: 13px; box-shadow: 0 0 0 1.5px var(--danger); }
@@ -190,8 +192,9 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
     <section class="field">
       <h2><label for="scene">Scene</label></h2>
       <select id="scene">
-        <option value="ecity_rooftops_fixed">1. Full system: a normal day</option>
+        <option value="ecity_city">1. Full city: three operators, one day</option>
         <option value="ecity_rooftops">2. Before the fixes: flights run late</option>
+        <option value="ecity_rooftops_fixed">2b. After the fixes: flights on time</option>
         <option value="ecity_rush_hour_off">3. Pad queue off: two drones collide</option>
         <option value="ecity_rush_hour_on">4. Pad queue on: one drone waits</option>
         <option value="ecity_birds_off">5. Birds without a guard: birds hit drones</option>
@@ -199,7 +202,7 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
         <option value="live">Live: book and fly now</option>
       </select>
       <p class="note">Recorded flights. Choose Live to book and fly your own.</p>
-      <p class="note"><a class="pill data" href="flight_log.html" style="display:inline-flex;align-items:center;gap:6px;padding:4px 12px;text-decoration:none"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 2.5h9M1.5 6h9M1.5 9.5h6"/></svg>Flight log</a></p>
+      <p class="note"><a class="pill data" id="logLink" href="flight_log.html" style="display:inline-flex;align-items:center;gap:6px;padding:4px 12px;text-decoration:none"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 2.5h9M1.5 6h9M1.5 9.5h6"/></svg>Flight log</a></p>
     </section>
     <section>
       <h2>Story</h2>
@@ -324,7 +327,7 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const SCENES = ['ecity_rooftops_fixed', 'ecity_rooftops', 'ecity_rush_hour_off', 'ecity_rush_hour_on', 'ecity_birds_off', 'ecity_birds_on', 'live'];   // dashboard/data/<name>.json (scripts/export_dashboard.py);
+const SCENES = ['ecity_city', 'ecity_rooftops', 'ecity_rooftops_fixed', 'ecity_rush_hour_off', 'ecity_rush_hour_on', 'ecity_birds_off', 'ecity_birds_on', 'live'];   // dashboard/data/<name>.json (scripts/export_dashboard.py);
 const NAME = SCENES.includes(location.hash.slice(1)) ? location.hash.slice(1) : SCENES[0];   // live: scripts/utm_server.py
 const LIVE = NAME === 'live';
 const ME = await Auth.init();                      // login (docs/access.md): an operator sees only its own drones, and no recorded scenes
@@ -403,7 +406,7 @@ const ax0 = Math.min(...act.map(p => p[0])) - 15, ax1 = Math.max(...act.map(p =>
 const ay0 = Math.min(...act.map(p => p[1])) - 15, ay1 = Math.max(...act.map(p => p[1])) + 15;
 const acx = (ax0 + ax1) / 2, acy = (ay0 + ay1) / 2, aspan = Math.max(ax1 - ax0, ay1 - ay0, 50);
 const SC = aspan / 65, DS = Math.min(2, Math.max(1, SC * 0.45)), PS = Math.min(2.2, Math.max(1, SC * 0.55));
-camera.far = Math.max(600, aspan * 5); camera.updateProjectionMatrix(); sky.scale.setScalar(camera.far * 0.9);
+camera.near = aspan > 350 ? 1.2 : 0.5; camera.far = Math.max(600, aspan * 5); camera.updateProjectionMatrix(); sky.scale.setScalar(camera.far * 0.9);
 Object.assign(sun.shadow.camera, { left: -aspan * 0.7, right: aspan * 0.7, top: aspan * 0.7, bottom: -aspan * 0.7, far: aspan * 4 + 200 });
 sun.position.set(acx - 40 * SC, 70 * SC, -acy + 30 * SC); sun.target.position.set(acx, 0, -acy); scene.add(sun.target);
 // textures, drawn here in grey so the theme colours tint them: a fine surface grain with a 10 m grid
@@ -517,6 +520,7 @@ const streetMat = new THREE.MeshStandardMaterial({ map: groundMapTex, roughness:
 const streets = new THREE.Mesh(new THREE.PlaneGeometry(bx1 - bx0, by1 - by0), streetMat); streets.receiveShadow = true;
 streets.rotation.x = -Math.PI / 2; streets.position.set(cx, 0.009, -cy); scene.add(streets);
 if (OSM) $('osmCredit').hidden = false;
+$('logLink').href = `flight_log.html?scene=${encodeURIComponent(NAME)}`;      // this scene's flights
 
 const bMat = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 });          // the roofs
 // a building is several boxes: those that touch share their colours. Some big ones have glass fronts.
@@ -530,7 +534,7 @@ const roofMats = ROOFS.map(c => { const m = new THREE.MeshStandardMaterial({ rou
 const bandPos = [], bandUv = [], bandNor = [], bandIdx = [], parapets = [];
 const eMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.55 }), edgePts = [];
 for (const [bi, b] of BL.entries()) {
-  const look = LOOK[root(bi)], glass = look.area > 900 && look.dice < 0.4, roofM = roofMats[ROOFS.indexOf(look.roof)];
+  const look = LOOK[root(bi)], glass = b.z >= 18 || (look.area > 900 && look.dice < 0.4), roofM = roofMats[ROOFS.indexOf(look.roof)];
   const g = new THREE.BoxGeometry(2 * b.h[0], b.z, 2 * b.h[1]);
   const tex = (glass ? glassTex : wallTex).clone(); tex.needsUpdate = true; tex.repeat.set(Math.max(1, Math.round((b.h[0] + b.h[1]) / 4)), Math.max(1, Math.round(b.z / 3)));
   const lit = litTex.clone(); lit.needsUpdate = true; lit.repeat.set(tex.repeat.x / 8, tex.repeat.y / 8); lit.offset.set(Math.floor(rnd() * 8) / 8, Math.floor(rnd() * 8) / 8);
@@ -660,14 +664,14 @@ for (const d of LIVE ? [] : DR) for (const k of ['start', 'goal']) {
 }
 for (const [key, kind] of pads) {
   const [x, y] = key.split(',').map(Number), r = (kind === 'depot' ? 1.15 : 0.75) * PS;
-  const pad = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.06, 40), padMat);
-  pad.position.set(x, 0.03, -y); pad.receiveShadow = true; scene.add(pad);
+  const pad = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.2, 40), padMat);
+  pad.position.set(x, 0.12, -y); pad.receiveShadow = true; scene.add(pad);
   const ring = new THREE.Mesh(new THREE.RingGeometry(r * 0.78, r * 0.86, 40), kind === 'hospital' ? dangerMat : markMat);
-  ring.rotation.x = -Math.PI / 2; ring.position.set(x, 0.065, -y); scene.add(ring);
+  ring.rotation.x = -Math.PI / 2; ring.position.set(x, 0.26, -y); scene.add(ring);
   const bars = kind === 'hospital' ? [[0.16, 0.7, 0], [0.7, 0.16, 0]] : [[0.1, 0.62, -0.2], [0.1, 0.62, 0.2], [0.42, 0.1, 0]];
   for (const [w, h, dx] of bars) {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(w * r, h * r), kind === 'hospital' ? dangerMat : markMat);
-    m.rotation.x = -Math.PI / 2; m.position.set(x + dx * r, 0.07, -y); scene.add(m);
+    m.rotation.x = -Math.PI / 2; m.position.set(x + dx * r, 0.28, -y); scene.add(m);
   }
 }
 
@@ -816,7 +820,7 @@ const landAll = (() => { for (let f = 0; f < T.length; f++) if (S[f].every(s => 
 const flights = DR.filter(d => d.kind === 'flight').length;
 const back = D.summary.returned || 0;               // sent back to their start (E4: a zone in the way)
 const chapters = [
-  { t: 0, what: 'The Planner books every delivery', cap: `${flights} deliveries from two operators each take off in the slot the Planner booked for them. The blue hexagons are the air each flight reserved, just ahead of it.` },
+  { t: 0, what: 'The Planner books every delivery', cap: `${flights} deliveries from ${NODES.filter(n => n.role.startsWith('delivery')).length === 3 ? 'three' : 'two'} operators each take off in the slot the Planner booked for them. The blue hexagons are the air each flight reserved, just ahead of it.` },
   firstIntr && { t: Math.max(0, firstIntr.t_dep - 1), what: 'An intruder appears', cap: 'A drone with no flight plan crosses the area. The Responder reserves a safety bubble ahead of it and re-books the flights in its way.', focus: byId[firstIntr.id] },
   zoneEv && { t: Math.max(0, zoneEv.t - 1.5), what: 'A no-fly zone closes an area', cap: `${zoneFor} part of the area is closed. The Responder re-routes flights around it and plans the next ones around it. The intruder ignores it.`, zone: true },
   emEv && { t: Math.max(0, emEv.t - 1), what: `${emNode} files an emergency`, cap: `${emNode} files a medical flight from its own client node. The Responder gives it priority: it is cleared at once and takes off within seconds.${wayText}`, focus: emIdx },
@@ -1001,7 +1005,7 @@ function updateWorld(dt) {
 }
 
 // birds: a red bird with a short trail; positions come ~10 times a simulated second and are interpolated like the drones
-const guardSlot = {}, birdObjs = new Map(), birdHist = new Map();
+const fleetNow = {}, guardSlot = {}, birdObjs = new Map(), birdHist = new Map();
 let birdsNow = [];
 // recorded birds: drawn the same; a drone stays orange for 2 s after its guard last acted, as in the live view
 const guardAt = (i, x) => { for (let f = frameAt(x); f >= 0 && T[f] > x - 2; f--) if ((D.birds.guard[f] || []).includes(i)) return true; return false; };
@@ -1141,14 +1145,15 @@ function updatePanels() {
     const done = LIVE ? mine.filter(f => f.status === 'landed').length : mine.filter(([, i]) => st[i] === 2).length;
     const rb = D.events.filter(e => e.type === 'replan' && e.status === 'approved' && e.node === n.id && e.why !== 'emergency' && e.t <= t).length;
     const hit = D.events.find(e => e.type === 'replan' && e.node === n.id && (e.why || '').startsWith('displaced by') && e.t <= t && t - e.t < 8);
-    return { n, booked: mine.length, fly, done, rb, hit };
+    const out = LIVE ? mine.filter(f => f.kind === 'flight' && (f.status === 'flying' || f.status === 'waiting')).length : 0;
+    return { n, booked: mine.length, fly, done, rb, hit, out, size: LIVE ? fleetNow[n.id] : null };
   });
-  const nkey = nk.map(x => [x.fly, x.done, x.rb, x.hit && x.hit.flight].join()).join('|');
+  const nkey = nk.map(x => [x.fly, x.done, x.rb, x.hit && x.hit.flight, x.out, x.size].join()).join('|');
   if (nkey !== lastNodes) {
     lastNodes = nkey;
     $('nodes').innerHTML = nk.map(x => `<div class="row${x.hit ? ' hit' : ''}"><b>${x.n.name}</b>
       <span class="n"><b>${x.booked}</b> booked<br>${x.fly} flying &middot; ${x.done} landed</span>
-      <small>${x.hit ? `${x.hit.flight} re-booked for the emergency` : x.rb ? `${x.n.role} &middot; ${x.rb} re-booked` : x.n.role}${LIVE ? ` &middot; <a href="operator.html?op=${encodeURIComponent(x.n.id)}" target="_blank" rel="noopener">open console</a>` : ''}</small></div>`).join('');
+      <small>${x.hit ? `${x.hit.flight} re-booked for the emergency` : x.rb ? `${x.n.role} &middot; ${x.rb} re-booked` : x.n.role}${LIVE ? ` &middot; <a href="operator.html?op=${encodeURIComponent(x.n.id)}" target="_blank" rel="noopener">open console</a>` : ''}</small>${x.size == null ? '' : `<span class="fleet">Drones <b>${x.out} of ${x.size} out</b>${ME.admin ? `<button type="button" data-fleet="${x.n.id}" data-size="${x.size - 1}" aria-label="One drone fewer for ${x.n.name}"${x.size < 1 ? ' disabled' : ''}>&minus;</button><button type="button" data-fleet="${x.n.id}" data-size="${x.size + 1}" aria-label="One more drone for ${x.n.name}"${x.size >= D.live.slots ? ' disabled' : ''}>+</button>` : ''}</span>`}</div>`).join('');
   }
   // the flights with a high-risk alert now, and why
   const hotNow = [...hotAt(t)].map(id => DR.findIndex(d => d.id === id)).filter(i => i >= 0 && st[i] === 1)
@@ -1216,7 +1221,7 @@ async function pollLive() {
     const s = await (await fetch(`api/state?since=${since}`)).json();
     since = s.n_events; liveFlights = s.flights; D.events.push(...s.events); D.hot = [{ t: 0, high: s.high || [] }];
     for (const z of s.zones || []) if (!zones.some(q => q.z.id === z.id)) { D.zones.push(z); addZone(z); }
-    birdsNow = s.birds || [];
+    birdsNow = s.birds || []; Object.assign(fleetNow, s.fleet || {});
     for (const b of birdsNow) { const h = birdHist.get(b.id) || []; h.push([s.t, b.pos]); h.splice(0, h.length - 12); birdHist.set(b.id, h); }
     for (const k in guardSlot) delete guardSlot[k];
     for (const f of s.flights) if (f.guard && f.slot != null) guardSlot[f.slot] = true;
@@ -1241,6 +1246,12 @@ async function pollLive() {
   } catch (e) { $('title').innerHTML = '<b>The UTM server is not answering</b>'; }
   polling = false;
 }
+// An operator's drones (admin): one more or fewer, from the simulator's pool.
+$('nodes').onclick = async (e) => {
+  const b = e.target.closest('[data-fleet]'); if (!b || b.disabled) return;
+  b.disabled = true;
+  try { const j = await (await fetch('api/fleet', { method: 'POST', body: JSON.stringify({ operator: b.dataset.fleet, size: +b.dataset.size }) })).json(); if (j.status === 'ok') { fleetNow[j.operator] = j.size; lastNodes = ''; } } catch { b.disabled = false; }
+};
 // The pad queue's switch (admin): the server says whether it is on, so every open console agrees.
 function showQueue(on) {
   $('queueBtn').setAttribute('aria-checked', String(on)); $('queueTxt').textContent = on ? 'On' : 'Off';

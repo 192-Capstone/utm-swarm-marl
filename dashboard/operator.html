@@ -172,7 +172,8 @@ async function poll() {
       if (e.type === 'alert') { const quiet = e.t - (alertAt[e.flight] ?? -99) < 30 || !(e.state === 'intrusion' || e.state === 'unknown'); alertAt[e.flight] = e.t; if (quiet) continue; }
       if (!first || s.t - e.t < 10) toast(e);                // the page has just opened: old alerts are in the notices only
     }
-    $('clock').textContent = `UTM time ${fmt(s.t)} \u00b7 ${s.free} drones free`;
+    const size = (s.fleet || {})[op], out = flights.filter(f => f.operator === op && f.kind === 'flight' && (f.status === 'flying' || f.status === 'waiting')).length;
+    $('clock').textContent = `UTM time ${fmt(s.t)} \u00b7 ${size == null ? s.free + ' drones free' : out + ' of your ' + size + ' drones out'}`;
     render();
   } catch (e) { $('clock').textContent = 'UTM server not reachable'; }
   busy = false;

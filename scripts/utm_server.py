@@ -29,6 +29,8 @@ API (JSON):
     POST /api/zone      {polygon[, for_s]}               admin only: a no-fly zone from now on (local metres; E4
                                                          re-plans the flights it clashes with)
 
+    POST /api/fleet     {operator, size}                 admin only: how many drones an operator has (--fleet: at the start);
+                                                         a booking beyond that is refused, drones that are out finish
     POST /api/padqueue  {on}                             admin only: drones bound for one pad line up (with the landing
                                                          fix that keeps the line moving), or not; the state has 'pad_queue'
 
@@ -97,7 +99,7 @@ def fmt(t):
 
 
 class LiveUTM:
-    def __init__(self, sc, slots=16, speed=1.0, seed=20, db=None, birds=False):
+    def __init__(self, sc, slots=16, speed=1.0, seed=20, db=None, birds=False, fleet=None):
         self.sc, self.speed, self.n = sc, float(speed), int(slots)
         self.layout, self.bounds, self.sky = rs.planner_for(sc)
         self.db_path = db                          # the flight log (utm/flight_db.py): written as things happen; None: off
@@ -132,6 +134,7 @@ class LiveUTM:
 
         self.places = sc['places']
         self.hubs = {p['operator']: name for name, p in self.places.items() if p.get('kind') == 'hub'}
+        self.fleet = {o: self.n if fleet is None else max(0, min(int(fleet), self.n)) for o in self.hubs}   # drones per operator
         z0 = self.sky.s.start_z
         park = self._pad(next(iter(self.hubs.values()))) if self.hubs else (0.0, 0.0)
         zl = self.sky.layer_z((self.sky.s.layers_open or (0,))[0])
@@ -214,6 +217,10 @@ class LiveUTM:
                 return {'status': 'rejected', 'reason': 'unknown place (or no hub for this operator)'}
             if not self.free:
                 return {'status': 'rejected', 'reason': 'no drone free'}
+            out = [self.flights[x] for x in self.slot if self.flights[x]['operator'] == operator and self.flights[x]['kind'] == 'flight']
+            if len(out) >= self.fleet.get(operator, self.n):
+                back = f", the next is back at about {fmt(min(f['arrival'] for f in out))}" if out else ''
+                return {'status': 'rejected', 'reason': f'all {self.fleet[operator]} drones of {operator} are out{back}'}
             a = self._pad(frm, pick=True) if pad is None else tuple(map(float, self.places[frm]['pads'][int(pad)][:2]))
             b = self._pad(to, pick=True)
             fid = f'f{len(self.flights)}'
@@ -254,6 +261,17 @@ class LiveUTM:
                     self.hold.stall_dist = float(sim.get('hold_stall_m') or HOLD_STALL_M) if on else 0.0
                 self._event('pad_queue', f"Pad queue {'on' if on else 'off'} (admin)")
             return {'status': 'ok', 'pad_queue': on}
+
+    def set_fleet(self, operator, size):
+        """The admin's: how many drones an operator has, 0 to the simulator's. Fewer than are out: those finish their flights."""
+        with self.lock:
+            if operator not in self.fleet:
+                return {'status': 'error', 'reason': f'unknown operator {operator!r}'}
+            size = max(0, min(int(size), self.n))
+            if size != self.fleet[operator]:
+                was, self.fleet[operator] = self.fleet[operator], size
+                self._event('fleet', f'{operator} now has {size} drones (was {was})', node=operator)
+            return {'status': 'ok', 'operator': operator, 'size': size}
 
     def zone(self, polygon, for_s=None):
         with self.lock:
@@ -538,7 +556,8 @@ class LiveUTM:
     def state(self, since=0):
         """The newest snapshot (no lock: the simulation is not held up) and the events from `since` on."""
         snap, ev = self.snap, self.events[since:]          # events only grow: a slice is safe
-        return {**snap, 'events': ev, 'n_events': since + len(ev), 'zones': list(self.zones), 'pad_queue': self.env.pad_queue_m is not None}
+        return {**snap, 'events': ev, 'n_events': since + len(ev), 'zones': list(self.zones), 'pad_queue': self.env.pad_queue_m is not None,
+                'fleet': dict(self.fleet)}
 
 
 class V6Server(ThreadingHTTPServer):
@@ -677,6 +696,13 @@ def handler(live, root, access):
                     if not access.is_admin(role):
                         return self._deny('admin only')
                     return self._json(live.zone(body['polygon'], body.get('for_s')))
+                if u.path == '/api/fleet':                                 # an operator's number of drones: the admin only
+                    role = self._need()
+                    if role is None:
+                        return
+                    if not access.is_admin(role):
+                        return self._deny('admin only')
+                    return self._json(live.set_fleet(body['operator'], body['size']))
                 if u.path == '/api/padqueue':                              # the pad queue's switch: the admin only
                     role = self._need()
                     if role is None:
@@ -711,6 +737,7 @@ def main():
     ap.add_argument('scenario')
     ap.add_argument('--port', type=int, default=8770)
     ap.add_argument('--slots', type=int, default=16, help='drones the simulator holds (bookings at once)')
+    ap.add_argument('--fleet', type=int, default=None, help='drones each operator starts with (default: as many as the simulator holds)')
     ap.add_argument('--speed', type=float, default=1.0, help='simulated seconds per wall second')
     ap.add_argument('--db', default=os.path.join(ROOT, 'eval_results', 'flight_log.db'),
                     help='the flight log database every booking, event and position is written to (utm/flight_db.py). Default: '
@@ -736,7 +763,7 @@ def main():
     db = None if a.no_db else os.path.abspath(a.db)
     os.chdir(ROOT)                                # the scenario's relative paths (config, checkpoint) are the repo's
     print('building the city and the planner...', flush=True)
-    live = LiveUTM(sc, a.slots, a.speed, sc['seed'], db=db, birds=not a.no_birds)
+    live = LiveUTM(sc, a.slots, a.speed, sc['seed'], db=db, birds=not a.no_birds, fleet=a.fleet)
     threading.Thread(target=live.run, daemon=True).start()
     h = handler(live, os.path.join(ROOT, 'dashboard'), access)
     srv = ThreadingHTTPServer(('0.0.0.0' if a.lan else '127.0.0.1', a.port), h)   # local only unless --lan
