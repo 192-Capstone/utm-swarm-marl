@@ -11,6 +11,8 @@ E6, system integration: one command runs the whole system on one scenario (utm/s
     python scripts/run_scenario.py scenarios/ecity_demo.yaml
     python scripts/run_scenario.py scenarios/ecity_demo.yaml --record out.json.gz
 
+The recording also goes into the flight log database (eval_results/flight_log.db; --db FILE for another, --no-db for none).
+
 The flying, monitoring and E4 loop is eval_layered.py's fly(), so a scenario run and the
 evaluations behave the same. Prints the results and E7's metrics; writes the recording.
 sim.simulator webots_l2_multi flies it in Webots (C5; DISPLAY set, one run per process).
@@ -24,6 +26,7 @@ import argparse
 import dataclasses
 import json
 import os
+import sqlite3
 import sys
 import time
 import types
@@ -40,6 +43,7 @@ from eval_e1_flown import plans                                    # noqa: E402
 from preview_route import load_map                                 # noqa: E402
 from preview_strategic import random_requests                      # noqa: E402
 from envs.disturbances import draw_failures                          # noqa: E402
+from utm import flight_db                                          # noqa: E402
 from utm import scenario as scn                                    # noqa: E402
 from utm.airspace_zones import Zone                                # noqa: E402
 from utm.demand import DemandSettings, generate_demand             # noqa: E402
@@ -259,10 +263,27 @@ def run(sc, record=None):
     return out, rec
 
 
+def log_flights(path, db_path):
+    """Adds a recording to the flight log database; returns the line to print. The run is over and recorded by now, so a
+    database that cannot be written is reported and not raised (scripts/flight_db.py import adds it later)."""
+    try:
+        db = flight_db.connect(db_path)
+        try:
+            run_id, n = flight_db.import_recording(db, path)
+        finally:
+            db.close()
+    except (OSError, ValueError, sqlite3.Error) as e:
+        return f'flight log: NOT added ({e}); add it with: python scripts/flight_db.py import {path}'
+    return f'flight log: run {run_id}, {n} flights -> {db_path}'
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('scenario')
     ap.add_argument('--record', default=None, help='recording path (default: the scenario\'s record)')
+    ap.add_argument('--db', default=os.path.normpath(os.path.join(ROOT, flight_db.DEFAULT_DB)),
+                    help='the flight log database the recording is added to (default: the live server\'s too)')
+    ap.add_argument('--no-db', action='store_true', help='do not add the recording to the flight log')
     a = ap.parse_args()
     sc = scn.load(a.scenario)
     t0 = time.time()
@@ -277,8 +298,11 @@ def main():
           f"{e7['flight_s'] / 3600:.2f} planned flight h"
           + (f", {e7['safety']['close_passes_per_h']:.1f} close passes / {e7['safety']['crashes_per_h']:.1f} crashes "
              "per flight h" if 'safety' in e7 else ''))
+    path = a.record or sc.get('record')
     print(f"recorded {len(rec.log['frames']['t'])} frames, {len(rec.log['events'])} events "
-          f"-> {a.record or sc.get('record')}  ({time.time() - t0:.0f} s)")
+          f"-> {path}  ({time.time() - t0:.0f} s)")
+    if path and not a.no_db:
+        print(log_flights(path, a.db))
 
 
 if __name__ == '__main__':

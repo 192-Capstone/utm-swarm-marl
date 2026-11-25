@@ -101,6 +101,18 @@ def test_intruder_has_no_schedule_and_refused_request_no_times(db):
     assert text == ['f5: booking refused (no free slot)']
 
 
+def test_a_finished_scenario_is_added_to_the_flight_log_once(tmp_path):
+    from run_scenario import log_flights
+    path, db_path = recording(tmp_path), str(tmp_path / 'log' / 'flights.db')
+    for _ in range(2):
+        assert '7 flights' in log_flights(str(path), db_path)
+    d = flight_db.connect(db_path)
+    assert [r['scenario'] for r in d.execute('SELECT * FROM runs')] == ['tiny']
+    d.close()
+    (tmp_path / 'bad.json.gz').write_bytes(b'not a recording')               # the run is over: reported, not raised
+    assert 'NOT added' in log_flights(str(tmp_path / 'bad.json.gz'), db_path)
+
+
 def test_old_recordings_without_requests_import(tmp_path):
     d = flight_db.connect(':memory:')
     flight_db.import_recording(d, recording(tmp_path, requests=False))
