@@ -291,6 +291,22 @@ def test_intrusion_replans_the_other_flight_first():
     assert acts[0]['decision'].status == 'approved'
 
 
+def test_a_drone_inside_a_zone_is_replanned_because_of_the_zone():
+    """The re-plan says which zone (it used to say only 'intrusion')."""
+    sky = StrategicPlanner([], B)
+    a = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))
+    mon = ConformanceMonitor(sky)
+    e4 = ContingencyManager(sky, mon)
+    zone = Zone('crash', 'Crash site', polygon=[(-3, 6), (3, 6), (3, 12), (-3, 12)])
+    e4.add_zone(zone, a.t_dep, {'A': at(sky, a, a.t_dep)})          # beside A's route: nothing to re-plan yet
+    acts = []
+    for k in range(40):                                             # blown into it
+        acts += e4.step(a.t_dep + 5.0 + 0.25 * k, {'A': (0.0, 9.0, 2.0)})
+        if acts:
+            break
+    assert acts and acts[0]['flight'] == 'A' and acts[0]['why'].startswith('zone crash')
+
+
 def test_early_drone_is_left_alone():
     sky = StrategicPlanner([], B)
     a = sky.submit(FlightPlan('A', (-15, 0), (15, 0)))

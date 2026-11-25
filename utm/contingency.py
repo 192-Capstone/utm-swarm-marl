@@ -234,7 +234,8 @@ class ContingencyManager:
                 out.append(a)
                 if a['decision'].status == 'approved':
                     return out
-        a = self._replan(fid, t, positions, 'intrusion')
+        zone = str(other) if str(other).startswith(ZONE_PREFIX) or other == 'blocked' else None
+        a = self._replan(fid, t, positions, 'zone ' + (zone[len(ZONE_PREFIX):] if zone != 'blocked' else 'blocked') if zone else 'intrusion')
         if a:
             out.append(a)
         return out
