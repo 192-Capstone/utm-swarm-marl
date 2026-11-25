@@ -27,7 +27,7 @@ pytest.importorskip('h3')
 from utm.airspace_zones import Zone, zone_keys  # noqa: E402
 from utm.conformance import ConformanceMonitor  # noqa: E402
 from utm.contingency import ContingencyManager  # noqa: E402
-from utm.strategic_planner import FlightPlan, StrategicPlanner  # noqa: E402
+from utm.strategic_planner import FlightPlan, Settings, StrategicPlanner  # noqa: E402
 
 B = ((-25.0, 25.0), (-25.0, 25.0))
 
@@ -305,6 +305,43 @@ def test_a_drone_inside_a_zone_is_replanned_because_of_the_zone():
         if acts:
             break
     assert acts and acts[0]['flight'] == 'A' and acts[0]['why'].startswith('zone crash')
+
+
+def caught(zone_exit, polygon=((-5, -9), (12, -9), (12, 9), (-5, 9)), other=None):
+    """A flies west to east; a zone closes around it when it is 2 m past the zone's west edge."""
+    sky = StrategicPlanner([], B, Settings(zone_exit=zone_exit, radius=1.0))
+    a = sky.submit(FlightPlan('A', (-20, 0), (20, 0)))
+    if other is not None:
+        sky.submit(other)
+    mon = ConformanceMonitor(sky)
+    e4 = ContingencyManager(sky, mon)
+    t = next(t for t in [a.t_dep + 0.25 * k for k in range(400)] if at(sky, a, t)[0] > -3.0)
+    zone = Zone('z', 'Closure', polygon=list(polygon))
+    return sky, e4, a, t, zone, e4.add_zone(zone, t, {'A': at(sky, a, t)})
+
+
+def test_a_drone_caught_inside_a_closing_zone_leaves_by_the_nearest_way_out():
+    sky, e4, a, t, zone, acts = caught(True)
+    d = acts[0]['decision']
+    assert d.status == 'approved' and d.reason == 'exit zone' and acts[0]['why'] == 'zone z'
+    assert d.waypoints[2][0] < -5.0                                     # back out over the west edge, not through
+    zk = set(zone_keys(zone, sky.sky, sky.s.n_layers))
+    assert not any(k in zk and hi > d.exit_t + 3.5 for k, ivs in d.reservation.items() for lo, hi in ivs)     # then around it
+    assert d.waypoints[-1][:2] == pytest.approx((20, 0), abs=0.5)       # and still to its goal
+    assert d.exit_t - t < 8.0
+    assert e4.step(t + 1.0, {'A': at(sky, d, t + 1.0)}) == []           # still inside: on its way out, left to it
+
+
+def test_without_zone_exit_it_keeps_its_route():
+    _, _, _, _, _, acts = caught(False)
+    assert acts[0]['decision'].status == 'rejected'
+
+
+def test_the_way_out_stays_clear_of_other_flights():
+    other = FlightPlan('B', (-8, -20), (-8, 20), t_earliest=12.0)
+    sky, _, _, _, _, acts = caught(True, other=other)
+    d = acts[0]['decision']
+    assert d.status == 'approved' and overlap(owned(sky, 'A'), owned(sky, 'B'), d.t_dep + 2.0) == []
 
 
 def test_early_drone_is_left_alone():

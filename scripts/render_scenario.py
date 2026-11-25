@@ -85,6 +85,8 @@ def short(e):
         return 'keeps its route'
     if e.get('reason') == 'return to base':
         return 'back to its pad'
+    if e.get('reason') == 'exit zone':
+        return 'leaves the zone'
     return {'the no-fly zone': 'avoids the zone', 'the intruder': 'avoids the intruder',
             'the emergency flight': 'makes way'}.get(reason(e['why']),
                                                      'makes room' if e['why'].startswith('intrusion by') else 're-planned')
@@ -106,6 +108,8 @@ def describe(e):
             if r.startswith('the '):
                 return f"{f}: no free route around {r} yet, keeps its route"
             return f"{f} {r}: no free alternative, keeps its route"
+        if e.get('reason') == 'exit zone':
+            return f"{f} leaves the no-fly zone by the nearest way out"
         if r == 'the no-fly zone':
             return f"{f} re-routed around the no-fly zone"
         if e.get('around_traffic'):

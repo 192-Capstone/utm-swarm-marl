@@ -95,7 +95,7 @@ DEFAULTS = {
     'utm': {'mode': 'e4', 'risk': 'booking', 'telemetry': None, 'pad_after': 10.0, 'layer_floor': 1.0, 'max_delay': None,
             'n_layers': 2, 'layers_open': None, 'layer_penalty': None,
             'v_climb': None, 'v_descent': None, 'v_descent_high': None, 'slow_band_m': None,
-            'traffic_detour': False, 'inflate': None},
+            'traffic_detour': False, 'inflate': None, 'zone_exit': False},
     'sim': {'config': 'configs/config_stage2_round7_eval_goalhold.yaml',
             'checkpoint': '../utm-swarm-marl/checkpoints/stage2_r1_crowd_rl_r7v3ft_s0_lab/checkpoint_final.pth',
             'pilot': 'learned', 'simulator': 'pybullet', 'land_latch_m': 2.4, 'land_vz_max': 0.5,

@@ -85,6 +85,8 @@ class Settings:
     layer_penalty: float = 4.0        # s per layer away from the preferred one
     traffic_detour: bool = False      # also try a same-layer route around the cells other flights have
                                       # booked at the times this one would pass them (_detour)
+    zone_exit: bool = False           # a flight a closing zone has caught inside leaves it by the nearest free
+                                      # way out and flies on from there (_exit); off: it keeps its route
     detour_margin_s: float = 5.0      # s: a detour keeps this much more time from other traffic than
                                       # the booking buffer (flown timing drifts by more than 1-3 s; on
                                       # the same layer that is all that keeps two drones apart)
@@ -119,6 +121,7 @@ class Decision:
     around_traffic: bool = False      # flies a same-layer detour around other flights' booked air
     blockers: list = field(default_factory=list)        # 'blocked' / 'zone:<id>' that were in the way
     displaced: list = field(default_factory=list)       # airborne flights an emergency took air from (E4)
+    exit_t: float = None              # s: an exit from a zone it was caught in: outside from then on
 
 
 def _merge(intervals):
@@ -458,8 +461,9 @@ class StrategicPlanner:
         can't wait on a pad: hovering in place would not be booked), so only the layer and the
         route can change; its start may be up to `snap` m from free air (inside a zone's margin).
         If a zone (or blocked air) is what keeps it from its goal, it returns to its start pad
-        instead (Decision.reason 'return to base'); traffic alone never sends it home. If nothing
-        fits, the old booking is restored and the rejected Decision returned."""
+        instead (Decision.reason 'return to base'); traffic alone never sends it home. With
+        Settings.zone_exit a drone that is inside a zone then tries to leave it (reason 'exit zone').
+        If nothing fits, the old booking is restored and the rejected Decision returned."""
         p = self.plans[fid]
         ledger, current = {k: list(v) for k, v in self.ledger.items()}, self.current.get(fid)
         self.release(fid, t)
@@ -473,11 +477,69 @@ class StrategicPlanner:
                 break
             if not d.blockers:                      # only traffic in the way: don't give up the goal
                 break
+        if d.status != 'approved' and self.s.zone_exit:
+            d = self._exit(p, position, t, grace, snap) or d
         if d.status != 'approved':
             self.ledger = ledger
             if current is not None:
                 self.current[fid] = current
         return d
+
+    def _exit(self, p, position, t, grace, snap):
+        """A way out of the zones the drone is inside, then on to its goal (else home) around every
+        zone, or None. The ways out are the nearest free points outside, one per 45 degree sector,
+        nearest first; the first whose whole flight is clear of the other flights is booked. The zones
+        it is leaving are allowed only until it is out."""
+        here, z = (float(position[0]), float(position[1])), float(position[2])
+        layer0, skip = self.layer_of(z), set(self.exempt.get(p.id, ()))
+        inside = {o for c in self.cells_near(*here) for lo, hi, o in self.ledger.get((c, layer0), ())
+                  if str(o).startswith('zone:') and o not in skip and lo <= t < hi}
+        if not inside:
+            return None
+        avoid = frozenset(self.zone_keys) - skip
+        keys = set().union(*(self.zone_keys[o] for o in inside))
+        layers = range(self.s.n_layers) if self.s.layers_open is None else self.s.layers_open
+        for layer in sorted(layers, key=lambda k: abs(self.layer_z(k) - z))[:2]:
+            if self.layer_z(layer) < z - 1e-6 and not self._clear_below(here, layer):
+                continue
+            g = self._zone_grid(layer, frozenset(o for o in avoid if any(k == layer for _, k in self.zone_keys[o])))
+            iy, ix = np.nonzero(~g.occ)
+            if not len(ix):
+                continue
+            dx, dy = g.xs[ix] - here[0], g.ys[iy] - here[1]
+            dist, sector = np.hypot(dx, dy), np.floor((np.arctan2(dy, dx) + np.pi) / (np.pi / 4)).astype(int) % 8
+            ways = []
+            for q in range(8):
+                m = np.flatnonzero(sector == q)
+                if len(m):
+                    j = m[dist[m].argmin()]
+                    ways.append((float(dist[j]), (float(g.xs[ix[j]]), float(g.ys[iy[j]]))))
+            for _, x in sorted(ways):
+                out = self.route(here, x, layer, frozenset(), snap)
+                if out is None:
+                    continue
+                for goal in (p.goal, p.start):
+                    on = self.route(x, goal, layer, avoid, snap)
+                    if on is None:
+                        continue
+                    r = out + on[1:]
+                    prof, total = self.profile(r, layer, z)
+                    _, t_out = self.profile(out, layer, z)
+                    last = max((tau for tau, px, py, pz in prof if any((c, self.layer_of(pz)) in keys for c in self.cells_near(px, py))), default=0.0)
+                    if last > t_out:                    # it would meet a zone it is leaving again
+                        continue
+                    res = self._absolute(self._relative_reservation(prof), float(t), [], self.cells_near(*goal), total)
+                    if self.conflicts(res, p.id, t + grace) - inside:
+                        continue
+                    self._book(p.id, res)
+                    zl = self.layer_z(layer)
+                    wps = [(r[0][0], r[0][1], z)] + [(a, b, zl) for a, b in r] + [(r[-1][0], r[-1][1], self.s.start_z)]
+                    d = Decision(p.id, 'approved', layer, float(t), 0.0, float(t) + total, total, wps, res, reason='exit zone',
+                                 around_zones=True, exit_t=float(t) + float(last))
+                    self.decisions.append(d)
+                    self.current[p.id] = d
+                    return d
+        return None
 
     def summary(self):
         ok = [d for d in self.decisions if d.status == 'approved']

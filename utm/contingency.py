@@ -221,6 +221,9 @@ class ContingencyManager:
             if e['flight'] == fid:
                 other = e['other'] if e['state'] == 'intrusion' else None
                 break
+        d = self.p.current.get(fid)                 # on its way out of a zone already: let it
+        if str(other).startswith(ZONE_PREFIX) and d is not None and d.exit_t is not None and t < d.exit_t + self.cooldown:
+            return []
         out = []
         if self._failed(fid):                       # the intruder can't be moved: the other flight can
             if other in self.p.plans and not self._failed(other):
