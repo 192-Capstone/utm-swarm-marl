@@ -1,0 +1,53 @@
+# E-City, distant hubs: the two operators' hubs are 290 m apart (West Hub in the west, East Hub in the east) and
+# their deliveries cross in the middle, 80-200 m trips. Hubs, pads and drop points are all at least 10 m
+# from the nearest building (ecity_rooftops has one East Hub pad 2.7 m from a wall). The story as in ecity_rooftops:
+# a zone closes the middle for 3 min at 60 s, an intruder crosses at 55 s, the Hospital files an emergency at 75 s.
+# Run: python scripts/run_scenario.py scenarios/ecity_distant.yaml
+name: ecity_distant
+seed: 20
+map: {map: osm-full}
+places:
+  West Hub:      {kind: hub, operator: op0, pads: [[-89.0, -35.0], [-83.0, -35.0]]}
+  East Hub:      {kind: hub, operator: op1, pads: [[204.2, -59.3], [210.2, -59.3]]}
+  City Hospital: {kind: hospital, at: [78.1, -84.1]}
+  Apartments:    {kind: drop, at: [-70.0, -110.0]}
+  School:        {kind: drop, at: [-14.0, -170.0]}
+  Clinic:        {kind: drop, at: [40.0, -40.0]}
+  Market:        {kind: drop, at: [56.0, 100.0]}
+  Pharmacy:      {kind: drop, at: [140.0, -20.0]}
+  Tech Park:     {kind: drop, at: [126.1, -204.8]}
+  Incident Site: {kind: drop, at: [50.0, -10.0]}
+requests:
+  - {t: 3, operator: op0, to: Market}
+  - {t: 5, operator: op1, to: Tech Park}
+  - {t: 8, operator: op0, to: Clinic}
+  - {t: 12, operator: op1, to: Market}
+  - {t: 14, operator: op0, to: School}
+  - {t: 20, operator: op1, to: Clinic}
+  - {t: 22, operator: op0, to: Market}
+  - {t: 28, operator: op1, to: Pharmacy}
+  - {t: 30, operator: op0, to: Incident Site}
+  - {t: 36, operator: op1, to: Tech Park}
+  - {t: 41, operator: op0, to: Clinic}
+  - {t: 47, operator: op1, to: Incident Site}
+  - {t: 52, operator: op0, to: Apartments}
+  - {t: 58, operator: op1, to: Market}
+  - {t: 66, operator: op0, to: School}
+demand:
+  duration_s: 90
+  layers: [6, 7]
+  short_trip_m: 105
+  short_layers: [2, 3]
+disruptions: {p_late: 0.2, late: [5, 15], p_slow: 0.0, slow: 0.6}
+intruders:
+  - {t: 55, start: [30.0, 76.0], goal: [-60.0, -8.0], layer: 6}
+zones:
+  - {at: 60, for: 180, polygon: [[95, -72], [125, -72], [125, -32], [95, -32]]}
+emergencies:
+  - {t: 75, from: City Hospital, to: Incident Site, priority: 1, layer: 7, operator: Hospital}
+utm: {mode: e4, risk: booking, telemetry: null, layer_floor: 1, n_layers: 8, layers_open: [2, 3, 6, 7],
+      layer_penalty: 30, max_delay: 120, traffic_detour: true, inflate: 1.15, v_climb: 1.0, v_descent: 0.5,
+      v_descent_high: 1.0, slow_band_m: 3.0}
+sim: {cruise_z_bias: 0.9, altitude_cap: 3.5, land_step_m: 2.0, position_origin: goal,
+      hold_engage_m: 1.0, land_vz_high: 1.0, land_slow_m: 3.0, los_below_cruise: true}
+record: eval_results/scenarios/ecity_distant.json.gz
