@@ -1,5 +1,8 @@
 """E6: scenario files (utm/scenario.py) and the flight log (utm/flight_log.py)."""
 
+import sys
+import os
+import math
 import numpy as np
 import pytest
 
@@ -230,3 +233,19 @@ def test_drawn_failures_follow_the_seed():
     assert rs.failure_schedule(scenario.load(_fsc()), flights, late) is None
     lst = [{'flight': 'f1', 't': 4, 'type': 'land'}]
     assert rs.failure_schedule(scenario.load(_fsc(failures=lst)), flights, late) == lst
+
+
+def test_the_full_city_scene_is_valid_and_clear_of_walls():
+    pytest.importorskip('h3')
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+    import run_scenario as rs
+    sc = scenario.load('scenarios/ecity_city.yaml')
+    layout, _, _ = rs.planner_for(sc)
+    assert sorted({p['operator'] for p in sc['places'].values() if p.get('kind') == 'hub'}) == ['op0', 'op1', 'op2']
+    assert len({o['height'] for o in layout}) > 4 and max(o['height'] for o in layout) == 24.0
+    for p in sc['places'].values():
+        for x, y in p.get('pads') or [p['at']]:
+            for o in layout:
+                c, s = math.cos(o.get('yaw', 0.0)), math.sin(o.get('yaw', 0.0))
+                dx, dy = x - o['center'][0], y - o['center'][1]
+                assert math.hypot(max(abs(dx * c + dy * s) - o['half'][0], 0), max(abs(-dx * s + dy * c) - o['half'][1], 0)) > 13

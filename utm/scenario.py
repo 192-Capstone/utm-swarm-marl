@@ -120,8 +120,8 @@ def validate(sc):
     """Raises ValueError naming the first problem."""
     def bad(msg):
         raise ValueError(f"scenario {sc.get('name')!r}: {msg}")
-    if not isinstance(sc.get('map'), dict) or sc['map'].get('map') not in ('city', 'osm-crop', 'osm-full'):
-        bad("map.map must be city, osm-crop or osm-full")
+    if not isinstance(sc.get('map'), dict) or sc['map'].get('map') not in ('city', 'osm-crop', 'osm-full', 'osm-heights'):
+        bad("map.map must be city, osm-crop, osm-full or osm-heights")
     seeds = [sc['seed']] + ([sc['map']['seed']] if 'seed' in sc['map'] else [])
     if any(10 <= int(s) <= 19 for s in seeds):
         bad('seeds 10-19 are reserved for test runs')

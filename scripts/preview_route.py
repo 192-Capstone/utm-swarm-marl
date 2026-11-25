@@ -33,6 +33,10 @@ from envs.scenario_manager import DRONE_RADIUS  # noqa: E402
 CROP = "data/osm_city/bengaluru_ecity_phase1_rotated_v2_crop50_cand1_layout.yaml"
 
 
+HEIGHTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "osm_city",
+                       "bengaluru_ecity_phase1_heights_layout.yaml")     # osm-heights: osm-full with varied heights
+
+
 def load_map(args):
     if args.map == "city":
         from envs.city_generator import generate_city
@@ -44,7 +48,7 @@ def load_map(args):
     from envs.osm_scenario import load_osm_layout, layout_bounds, DEFAULT_LAYOUT_PATH
 
     layout = load_osm_layout(
-        CROP if args.map == "osm-crop" else DEFAULT_LAYOUT_PATH
+        CROP if args.map == "osm-crop" else HEIGHTS if args.map == "osm-heights" else DEFAULT_LAYOUT_PATH
     )
 
     if args.map == "osm-crop":

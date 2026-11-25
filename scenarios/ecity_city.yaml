@@ -1,0 +1,70 @@
+# The whole E-City map (about 760 x 700 m) with three delivery operators, their hubs in a triangle (west, east, south), each
+# of three pads beside a street, set diagonally so a flight does not leave over the next pad, and thirteen places all
+# around, each on a street and at least 13 m from a wall. The map is
+# osm-heights: 2-4 floor buildings, which high flights cross, and eight towers of 18-24 m, which they go around.
+# Story: 24 deliveries in the first 2 minutes; 70 s a no-fly zone closes for 4 min south of the middle; 60 s an intruder;
+# 90 s the Hospital files an emergency. Live: scripts/utm_server.py scenarios/ecity_city.yaml --slots 14
+# Run: python scripts/run_scenario.py scenarios/ecity_city.yaml
+name: ecity_city
+seed: 20
+map: {map: osm-heights}
+places:
+  West Hub:       {kind: hub, operator: op0, pads: [[-211.0, 56.0], [-205.0, 50.0], [-199.0, 44.0]]}
+  East Hub:       {kind: hub, operator: op1, pads: [[252.0, 84.0], [258.0, 78.0], [264.0, 72.0]]}
+  South Hub:      {kind: hub, operator: op2, pads: [[144.0, -242.0], [150.0, -236.0], [156.0, -230.0]]}
+  City Hospital:  {kind: hospital, at: [24.0, -50.0]}
+  Incident Site:  {kind: drop, at: [0.0, 40.0]}
+  Metro Station:  {kind: drop, at: [-228.0, -20.0]}
+  Market:         {kind: drop, at: [24.0, 268.0]}
+  Tech Park:      {kind: drop, at: [266.0, 210.0]}
+  Library:        {kind: drop, at: [-96.0, 172.0]}
+  School:         {kind: drop, at: [-96.0, 94.0]}
+  Pharmacy:       {kind: drop, at: [-72.0, -14.0]}
+  Apartments:     {kind: drop, at: [-114.0, -116.0]}
+  Clinic:         {kind: drop, at: [108.0, -68.0]}
+  Shopping Mall:  {kind: drop, at: [280.0, -270.0]}
+  Post Office:    {kind: drop, at: [240.0, -92.0]}
+  Sports Ground:  {kind: drop, at: [-150.0, -236.0]}
+requests:
+  - {t: 3.0,  operator: op0, to: Library}
+  - {t: 5.0,  operator: op1, to: Clinic}
+  - {t: 7.5,  operator: op2, to: Post Office}
+  - {t: 11.0, operator: op0, to: Pharmacy}
+  - {t: 14.0, operator: op1, to: Tech Park}
+  - {t: 17.0, operator: op2, to: Clinic}
+  - {t: 21.0, operator: op0, to: Apartments}
+  - {t: 25.0, operator: op1, to: Post Office}
+  - {t: 29.0, operator: op2, to: Apartments}
+  - {t: 33.0, operator: op0, to: Incident Site}
+  - {t: 38.0, operator: op1, to: Incident Site}
+  - {t: 43.0, operator: op2, to: Shopping Mall}
+  - {t: 48.0, operator: op0, to: Market}
+  - {t: 53.0, operator: op1, to: Market}
+  - {t: 58.0, operator: op0, to: School}
+  - {t: 63.0, operator: op2, to: Pharmacy}
+  - {t: 68.0, operator: op1, to: Clinic}
+  - {t: 74.0, operator: op0, to: Metro Station}
+  - {t: 80.0, operator: op2, to: Shopping Mall}
+  - {t: 86.0, operator: op1, to: Tech Park}
+  - {t: 93.0, operator: op0, to: Sports Ground}
+  - {t: 100.0, operator: op2, to: Clinic}
+  - {t: 107.0, operator: op1, to: Incident Site}
+  - {t: 115.0, operator: op0, to: Library}
+demand:
+  duration_s: 120
+  layers: [6, 7]
+  short_trip_m: 105
+  short_layers: [2, 3]
+disruptions: {p_late: 0.2, late: [5, 15], p_slow: 0.0, slow: 0.6}
+intruders:
+  - {t: 60, start: [-114.0, 60.0], goal: [-30.0, 60.0], layer: 6}
+zones:
+  - {at: 70, for: 240, polygon: [[-10, -190], [60, -190], [60, -110], [-10, -110]]}
+emergencies:
+  - {t: 90, from: City Hospital, to: Incident Site, priority: 1, layer: 7, operator: Hospital}
+utm: {mode: e4, risk: booking, telemetry: null, layer_floor: 1, n_layers: 8, layers_open: [2, 3, 6, 7],
+      layer_penalty: 30, max_delay: 120, traffic_detour: true, zone_exit: true, inflate: 1.15, v_climb: 1.0, v_descent: 0.5,
+      v_descent_high: 1.0, slow_band_m: 3.0}
+sim: {cruise_z_bias: 0.9, altitude_cap: 3.5, land_step_m: 2.0, position_origin: goal, pad_queue_m: 6.0, hold_stall_m: 2.6,
+      hold_engage_m: 1.0, land_vz_high: 1.0, land_slow_m: 3.0, los_below_cruise: true}
+record: eval_results/scenarios/ecity_city.json.gz
