@@ -29,6 +29,7 @@ DEFAULT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'd
 ITERATIONS = 200_000
 SESSION_S = 8 * 3600                         # a session lasts 8 hours (kept in memory: a server restart logs everyone out)
 COOKIE = 'utm_session'
+NO_ROLE = f'pbkdf2_sha256${ITERATIONS}${"00" * 16}${"00" * 32}'     # checked for an unknown role: one hash, as for a known one
 ADMIN = 'admin'
 
 
@@ -81,7 +82,7 @@ class Access:
     def login(self, role, passcode):
         """A session token, or None for an unknown role or a wrong passcode (the same work either way)."""
         stored = self.hashes.get(role)
-        ok = check_passcode(passcode, stored if stored else hash_passcode('x', b'0' * 16))
+        ok = check_passcode(passcode, stored if stored else NO_ROLE)
         if not (stored and ok):
             return None
         token = secrets.token_urlsafe(32)

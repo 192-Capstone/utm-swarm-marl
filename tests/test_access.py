@@ -273,6 +273,19 @@ def test_the_shipped_demo_file_loads_with_its_documented_passcodes():
         assert a.login(role, code) and not a.login(role, 'nope')
 
 
+def test_an_unknown_role_costs_one_hash_like_a_wrong_passcode(monkeypatch):
+    a, real, calls = acc.Access.load(acc.DEFAULT_FILE), acc.hashlib.pbkdf2_hmac, []
+
+    def counted(*args, **kw):
+        calls.append(args[3])                                # the iterations
+        return real(*args, **kw)
+    monkeypatch.setattr(acc.hashlib, 'pbkdf2_hmac', counted)
+    assert a.login('op0', 'nope') is None
+    known, calls[:] = list(calls), []
+    assert a.login('nobody', 'nope') is None
+    assert calls == known == [acc.ITERATIONS]
+
+
 def test_public_static_is_strict():
     ok = ['/', '/index.html', '/operator.html', '/track_logic.js', '/auth.js']
     bad = ['/data/flight_log.json', '/data', '/a/b.html', '/..%2fx.html', '/x.json', '/.hidden.html', '/x.html::$DATA', '/\\data\\x.js']
