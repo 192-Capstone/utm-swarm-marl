@@ -109,7 +109,7 @@ class BirdLive(ta.FakeLive):
         super().__init__(db_path)
         self.added = []
 
-    def add_bird(self, flight=None, place=None, at=None, speed=2.0, count=1, who='admin'):
+    def add_bird(self, flight=None, place=None, at=None, speed=2.0, count=1, who='admin', path='cross'):
         if flight == 'nope':
             raise ValueError('nope is not on its pad or flying')
         if count == 99:
@@ -250,7 +250,9 @@ def test_a_bird_sent_to_a_place_or_a_point_and_bad_requests(live):
         live.add_bird(place='Clinic', count=5)
     with pytest.raises(ValueError):
         live.add_bird()                                                               # no target
-    assert live.add_bird(place='Clinic', count=4)[0] == 200 and live.add_bird(place='Clinic', count=4)[0] == 200   # 11 flying
+    with pytest.raises(ValueError):
+        live.add_bird(place='Clinic', path='zigzag')
+    assert live.add_bird(place='Clinic', count=4, path='circle')[1]['text'] == '4 circling birds added near Clinic (admin)' and live.add_bird(place='Clinic', count=4)[0] == 200   # 11 flying
     code, reply = live.add_bird(place='Clinic', count=4)
     assert code == 409 and 'at most 12' in reply['reason']                            # the pool is full
 

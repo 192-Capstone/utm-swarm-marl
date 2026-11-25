@@ -23,7 +23,7 @@ API (JSON):
                                          events from N on
     POST /api/request   {operator, to[, from, pad]}      a booking: the reply is E1's decision
     POST /api/emergency {operator, from, to[, layer]}    an emergency flight (E4 gives it priority)
-    POST /api/bird      {flight | place | at:[x,y[,z]][, speed 1-3, count 1-4]}   admin only: birds join the simulation
+    POST /api/bird      {flight | place | at:[x,y[,z]][, speed 1-3, count 1-4, path cross|circle]}   admin only: birds join the simulation
                                          (aimed to cross a flight's route ahead of it, or to be at a place); the state then
                                          also lists the birds, and each flight whether its bird guard is active
     POST /api/zone      {polygon[, for_s]}               admin only: a no-fly zone from now on (local metres; E4
@@ -89,7 +89,7 @@ AIM_AHEAD_S = (2.0, 16.0)                        # a bird aimed at a flight cros
 LIVE_BIRDS = {'enabled': True, 'count': BIRD_POOL, 'radius': 0.12,
               'detector': {'enabled': True, 'mode': 'realistic', 'range_m': 12.0, 'fov_deg': 360.0, 'tracker': 'kalman',
                            'kalman_q': 2.0, 'share': False, 'birds_in_slots': False},
-              'guard': {'enabled': True, 'layer_spacing_m': 2.0}}
+              'guard': {'enabled': True, 'layer_spacing_m': 2.0, 'turn_s': 1.2}}
 
 
 def fmt(t):
@@ -306,7 +306,7 @@ class LiveUTM:
     def _level(self):
         return float(self.sky.layer_z((self.sky.s.layers_open or (0,))[0]))
 
-    def add_bird(self, flight=None, place=None, at=None, speed=2.0, count=1, who='admin'):
+    def add_bird(self, flight=None, place=None, at=None, speed=2.0, count=1, who='admin', path='cross'):
         """Birds join the running simulation. flight: each is aimed to cross that flight's route ahead of it, timed to
         arrive with it; place / at ([x, y(, z)]): to be there BIRD_PLACE_T_S from now. Returns (http code, reply)."""
         if self.pool is None:
@@ -316,6 +316,8 @@ class LiveUTM:
         speed, count = float(speed), int(count)
         if not BIRD_SPEED_M_S[0] <= speed <= BIRD_SPEED_M_S[1]:
             raise ValueError(f'speed must be {BIRD_SPEED_M_S[0]:g}-{BIRD_SPEED_M_S[1]:g} m/s')
+        if path not in ('cross', 'circle'):
+            raise ValueError('path must be cross (straight) or circle')
         if not 1 <= count <= BIRDS_PER_CALL:
             raise ValueError(f'count must be 1-{BIRDS_PER_CALL}')
         cfg = {'speed': [speed, speed], 'radius': LIVE_BIRDS['radius'], 'vz_max': 0.3, 'circle_radius': [2.0, 4.0],
@@ -347,11 +349,13 @@ class LiveUTM:
                 head = None if face is None else face + float(self.bird_rng.choice([-1.0, 1.0])) * \
                     (np.pi / 2 + float(self.bird_rng.uniform(-0.6, 0.6)))
                 bird = birds_mod.Bird.planned(self.bird_rng, cfg, aim0, max(0.5, t_aim + (j - (count - 1) / 2.0) * 0.8),
-                                              self.dt, 'cross', self.z_band, self.sky.bounds, fold=False, heading=head)
+                                              self.dt, path, self.z_band, self.sky.bounds, fold=False,
+                                              heading=head if path == 'cross' else None)
                 slot = self.env.launch_bird(bird)
                 self.n_birds += 1
                 self.bird_name[slot], self.bird_trail[slot] = f'b{self.n_birds}', []
-            text = ('bird added ' if count == 1 else f'{count} birds added ') + f'{near} ({who})'
+            kind = 'circling ' if path == 'circle' else ''
+            text = (f'{kind}bird added ' if count == 1 else f'{count} {kind}birds added ') + f'{near} ({who})'
             self._event('bird_added', text, **extra)
         return 200, {'status': 'ok', 'added': count, 'text': text}
 
@@ -664,7 +668,7 @@ def handler(live, root, access):
                     if not access.is_admin(role):
                         return self._deny('admin only')
                     code, reply = live.add_bird(body.get('flight'), body.get('place'), body.get('at'),
-                                                body.get('speed', 2.0), body.get('count', 1))
+                                                body.get('speed', 2.0), body.get('count', 1), path=body.get('path', 'cross'))
                     return self._json(reply, code)
                 if u.path == '/api/zone':                                  # a no-fly zone: the admin only
                     role = self._need()

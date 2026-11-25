@@ -238,6 +238,9 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
           <label>Speed <span><output id="birdSpeedV">2 m/s</output><input type="range" id="birdSpeed" min="1" max="3" step="0.5" value="2"></span></label>
           <label>Birds <select id="birdCount"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
         </div>
+        <div>
+          <label>Path <select id="birdPath"><option value="cross">Straight</option><option value="circle">Circling</option></select></label>
+        </div>
         <button type="button" id="birdGo">Add bird</button>
         <p class="note" id="birdMsg" aria-live="polite">Aimed to cross the flight's route ahead of it, timed to arrive with it (a place: to be there in 5 s).</p>
       </div>
@@ -987,7 +990,7 @@ if (BIRDS_ON) {
   $('birdGo').onclick = async () => {
     const [kind, ...rest] = $('birdTarget').value.split(':'), name = rest.join(':');
     if (!kind) { $('birdMsg').textContent = 'No flight is flying yet: pick a place, or book a flight first.'; return; }
-    const body = { speed: +$('birdSpeed').value, count: +$('birdCount').value, [kind]: name };
+    const body = { speed: +$('birdSpeed').value, count: +$('birdCount').value, path: $('birdPath').value, [kind]: name };
     $('birdGo').disabled = true;
     try {
       const r = await fetch('api/bird', { method: 'POST', body: JSON.stringify(body) }), j = await r.json();

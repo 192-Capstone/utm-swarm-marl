@@ -245,6 +245,65 @@ def test_a_dropped_track_while_latched_does_nothing_and_releases():
     assert states == [True, True, True, True, False, False, False]
 
 
+def curve_guard(**kw):
+    return G.BirdGuardPolicy(Const((0, 0, 0, 0)), guard_cfg(turn_s=1.2, turn_lag_s=0.0, **kw))
+
+
+def feed(p, rate, speed=2.0, steps=60, noise=0.0, drop_at=None):
+    """Tracks of one bird turning at `rate` rad/s, step by step; returns the last (bp, bv, paths) and where it is."""
+    rng = np.random.default_rng(0)
+    p.heading = {}
+    for k in range(steps):
+        t = k * p.dt
+        th = rate * t
+        x = np.array([speed * t, 0.0, 5.0]) if rate == 0 else np.array([speed / rate * np.sin(th), speed / rate * (1 - np.cos(th)), 5.0])
+        v = np.array([speed * np.cos(th), speed * np.sin(th), 0.0]) + noise * rng.normal(size=3)
+        b = np.array([], dtype=int) if k == drop_at else np.array([0])
+        out = p._curves(0, b, 1, x[None][:len(b)], v[None][:len(b)])
+    return out, x, th
+
+
+def test_a_turning_bird_is_predicted_along_its_curve():
+    p = curve_guard()
+    (bp, bv, paths), x, th = feed(p, rate=1.0)
+    t = p.times + p.predict_s
+    truth = np.column_stack([x[0] + 2.0 * (np.sin(th + t) - np.sin(th)), x[1] + 2.0 * (np.cos(th) - np.cos(th + t)), np.full(len(t), 5.0)])
+    assert np.abs(paths[0] - truth).max() < 0.05
+    assert np.allclose(bp[0], paths[0, 0]) and np.allclose(np.hypot(*bv[0][:2]), 2.0)
+
+
+def test_a_straight_bird_and_a_noisy_one_stay_straight():
+    p = curve_guard()
+    (_, bv, paths), x, _ = feed(p, rate=0.0)
+    assert np.allclose(paths[0, :, 0], x[0] + 2.0 * (p.times + p.predict_s)) and np.allclose(bv[0], [2.0, 0.0, 0.0])
+    (_, _, paths), x, _ = feed(p, rate=0.0, noise=0.1)                   # a small spurious turn is under turn_min
+    assert np.ptp(np.diff(paths[0][:, :2], axis=0), axis=0).max() < 1e-9
+
+
+def test_a_dropped_track_starts_its_curve_afresh():
+    p = curve_guard()
+    (_, _, paths), _, _ = feed(p, rate=1.0, steps=50, drop_at=45)
+    assert np.ptp(np.diff(paths[0][:, :2], axis=0), axis=0).max() < 1e-9     # 4 headings only: straight
+
+
+def test_a_bird_curving_into_the_drone_is_a_threat_only_to_the_turn_aware_guard():
+    p = curve_guard()
+    (bp, bv, paths), _, _ = feed(p, rate=1.0)
+    drone = paths[0, 20]                                                 # hovers where the bird will be 2 s from then
+    assert p._assess(drone, np.zeros(3), bp, bv, paths)[0]
+    assert not p._assess(drone, np.zeros(3), bp, bv)[0]                  # the straight line misses it
+
+
+def test_turn_settings():
+    assert G.validate({'enabled': True})['turn_s'] == 0.0                # off by default
+    with pytest.raises(ValueError):
+        G.validate({'enabled': True, 'turn_s': -1})
+    cfg = guard_cfg(turn_s=1.2)
+    cfg['environment']['birds']['detector'].update(mode='realistic', share=True)
+    with pytest.raises(ValueError):
+        G.BirdGuardPolicy(Const((0, 0, 0, 0)), cfg)                      # shared tracks have no bird ids
+
+
 def test_a_new_episode_clears_the_state():
     guard = G.BirdGuardPolicy(Const((1.5, 0, 0, 0)), guard_cfg())
     guard.act(None, FakeEnv([0, 0, 2.0], [1.5, 0, 0], [HEAD_ON], episode=1), 1)

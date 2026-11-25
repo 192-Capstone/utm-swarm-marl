@@ -49,6 +49,11 @@ environment.birds.detector):
       drone_margin_m: 0.3
       brake: []              # stage 3a++: extra candidates that scale the command (e.g. [0.0, 0.5]: hover, half speed),
                              # scored like the others
+      turn_s: 0              # s, off at 0: a bird that is turning is predicted along a curve, not a straight line. Its
+                             # turn rate is the slope of its track's heading over the last turn_s (from half of it on);
+                             # needs tracks that keep their bird (detector.share off)
+      turn_lag_s: 0.3        # s the tracker's heading lags a turning bird (the heading is moved on by this)
+      turn_min: 0.2          # rad/s, a slower turn counts as straight (the tracks are noisy)
 """
 
 import numpy as np
@@ -59,11 +64,14 @@ from envs import lidar as lidar_mod
 DEFAULTS = {
     'enabled': False, 'horizon_s': 3.0, 'miss_m': 1.0, 'release_m': 1.4, 'release_steps': 5, 'predict_s': None,
     'evade_speed': 1.5, 'climb_m': 1.5, 'layer_spacing_m': None, 'layer_frac': 0.45, 'z_floor_m': 0.8,
-    'drone_margin_m': 0.3, 'brake': [],
+    'drone_margin_m': 0.3, 'brake': [], 'turn_s': 0.0, 'turn_lag_s': 0.3, 'turn_min': 0.2,
 }
 PARKED_Z = 1.0e3          # parked drones sit far away (adapter.park)
 DRONE_NEAR_M = 8.0        # other drones further than this do not matter within the horizon
 RING_CONE = np.cos(np.radians(25.0))
+TURN_MAX = 1.6            # rad/s, the fastest turn believed
+TURN_SPEED = 0.3          # m/s, a slower bird has no heading to speak of
+PATH_DT = 0.1             # s between the points of a predicted curve
 
 
 def validate(block):
@@ -88,6 +96,8 @@ def validate(block):
         raise ValueError("birds.guard.layer_spacing_m must be positive or null")
     if not 0 < cfg['layer_frac'] <= 0.5:
         raise ValueError("birds.guard.layer_frac must be in (0, 0.5]")
+    if cfg['turn_s'] < 0 or cfg['turn_lag_s'] < 0 or cfg['turn_min'] < 0:
+        raise ValueError("birds.guard: turn_s, turn_lag_s and turn_min must be >= 0")
     cfg['release_steps'] = int(cfg['release_steps'])
     cfg['brake'] = [float(x) for x in (cfg['brake'] or [])]
     if any(not 0.0 <= x < 1.0 for x in cfg['brake']):
@@ -123,6 +133,12 @@ class BirdGuardPolicy:
             raise ValueError("environment.birds.guard needs environment.birds.detector (the guard uses tracked birds only)")
         self.cfg = b['guard']
         rc = RepulsionController(config)                      # the teacher's margins and lag look-ahead
+        if self.cfg['turn_s'] > 0 and b['detector']['share']:
+            raise ValueError("birds.guard.turn_s needs tracks that keep their bird (birds.detector.share off)")
+        self.dt = float(config['environment'].get('control_timestep', 0.032))
+        self.turn_steps = int(round(self.cfg['turn_s'] / self.dt))
+        self.times = np.arange(0.0, self.cfg['horizon_s'] + 1e-9, PATH_DT)
+        self.heading = {}             # (drone, bird) -> the unwrapped headings of its track, newest last
         self.predict_s = float(self.cfg['predict_s'] if self.cfg['predict_s'] is not None
                                else (rc.predict_s if rc.predict_s > 0 else 0.4))
         self.close_dist, self.k_close = rc.close_dist, rc.k_close
@@ -148,6 +164,7 @@ class BirdGuardPolicy:
         if self.active is None or len(self.active) != n or episode != self._episode:
             self.active = np.zeros(n, dtype=bool)
             self.quiet = np.zeros(n, dtype=np.int64)
+            self.heading = {}
             self.ep = {'drone_steps': 0, 'active_steps': 0, 'activated': 0}
             self._episode = episode
 
@@ -182,7 +199,10 @@ class BirdGuardPolicy:
             p_now = pos[i] + vel[i] * tau
             bp = np.asarray(tpos[i, b], dtype=float) + np.asarray(tvel[i, b], dtype=float) * tau
             bv = np.asarray(tvel[i, b], dtype=float)
-            threat, opening_or_safe, worst = self._assess(p_now, vel[i], bp, bv)
+            paths = None
+            if self.turn_steps:
+                bp, bv, paths = self._curves(i, b, known.shape[1], np.asarray(tpos[i, b], dtype=float), bv)
+            threat, opening_or_safe, worst = self._assess(p_now, vel[i], bp, bv, paths)
             if threat:
                 if not self.active[i]:
                     self.guard_stats['activations'] += 1
@@ -199,23 +219,72 @@ class BirdGuardPolicy:
             if len(bp) == 0:                          # latched, but the track has dropped: nothing to evade (it releases soon)
                 continue
             a = [float(x) for x in actions[keys[i]]]
-            a[:3] = self._command(i, env, keys[i], np.array(a[:3], dtype=float), pos, vel, p_now, vel[i], bp, bv, worst, raw)
+            a[:3] = self._command(i, env, keys[i], np.array(a[:3], dtype=float), pos, vel, p_now, vel[i], bp, bv, worst, raw, paths)
             actions[keys[i]] = a
         return actions
 
+    # ---------------------------------------------------------------- turning birds
+    def _curves(self, i, b, n_birds, tpos, tvel):
+        """The tracked birds b of drone i, turning as their tracks have been: (positions predict_s from now, velocities
+        there, their paths over the horizon from there: (birds, times, 3))."""
+        for q in range(n_birds):
+            if q not in b:
+                self.heading.pop((i, q), None)               # the track dropped: a new one starts afresh
+        tau, bp, bv = self.predict_s, np.array(tpos), np.array(tvel)
+        paths = np.zeros((len(b), len(self.times), 3))
+        for j, q in enumerate(b):
+            v, speed, rate = tvel[j], float(np.hypot(*tvel[j][:2])), 0.0
+            if speed < TURN_SPEED:
+                self.heading.pop((i, q), None)
+            else:
+                h = self.heading.setdefault((i, q), [])
+                th = float(np.arctan2(v[1], v[0]))
+                h.append(th if not h else h[-1] + (th - h[-1] + np.pi) % (2 * np.pi) - np.pi)
+                del h[:-self.turn_steps - 1]
+                if len(h) > self.turn_steps // 2:
+                    x = np.arange(len(h)) * self.dt
+                    x = x - x.mean()
+                    rate = float(np.clip(x @ np.asarray(h) / (x @ x), -TURN_MAX, TURN_MAX))
+                    if abs(rate) < self.cfg['turn_min']:
+                        rate = 0.0
+            th = float(np.arctan2(v[1], v[0])) + rate * self.cfg['turn_lag_s']
+
+            def at(t):
+                if rate == 0.0:
+                    d = np.outer(t, v[:2])
+                else:
+                    d = speed / rate * np.stack([np.sin(th + rate * t) - np.sin(th), np.cos(th) - np.cos(th + rate * t)], 1)
+                return tpos[j] + np.column_stack([d, v[2] * t])
+            paths[j] = at(self.times + tau)
+            bp[j] = paths[j, 0]
+            if rate != 0.0:
+                bv[j, :2] = speed * np.cos(th + rate * tau), speed * np.sin(th + rate * tau)
+        return bp, bv, paths
+
+    def _miss_paths(self, p_now, v, paths):
+        """Predicted miss to each bird on its path, and when: (misses, times, distances now)."""
+        d = np.linalg.norm(p_now + self.times[:, None] * v - paths, axis=2)
+        k = d.argmin(axis=1)
+        return d[np.arange(len(d)), k], self.times[k], d[:, 0]
+
     # ------------------------------------------------------------------ threat
-    def _assess(self, p_now, v, bp, bv):
+    def _assess(self, p_now, v, bp, bv, paths=None):
         """(threat, every bird opening or safe (for the release), the most threatening bird's index or None)."""
         if len(bp) == 0:
             return False, True, None
         miss_m, rel_m, H = self.cfg['miss_m'], self.cfg['release_m'], self.cfg['horizon_s']
         threat, safe, worst, worst_miss = False, True, None, np.inf
+        curved = None if paths is None else self._miss_paths(p_now, v, paths)
         for k in range(len(bp)):
             p = p_now - bp[k]
             rv = v - bv[k]
-            t_star, c = cpa(p, rv, H)
-            dc, d = float(np.linalg.norm(c)), float(np.linalg.norm(p))
-            closing = float(p @ rv) < 0.0 or d < miss_m
+            if curved is None:
+                t_star, c = cpa(p, rv, H)
+                dc, d = float(np.linalg.norm(c)), float(np.linalg.norm(p))
+                closing = float(p @ rv) < 0.0 or d < miss_m
+            else:                                    # (a bird on a curve may be opening now and come back)
+                dc, t_star, d = (float(x[k]) for x in curved)
+                closing = t_star > 0.0 or d < miss_m
             if dc < miss_m and (t_star < H or d < miss_m) and closing:
                 threat = True
             if closing and dc < rel_m:
@@ -225,8 +294,10 @@ class BirdGuardPolicy:
         return threat, safe, worst
 
     # ---------------------------------------------------------------- evasion
-    def _min_miss(self, p_now, v_c, others_p, others_v):
+    def _min_miss(self, p_now, v_c, others_p, others_v, paths=None):
         """Smallest predicted miss of a drone moving at v_c to the given bodies (inf for none)."""
+        if paths is not None:
+            return float(self._miss_paths(p_now, v_c, paths)[0].min())
         miss = np.inf
         H = self.cfg['horizon_s']
         for q, w in zip(others_p, others_v):
@@ -234,7 +305,7 @@ class BirdGuardPolicy:
             miss = min(miss, float(np.linalg.norm(c)))
         return miss
 
-    def _command(self, i, env, key, base, pos, vel, p_now, v, bp, bv, worst, raw):
+    def _command(self, i, env, key, base, pos, vel, p_now, v, bp, bv, worst, raw, paths=None):
         cfg, tau = self.cfg, self.predict_s
         n = len(pos)
         # other DRONES (shared states), not the neighbour slots (which may hold birds); parked ones are far away
@@ -268,7 +339,7 @@ class BirdGuardPolicy:
         best_v, best_score = base.copy(), -np.inf
 
         def score(v_c, horiz):
-            s = self._min_miss(p_now, v_c, bp, bv)
+            s = self._min_miss(p_now, v_c, bp, bv, paths)
             if idx:
                 s = min(s, self._min_miss(p_now, v_c, dp, dv) + cfg['drone_margin_m'])
             if horiz is not None and len(ring_d):
