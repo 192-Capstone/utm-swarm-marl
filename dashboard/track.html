@@ -243,7 +243,7 @@ async function pollLive(first) {
   live.prev = live.last; live.last = { t: s.t, wall, pos: f.pos.slice() };
   const kn = live.knots; if (!kn.length || s.t - kn[kn.length - 1][0] >= 1) kn.push([s.t, Date.now() / 1000]);
   live.hist.push([s.t, f.pos.slice()]); while (live.hist.length > 40) live.hist.shift();
-  if (f.status === 'flying' && live.tTake == null) live.tTake = s.t;
+  if (f.t_off != null) live.tTake = f.t_off;                                       // the server's: this page may have opened mid-flight
   if (f.status === 'landed' && live.tLand == null) { const a = live.events.find(e => e.type === 'arrived'); live.tLand = a ? a.t : s.t; }
   live.f = f; live.birds = s.birds || [];                                         // birds near this operator's drones (the server filters)
   if (!shown) shown = f.pos.slice();

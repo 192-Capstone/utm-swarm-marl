@@ -403,6 +403,8 @@ class LiveUTM:
                     hit = self.pool is not None and bool(self.env.bird_crashed[i])
                     self._event('crashed', f'{fid} hit a bird' if hit else f'{fid} crashed', flight=fid, node=f['operator'])
                 f['status'] = s
+                if s == 'flying':
+                    f.setdefault('t_off', round(self.t, 2))       # its real take-off (the tracking page)
                 if self.rec:
                     self.rec.status(fid, s, self.t, f)
             if s == 'flying':

@@ -35,11 +35,15 @@ def test_a_booking_flies_lands_and_frees_its_drone(live):
     assert r['status'] == 'approved' and r['from'] == 'Depot' and len(live.free) == 1
     f = live.flights[r['flight']]
     assert f['route'][0][:2] in ([-10.0, -13.0], [-7.0, -13.0]) and f['route'][-1][:2] == [8.0, -13.0]
+    off = None
     for _ in range(int(120 / live.dt)):
         live.step()
+        if off is None and f['status'] == 'flying':
+            off = round(live.t, 2)
         if f['status'] == 'landed':
             break
     assert f['status'] == 'landed' and len(live.free) == 2
+    assert off is not None and f['t_off'] == off                      # its real take-off, kept to the end
     assert [e['type'] for e in live.events] == ['booked', 'arrived']
     st = live.state()
     assert st['n_events'] == 2 and live.state(since=1)['events'][0]['type'] == 'arrived'
