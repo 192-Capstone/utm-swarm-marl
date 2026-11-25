@@ -153,6 +153,8 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
       <select id="scene">
         <option value="ecity_rooftops">Over the rooftops &middot; 15 deliveries</option>
         <option value="ecity_demo">The plaza, low level &middot; 11 deliveries</option>
+        <option value="ecity_distant">Distant hubs &middot; 15 deliveries</option>
+        <option value="ecity_rush_hour">Rush hour &middot; 26 deliveries</option>
         <option value="live">Live &middot; the UTM server (operators book)</option>
       </select>
       <p class="note">Live runs and what-if controls arrive with the UTM server.</p>
@@ -249,7 +251,7 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const SCENES = ['ecity_rooftops', 'ecity_demo', 'live'];   // dashboard/data/<name>.json (scripts/export_dashboard.py);
+const SCENES = ['ecity_rooftops', 'ecity_demo', 'ecity_distant', 'ecity_rush_hour', 'live'];   // dashboard/data/<name>.json (scripts/export_dashboard.py);
 const NAME = SCENES.includes(location.hash.slice(1)) ? location.hash.slice(1) : SCENES[0];   // live: scripts/utm_server.py
 const LIVE = NAME === 'live';
 const ME = await Auth.init();                      // login (docs/access.md): an operator sees only its own drones, and no recorded scenes
