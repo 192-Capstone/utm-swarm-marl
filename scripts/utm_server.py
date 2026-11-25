@@ -65,7 +65,7 @@ from utm.contingency import ContingencyManager                     # noqa: E402
 from utm.strategic_planner import FlightPlan                       # noqa: E402
 
 FLIGHT_OPTIONS = ('land_latch_m', 'land_vz_max', 'land_wait_clear_m', 'cruise_z_bias', 'land_step_m',
-                  'land_vz_high', 'land_slow_m', 'los_below_cruise')     # as eval_layered.fly()
+                  'land_vz_high', 'land_slow_m', 'los_below_cruise', 'pad_queue_m')     # as eval_layered.fly()
 STATUS = ('waiting', 'flying', 'landed', 'crashed', 'cancelled')
 LEAD_S = 2.0                                     # s: a booking may leave this soon at the earliest
 

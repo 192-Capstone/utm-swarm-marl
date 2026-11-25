@@ -221,7 +221,7 @@ def sim_setup(sc, bounds=None):
                                  land_vz_max=sc['sim']['land_vz_max'], land_wait_clear_m=sc['sim']['land_wait_clear_m'],
                                  cruise_z_bias=sc['sim']['cruise_z_bias'], land_step_m=sc['sim']['land_step_m'],
                                  land_vz_high=sc['sim']['land_vz_high'], land_slow_m=sc['sim']['land_slow_m'],
-                                 los_below_cruise=sc['sim']['los_below_cruise'] or None,
+                                 los_below_cruise=sc['sim']['los_below_cruise'] or None, pad_queue_m=sc['sim']['pad_queue_m'],
                                  telemetry=sc['utm']['telemetry'], zone_at=None,
                                  extra_time=60.0 + sum(float(z.get('for') or 60.0) for z in sc['zones']))
 

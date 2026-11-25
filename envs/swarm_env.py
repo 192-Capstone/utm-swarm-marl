@@ -43,6 +43,7 @@ from envs import birds as birds_mod
 # within its 2.1 m radius, so a landing that starts 1.2 m off-centre stays inside).
 CLIMB_DONE_M = 0.6
 LAND_RADIUS_M = 1.2
+PAD_QUEUE_JOIN_M = 25.0                   # m of route left to its pad: a drone takes its place in the pad's queue (pad_queue_m)
 ROOF_CLEAR_M = 1.0         # line of sight: a roof this far below a drone's cruise height hides nothing from it
 
 
@@ -130,6 +131,15 @@ class SwarmEnv:
             raise ValueError(f"schedule.land_latch_m ({self.land_latch_m}) must be >= LAND_RADIUS_M ({LAND_RADIUS_M})")
         if self.land_vz_max is not None and self.land_vz_max < 0:
             raise ValueError("schedule.land_vz_max must be >= 0")
+        # pad_queue_m (m, off by default): drones bound for one pad line up for it. Within PAD_QUEUE_JOIN_M of the
+        # pad (along their routes) they take a place in its queue, nearest first, and keep it: each one's carrot stays
+        # at least this far (route metres) behind the drone ahead of it until that one has landed, so it stops this far
+        # from the pad and waits. Without it two drones that reach a pad together (one of them late) fly side by side
+        # to the same point over it: they met at 0.2 m (ecity_rush_hour). The front drone is never held.
+        self.pad_queue_m = None if sch.get('pad_queue_m') is None else float(sch['pad_queue_m'])
+        if self.pad_queue_m is not None and self.pad_queue_m <= 0:
+            raise ValueError("schedule.pad_queue_m must be > 0")
+        self._pad_queue = {}                      # pad (x, y) -> drones bound for it, in order
         self._landing = np.zeros(self.n_agents, dtype=bool)
         self.control_dt = float(config['environment'].get('control_timestep', 0.032))
         self.waiting = np.zeros(self.n_agents, dtype=bool)
@@ -404,6 +414,7 @@ class SwarmEnv:
         else:
             self.departures = None
             self.waiting = np.zeros(self.n_agents, dtype=bool)
+        self._pad_queue = {}
         self._landing = np.zeros(self.n_agents, dtype=bool)
         self._reset_failures(failures)
         self.followers = self._make_followers(spawns, goals, routes) if routes else None
@@ -595,12 +606,16 @@ class SwarmEnv:
         if not self.followers:
             return
         positions = self.adapter.get_positions()
+        ahead = {} if self.pad_queue_m is None else self._queue_for_pads()
         for key, f in self.followers.items():
             i = int(key.split('_')[1])
             if self.waiting[i] or self.landed[i] or self.crashed[i]:
                 self._landing[i] = False          # (all False unless a landing option is on)
                 continue                          # parked: not flying
-            carrot = f.visible_target(positions[i], self._los_for.get(key, self._los_grid), min_dist=self.route_min_target)
+            if i in ahead and not self._landing[i]:
+                carrot = self._behind(key, f, ahead[i], positions[i])
+            else:
+                carrot = f.visible_target(positions[i], self._los_for.get(key, self._los_grid), min_dist=self.route_min_target)
             if key in self._cruise:               # E1 profile: vertical climb and landing at the pads
                 zc, goal = self._cruise[key], self.goals[i]
                 if not self._climbed[key] and positions[i][2] >= zc - CLIMB_DONE_M:
@@ -626,6 +641,38 @@ class SwarmEnv:
                 if self.cruise_z_bias and self._climbed[key] and abs(float(carrot[2]) - zc) < 1e-6:
                     carrot = np.array([carrot[0], carrot[1], zc + self.cruise_z_bias])   # cruising: aim higher
             self.adapter.goals[key] = np.asarray(carrot, dtype=np.float32)
+
+    def _queue_for_pads(self):
+        """pad_queue_m: updates every pad's queue; returns {drone: the drone ahead of it}."""
+        bound = {}                                # pad -> [(route metres left, drone)] of the drones cruising to it
+        for key, f in self.followers.items():
+            i = int(key.split('_')[1])
+            if key in self._cruise and self._climbed[key] and not self.failed[i] \
+                    and not (self.waiting[i] or self.landed[i] or self.crashed[i]):
+                pad = tuple(np.round(self.goals[i][:2], 1))
+                bound.setdefault(pad, []).append((f.total - f.progress, i))
+        ahead = {}
+        for pad, drones in bound.items():
+            here = {i for _, i in drones}
+            queue = [i for i in self._pad_queue.get(pad, ()) if i in here]          # landed, crashed, re-routed: out
+            queue += [i for left, i in sorted(drones) if left < PAD_QUEUE_JOIN_M and i not in queue]
+            self._pad_queue[pad] = queue
+            ahead.update(zip(queue[1:], queue))
+        for pad in [p for p in self._pad_queue if p not in bound]:
+            del self._pad_queue[pad]
+        return ahead
+
+    def _behind(self, key, f, j, pos):
+        """pad_queue_m: drone `key`'s carrot, kept pad_queue_m route metres behind drone j's place in the queue."""
+        g = self.followers[f'drone_{j}']
+        f.target(pos)                             # brings f.progress up to date
+        room = f.total - f.progress - (g.total - g.progress + self.pad_queue_m)     # how far it may still close up
+        if room < self.route_min_target:
+            return f.point_at(f.progress)         # none: hold here
+        full, f.lookahead = f.lookahead, min(f.lookahead, room)
+        carrot = f.visible_target(pos, self._los_for.get(key, self._los_grid), min_dist=self.route_min_target)
+        f.lookahead = full
+        return carrot
 
     def _pad_busy(self, i, goal, zc, positions):
         """land_wait_clear_m: another flying drone is low over drone i's pad (landing or taking off)."""
