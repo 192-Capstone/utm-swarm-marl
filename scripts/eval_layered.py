@@ -344,6 +344,9 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
             policy = GoalHoldPolicy(policy, cfg)
         if guard_enabled(cfg):                    # stage 3a+: after goal-hold (environment.birds.guard)
             policy = BirdGuardPolicy(policy, cfg)
+    def guard_on():                               # the drones whose bird guard is active now
+        a = getattr(policy, 'active', None) if guard_enabled(cfg) else None
+        return () if a is None else list(a)
     np.random.seed(seed)
     torch.manual_seed(seed)
     z0 = sky.s.start_z
@@ -449,7 +452,7 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
         if rec is not None and (step + 1) % every_frame == 0:
             rec.frame(t, pos, status())
             if env.birds is not None:
-                rec.bird_frame(env.birds.positions(), env.birds.radii[0])
+                rec.bird_frame(env.birds.positions(), env.birds.radii[0], guard_on())
         if rec is not None:                       # arrivals and crashes as events (the E5 dashboard)
             for i in np.flatnonzero(env.landed & ~was_landed):
                 if not env.forced_down[i]:        # a forced landing is not an arrival
@@ -525,7 +528,7 @@ def fly(cfg, args, layout, sky, flights, extra, late, slow, mode, pilot, seed, z
     if rec is not None and (not rec.log['frames']['t'] or rec.log['frames']['t'][-1] != round(t, 3)):
         rec.frame(t, env.adapter.get_positions(), status())   # the final state, unless just recorded
         if env.birds is not None:
-            rec.bird_frame(env.birds.positions(), env.birds.radii[0])
+            rec.bird_frame(env.birds.positions(), env.birds.radii[0], guard_on())
     env.close()
     reached = np.asarray(info.get('drone_reached_goal', [False] * n), dtype=bool)
     home = {y['flight'] for y in replans if y['status'] == 'approved' and y['reason'] == 'return to base'}

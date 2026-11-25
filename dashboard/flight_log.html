@@ -157,7 +157,7 @@ a.trk:hover { text-decoration: underline; }
 <script>
 (() => {
 // Scenes index.html can replay (its SCENES list); keep in sync. index.html reads only #<scene> from the URL.
-const SCENES = ['ecity_rooftops', 'ecity_demo', 'ecity_distant', 'ecity_rush_hour'];
+const SCENES = ['ecity_rooftops_fixed', 'ecity_rooftops', 'ecity_rush_hour_off', 'ecity_rush_hour_on', 'ecity_birds_off', 'ecity_birds_on'];
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 

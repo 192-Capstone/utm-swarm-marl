@@ -293,8 +293,12 @@
     const T = pts.map(p => p[0]), P = pts.map(p => [p[1], p[2], p[3]]);
     const sp = resolveSpeeds((scene && scene.speeds) || tr.run.speeds);
     const tDep = f.sched_dep, arrival = f.sched_arr;
-    const outcome = f.status, ground = P[P.length - 1][2];
-    const route = [[P[0][0], P[0][1], ground]].concat(P.filter((_, k) => k % 2 === 0), [P[P.length - 1]]);
+    const outcome = f.status, last = P[P.length - 1];
+    // the log stops mid-air when the flight was interrupted (the server stopped): what is left is the way to its pad
+    const cut = !['Landed', 'Returned', 'Crashed', 'Forced down', 'Cancelled'].includes(outcome) && f.dest_x != null && f.dest_y != null;
+    const ground = cut ? P[0][2] : last[2];
+    const route = [[P[0][0], P[0][1], ground]].concat(P.filter((_, k) => k % 2 === 0), [last],
+      cut ? [[f.dest_x, f.dest_y, last[2]], [f.dest_x, f.dest_y, ground]] : []);
     return {
       mode: 'replay', id: f.flight_id, kind: f.kind, operator: f.operator, from: f.origin || '', to: f.dest || '',
       speeds: sp.speeds, approximate: sp.approximate, outcome, events, classes: classifyEvents(events),

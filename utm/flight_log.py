@@ -23,7 +23,7 @@ dashboard; bump the version when it does.
                                                           #   {"flight", "failure_type": motor | land | comms}, when it fires
                                                           #   (scenario key failures). 'arrived' leaves out forced-down drones)
       "summary":  {...}                                   # the run's results (eval_layered fly())
-      "birds":    {"radius", "pos": [[x, y, z] per bird] per frame}   # only with scenario key birds (additive;
+      "birds":    {"radius", "pos": [[x, y, z] per bird] per frame, "guard": [drone index] per frame}   # only with scenario key birds (additive;
                                                           #   one entry per frames.t entry)
     }
 
@@ -105,12 +105,14 @@ class FlightLog:
             print(f't={t:5.0f}s  flying {n[1]}  landed {n[2]}  waiting {n[0]}  crashed {n[3]}  (wall {m}m{sec:02d}s)',
                   file=sys.stderr, flush=True)
 
-    def bird_frame(self, pos, radius):
+    def bird_frame(self, pos, radius, guard=()):
         """The birds' positions at the frame just recorded (scenario key birds). Additive: the top-level
         "birds": {"radius", "pos": [[x, y, z] per bird] per frame} exists only for runs with birds, one
-        entry per frames.t entry, so the schema stays utm-flight-log/2."""
-        b = self.log.setdefault('birds', {'radius': float(radius), 'pos': []})
+        entry per frames.t entry, so the schema stays utm-flight-log/2. guard: which drones' bird guard is
+        active (a mask)"""
+        b = self.log.setdefault('birds', {'radius': float(radius), 'pos': [], 'guard': []})
         b['pos'].append(_r(pos))
+        b['guard'].append([i for i, on in enumerate(guard) if on])
 
     def tick(self, t, monitor=None, paths=None):
         """The UTM's view at a 1 Hz tick: E3 state and risk per drone, E2 predicted paths."""

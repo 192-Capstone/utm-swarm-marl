@@ -247,6 +247,17 @@ def test_the_page_names_a_flight_as_the_database_does(operator, kind, fid):
     assert node('return T.callsign(D.o, D.k, D.f);', o=operator, k=kind, f=fid) == flight_db.callsign(operator, kind, fid)
 
 
+def test_an_interrupted_delivery_still_has_the_way_to_its_pad_ahead():
+    tr = {'run': {'start_epoch': 0, 'speed': 1.0}, 'events': [],
+          'flight': {'flight_id': 'f0', 'kind': 'flight', 'operator': 'op0', 'origin': 'Depot', 'dest': 'Shop', 'sched_dep': 5,
+                     'sched_arr': 60, 'status': 'Flying', 'dest_x': 60.0, 'dest_y': 0.0},
+          'track': [[6, 0, 0, 1], [10, 0, 0, 5], [15, 8, 0, 5], [25, 30, 0, 5]]}
+    js = 'return T.trackModel(D.tr, null).at(20).route;'
+    assert node(js, tr=tr)[-2:] == [[60, 0, 5], [60, 0, 1]]
+    tr['flight']['status'] = 'Crashed'                                 # it ended there: nothing left
+    assert node(js, tr=tr)[-1] == [30, 0, 5]
+
+
 def test_a_refused_booking_has_no_track_only_its_reason():
     tr = {'run': {'start_epoch': 0, 'speed': 1.0}, 'track': [], 'flight': {'flight_id': 'r1', 'kind': 'flight', 'operator': 'op0', 'origin': 'Depot',
           'dest': 'Shop', 'status': 'Rejected', 'callsign': 'OP0-01'},

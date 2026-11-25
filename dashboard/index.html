@@ -189,16 +189,15 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
     <section class="field">
       <h2><label for="scene">Scene</label></h2>
       <select id="scene">
-        <option value="ecity_rooftops">Over the rooftops &middot; 15 deliveries</option>
-        <option value="ecity_rooftops_fixed">Over the rooftops &middot; all fixes on</option>
-        <option value="ecity_demo">The plaza, low level &middot; 11 deliveries</option>
-        <option value="ecity_distant">Distant hubs &middot; 15 deliveries</option>
-        <option value="ecity_rush_hour">Rush hour &middot; 26 deliveries</option>
-        <option value="ecity_rush_hour_off">Rush hour &middot; pad queue off</option>
-        <option value="ecity_rush_hour_on">Rush hour &middot; pad queue on</option>
-        <option value="live">Live &middot; the UTM server (operators book)</option>
+        <option value="ecity_rooftops_fixed">1. Full system: a normal day</option>
+        <option value="ecity_rooftops">2. Before the fixes: flights run late</option>
+        <option value="ecity_rush_hour_off">3. Pad queue off: two drones collide</option>
+        <option value="ecity_rush_hour_on">4. Pad queue on: one drone waits</option>
+        <option value="ecity_birds_off">5. Birds without a guard: birds hit drones</option>
+        <option value="ecity_birds_on">6. Birds with the guard: drones dodge</option>
+        <option value="live">Live: book and fly now</option>
       </select>
-      <p class="note">Live runs and what-if controls arrive with the UTM server.</p>
+      <p class="note">Recorded flights. Choose Live to book and fly your own.</p>
       <p class="note"><a class="pill data" href="flight_log.html" style="display:inline-flex;align-items:center;gap:6px;padding:4px 12px;text-decoration:none"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 2.5h9M1.5 6h9M1.5 9.5h6"/></svg>Flight log</a></p>
     </section>
     <section>
@@ -323,7 +322,7 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const SCENES = ['ecity_rooftops', 'ecity_rooftops_fixed', 'ecity_demo', 'ecity_distant', 'ecity_rush_hour', 'ecity_rush_hour_off', 'ecity_rush_hour_on', 'live'];   // dashboard/data/<name>.json (scripts/export_dashboard.py);
+const SCENES = ['ecity_rooftops_fixed', 'ecity_rooftops', 'ecity_rush_hour_off', 'ecity_rush_hour_on', 'ecity_birds_off', 'ecity_birds_on', 'live'];   // dashboard/data/<name>.json (scripts/export_dashboard.py);
 const NAME = SCENES.includes(location.hash.slice(1)) ? location.hash.slice(1) : SCENES[0];   // live: scripts/utm_server.py
 const LIVE = NAME === 'live';
 const ME = await Auth.init();                      // login (docs/access.md): an operator sees only its own drones, and no recorded scenes
@@ -633,14 +632,18 @@ const chapters = [
   firstIntr && { t: Math.max(0, firstIntr.t_dep - 1), what: 'An intruder appears', cap: 'A drone with no flight plan crosses the area. The Responder reserves a safety bubble ahead of it and re-books the flights in its way.', focus: byId[firstIntr.id] },
   zoneEv && { t: Math.max(0, zoneEv.t - 1.5), what: 'A no-fly zone closes an area', cap: `${zoneFor} part of the area is closed. The Responder re-routes flights around it and plans the next ones around it. The intruder ignores it.`, zone: true },
   emEv && { t: Math.max(0, emEv.t - 1), what: `${emNode} files an emergency`, cap: `${emNode} files a medical flight from its own client node. The Responder gives it priority: it is cleared at once and takes off within seconds.${wayText}`, focus: emIdx },
+  D.bird && D.bird.kind === 'hit' && { t: Math.max(0, D.bird.t - 6), what: 'A bird hits a drone', focus: byId[D.bird.flight],
+    cap: `A bird comes for ${D.bird.flight}. With no bird guard nothing makes the drone dodge, and the bird hits it.` },
+  D.bird && D.bird.kind === 'avoid' && { t: Math.max(0, D.bird.t - 6), what: 'A drone dodges a bird', focus: byId[D.bird.flight],
+    cap: `The same bird comes for ${D.bird.flight}. The bird guard predicts its path and steers the drone clear (orange: the guard is acting). Closest: ${D.bird.closest} m.` },
   D.pad && D.pad.kind === 'crash' && { t: Math.max(0, D.pad.t - 8), what: 'Two drones reach one pad', focus: byId[D.pad.first],
     cap: `${D.pad.first} and ${D.pad.second} are bound for the same pad and reach it together. With the pad queue off, nothing holds one of them back: they collide.` },
   D.pad && D.pad.kind === 'queue' && { t: Math.max(0, D.pad.t - 4), what: 'Two drones queue for one pad', focus: byId[D.pad.second],
     cap: `${D.pad.first} and ${D.pad.second} are bound for the same pad. With the pad queue on, ${D.pad.second} waits 6 m back until ${D.pad.first} has landed.` },
   { t: Math.max(0, landAll - 4), what: back || D.summary.crashed ? 'The last drones land' : 'Every delivery lands',
     cap: `${D.summary.arrived ?? flights} of ${flights} deliveries arrived${back ? `, ${back} turned back to where ${back > 1 ? 'they' : 'it'} started (no way past the closed area)` : ''}, `
-      + `with ${D.summary.crashed ?? 0} crashes. The UTM handled an intruder, a closed zone and an emergency on the way.` },
-].filter(Boolean);
+      + `with ${D.summary.crashed ?? 0} crashes.${firstIntr && zoneEv && emEv ? ' The UTM handled an intruder, a closed zone and an emergency on the way.' : ''}` },
+].filter(Boolean).sort((a, b) => a.t - b.t);
 $('story').innerHTML = chapters.map((c, k) => `<li><button type="button" data-ch="${k}"><span class="when">${fmt(c.t)}</span><span class="what">${c.what}</span></button></li>`).join('');
 function fmt(t) { const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, '0')}`; }
 const chapterAt = (t) => { let k = 0; chapters.forEach((c, i) => { if (c.t <= t + 0.01) k = i; }); return k; };
@@ -755,13 +758,15 @@ function updateHexes() {
 
 function updateWorld(dt) {
   const hot = hotAt(t), tags = recentTags(t);
-  boom.visible = !!PADM && PADM.kind === 'crash' && t >= PADM.t - 0.2 && t < PADM.until;
-  if (boom.visible) { boom.position.copy(padPos(PADM.a)); boom.scale.setScalar(1 + 0.5 * Math.min(1, t - PADM.t + 0.2)); }
+  const hitNow = !!BIRDM && BIRDM.kind === 'hit' && t >= BIRDM.t - 0.2 && t < BIRDM.t + 5;
+  boom.visible = hitNow || !!PADM && PADM.kind === 'crash' && t >= PADM.t - 0.2 && t < PADM.until;
+  if (boom.visible) { let y = hitNow ? BIRDM.t - 0.4 : 0; while (y > 0.3 && statusAt(BIRDM.i, y) !== 1) y -= 0.3;
+    boom.position.copy(hitNow ? v3(posAt(BIRDM.i, y)) : padPos(PADM.a)); boom.scale.setScalar(1 + 0.5 * Math.min(1, t - (hitNow ? BIRDM.t : PADM.t) + 0.2)); }
   if (padNow(t)) for (const i of [PADM.a, PADM.b]) tags[DR[i].id] = PADM.kind === 'queue' && i === PADM.b && statusAt(PADM.a, t) === 1 && t > PADM.t ? `waits for ${DR[PADM.a].id}` : '';
   for (let i = 0; i < N; i++) {
     const d = DR[i], s = statusAt(i, t), dr = drones[i], flying = s === 1;
     dr.g.visible = flying;
-    const guarded = LIVE && flying && !!guardSlot[i];
+    const guarded = flying && (LIVE ? !!guardSlot[i] : !!D.birds && guardAt(i, t));
     if (dr.guard !== guarded) { dr.guard = guarded; for (const m of dr.parts) m.material = guarded ? guardMat : dr.mat; }
     if (flying) {
       dr.g.position.copy(v3(posAt(i, t)));
@@ -802,12 +807,21 @@ function updateWorld(dt) {
     if (on) { const k = reduce ? 1 : Math.min(1, (t - zz.z.t_on) / 1.2); zz.g.scale.set(1, 0.02 + 0.98 * (1 - Math.pow(1 - k, 3)), 1); }
   }
   if (Math.floor(t * 4) !== hexClock) { hexClock = Math.floor(t * 4); updateHexes(); }
-  if (LIVE) updateBirds();
+  if (!LIVE && D.birds) replayBirds();
+  if (LIVE || D.birds) updateBirds();
 }
 
 // birds (live): a red sphere with a short trail; positions come ~10 times a simulated second and are interpolated like the drones
 const guardSlot = {}, birdObjs = new Map(), birdHist = new Map();
 let birdsNow = [];
+// recorded birds: the same spheres; a drone stays orange for 2 s after its guard last acted, as in the live view
+const guardAt = (i, x) => { for (let f = frameAt(x); f >= 0 && T[f] > x - 2; f--) if ((D.birds.guard[f] || []).includes(i)) return true; return false; };
+function replayBirds() {
+  const f = frameAt(t), g = Math.min(f + 1, D.birds.pos.length - 1);
+  birdsNow = D.birds.pos[Math.min(f, g)].map((p, k) => ({ id: k, pos: p, r: D.birds.radius, trail: [8, 6, 4, 2].map(n => D.birds.pos[Math.max(0, f - n)][k]) })).filter(b => b.pos[0] < 1e4);
+  birdHist.clear();
+  for (const b of birdsNow) birdHist.set(b.id, [[T[f], b.pos], [T[Math.max(f, g)], D.birds.pos[g][b.id]]]);
+}
 function updateBirds() {
   const ids = new Set(birdsNow.map(b => b.id));
   for (const [id, o] of birdObjs) if (!ids.has(id)) { scene.remove(o.m, o.line); o.line.geometry.dispose(); birdObjs.delete(id); birdHist.delete(id); }
@@ -821,7 +835,7 @@ function updateBirds() {
     const h = birdHist.get(b.id) || [];
     let p = h.length ? h[h.length - 1][1] : b.pos;
     for (let k = h.length - 1; k > 0; k--) if (h[k - 1][0] <= t) { const [t0, p0] = h[k - 1], [t1, p1] = h[k], u = Math.min(1, Math.max(0, (t - t0) / ((t1 - t0) || 1))); p = p0.map((v, c) => v + (p1[c] - v) * u); break; }
-    o.m.position.copy(v3(p));
+    o.m.position.copy(v3(p)); o.m.scale.setScalar(Math.min(1, Math.max(0.3, camera.position.distanceTo(o.m.position) / 45)));   // as the drones
     o.line.geometry.setFromPoints([...b.trail.map(v3), v3(p)]); o.line.visible = b.trail.length > 0;
   }
 }
@@ -830,9 +844,17 @@ function updateBirds() {
 const PADM = D.pad ? { ...D.pad, a: byId[D.pad.first], b: byId[D.pad.second], end: D.pad.kind === 'crash' ? D.pad.t - 0.4 : Infinity } : null;
 const padNow = (x) => !!PADM && x >= PADM.t - 10 && x < PADM.until;
 const padPos = (i) => { let x = Math.min(t, PADM.end); while (x > 0.3 && statusAt(i, x) !== 1) x -= 0.3; return v3(posAt(i, x)); };
+const BIRDM = D.bird ? { ...D.bird, i: byId[D.bird.flight] } : null;
+const birdNow = (x) => !!BIRDM && x >= BIRDM.t - 7 && x < BIRDM.t + 5;
 const boom = new THREE.Mesh(new THREE.SphereGeometry(0.6, 20, 14), new THREE.MeshBasicMaterial({ color: 0xc4242a, transparent: true, opacity: 0.55, depthTest: false }));
 boom.visible = false; scene.add(boom);
 function director(dt) {
+  if (birdNow(t)) {                                // close on the drone a bird comes for
+    const x = BIRDM.kind === 'hit' ? Math.min(t, BIRDM.t - 0.4) : t; let y = x; while (y > 0.3 && statusAt(BIRDM.i, y) !== 1) y -= 0.3;
+    const c = v3(posAt(BIRDM.i, y));
+    wantLook.copy(c); wantPos.set(c.x + Math.cos(orbitAng) * 11, c.y + 7, c.z + Math.sin(orbitAng) * 11);
+    return;
+  }
   // the camera goes where the story is: the zone as it closes, the emergency as it flies, an intruder, else a slow orbit
   let focus = null, dist = 72 * SC, pitch = 0.86;
   const zz = zones.find(z => z.z.t_on != null && t >= z.z.t_on - 1 && t < z.z.t_on + 7);
@@ -1028,7 +1050,7 @@ if (LIVE && ME.admin) {
   };
 }
 const BIRDS_ON = LIVE && ME.admin && !!(D.live && D.live.birds && D.live.birds.on);      // birds are the admin's to add
-if (LIVE && D.live.birds && D.live.birds.on) $('birdLegend').hidden = false;
+if (D.birds || (LIVE && D.live.birds && D.live.birds.on)) $('birdLegend').hidden = false;
 if (BIRDS_ON) {
   $('birdbox').hidden = false;
   $('birdSpeed').oninput = (e) => { $('birdSpeedV').textContent = `${e.target.value} m/s`; };

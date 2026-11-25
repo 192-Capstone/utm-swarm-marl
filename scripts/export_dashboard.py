@@ -47,14 +47,41 @@ def pad_moment(log, near=12.0):
                 both = (st[:, [i, j]] == 1).all(1) & (np.hypot(*(pos[:, [i, j], :2] - goal[i]).T) < near).all(0)
                 if both.any() and (best is None or both.sum() > best[0]):
                     a, b = (i, j) if t[st[:, i] == 1][-1] < t[st[:, j] == 1][-1] else (j, i)      # a lands first
-                    best = (both.sum(), {'kind': 'queue', 't': float(t[both][0]), 'until': float(t[st[:, b] == 1][-1]) + 2.0, 'first': ids[a], 'second': ids[b]})
+                    best = (both.sum(), {'kind': 'queue', 't': float(t[both][0]), 'until': min(float(t[st[:, b] == 1][-1]) + 2.0, float(t[both][0]) + 45.0), 'first': ids[a], 'second': ids[b]})
     return best and best[1]
+
+
+def bird_moment(log, flight=None):
+    """The moment the story points at in a run with birds: the first bird hit, or the closest pass
+    of a bird while the drone's guard (flight: this one's) was dodging it. None without birds."""
+    b = log.get('birds')
+    if not b:
+        return None
+    ids = [d['id'] for d in log['drones']]
+    for e in log['events']:
+        if e['type'] == 'crashed' and e.get('cause') == 'bird':
+            return {'kind': 'hit', 't': e['t'], 'flight': e['flight']}
+    best = None
+    for t, pos, birds, guard in zip(log['frames']['t'], log['frames']['pos'], b['pos'], b.get('guard', [])):
+        for i in guard:
+            if flight and ids[i] != flight:
+                continue
+            d = float(np.linalg.norm(np.asarray(birds) - np.asarray(pos[i]), axis=1).min())
+            if best is None or d < best[0]:
+                best = (d, {'kind': 'avoid', 't': t, 'flight': ids[i], 'closest': round(d, 1)})
+    if best is None:
+        return None
+    m, i = best[1], ids.index(best[1]['flight'])               # the whole pass, also after the guard let go
+    m['closest'] = round(min(float(np.linalg.norm(np.asarray(q) - np.asarray(p[i]), axis=1).min())
+                             for t, p, q in zip(log['frames']['t'], log['frames']['pos'], b['pos']) if abs(t - m['t']) < 10), 1)
+    return m
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('recording')
     ap.add_argument('--out', default=None)
+    ap.add_argument('--bird', default=None, metavar='FLIGHT', help='the story shows this flight dodging a bird (default: the closest pass)')
     a = ap.parse_args()
     log = flight_log.read(a.recording)
     cells = {c: np.asarray(p) for c, p in log['cells'].items()}
@@ -139,6 +166,10 @@ def main():
         'hot': hot, 'events': events, 'summary': log['summary'], 'pad': pad_moment(log),
         'speeds': speeds.from_scenario(sc.get('utm')),           # the flight profile E1 booked: the tracking page's ETA
     }
+    if log.get('birds'):
+        b = log['birds']
+        out['birds'] = {'radius': b['radius'], 'pos': [r(p, 1) for p in b['pos']], 'guard': b.get('guard', [])}
+        out['bird'], out['pad'] = bird_moment(log, a.bird), None      # (one point per story)
     path = a.out or os.path.join('dashboard', 'data', os.path.basename(a.recording).replace('.json.gz', '.json'))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
