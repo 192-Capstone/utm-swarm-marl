@@ -45,7 +45,7 @@ const Auth = (() => {
     const json = r && (r.headers.get('content-type') || '').includes('json');
     if (!json) {                                          // no UTM server: the offline view (data/*.json), no login
       me = { role: 'admin', admin: true, offline: true, noAuth: false };
-      if (!login) banner('Offline view: these pages are open without the UTM server, so there is no login. You see everything, as the admin does (docs/access.md).');
+      if (!login) banner('Replay mode: recorded flights, opened without the UTM server, so there is no login. You see every operator, as the admin does.');
       return me;
     }
     if (r.status === 401) { if (login) return (me = { role: null, admin: false, offline: false, noAuth: false }); return toLogin(); }

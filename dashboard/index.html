@@ -118,8 +118,10 @@ select optgroup { color: var(--muted); font-style: normal; }
 .story .what { font-weight: 500; }
 .caption { background: var(--surface); border-radius: var(--r-card); padding: 12px 14px; font-size: 14px; line-height: 1.5; min-height: 64px; }
 .counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--surface); border-radius: var(--r-card); }
-.counts div { padding: 10px 12px; display: grid; gap: 2px; }
-.counts div + div { box-shadow: inset 1px 0 0 var(--border); }
+.counts div, .counts button { padding: 10px 12px; display: grid; gap: 2px; align-content: start; }
+.counts > * + * { box-shadow: inset 1px 0 0 var(--border); }
+.counts button { border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; border-radius: 0 var(--r-card) var(--r-card) 0; }
+.counts button:hover { background: var(--danger-soft, var(--raised)); }
 .counts b { font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .counts span { color: var(--muted); font-size: 12px; }
 .counts .bad b { color: var(--danger); }
@@ -223,6 +225,8 @@ select optgroup { color: var(--muted); font-style: normal; }
 @keyframes in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .feed li { animation: none; } * { transition: none !important; } }
 @media (max-width: 1240px) { .insp { top: 158px; } }
+.insp.folded { bottom: auto; } .insp.folded #inBody, .insp.folded #inFoot { display: none; }   /* folded: only its title bar */
+.insp .inhead #inFold { margin-left: auto; } .insp .inhead #inFold + .x { margin-left: 0; }
 @media (max-width: 860px) {
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 62svh auto; height: auto; min-height: 100%; }
   .grip { display: none; }
@@ -361,7 +365,7 @@ select optgroup { color: var(--muted); font-style: normal; }
       </div>
     </div>
     <aside class="insp" id="insp" aria-label="Selected drone" hidden>
-      <div class="inhead"><span class="dot" id="inDot"></span><b id="inId"></b><span class="pill" id="inPill"></span><button type="button" class="x" id="inX" aria-label="Close (Esc)" title="Close (Esc)">&times;</button></div>
+      <div class="inhead"><span class="dot" id="inDot"></span><b id="inId"></b><span class="pill" id="inPill"></span><button type="button" class="x" id="inFold" aria-expanded="true" aria-label="Fold the card" title="Fold the card">&#8722;</button><button type="button" class="x" id="inX" aria-label="Close (Esc)" title="Close (Esc)">&times;</button></div>
       <div class="inbody" id="inBody"></div>
       <footer id="inFoot"><button type="button" id="inSee" aria-pressed="false" title="Key V">See what it sees</button><button type="button" id="inFollow">Follow</button><a id="inTrack">Track page</a></footer>
     </aside>
@@ -408,6 +412,9 @@ if (LIVE && ME.offline) {                          // opened without the UTM ser
   await new Promise(() => { });
 }
 const D = LIVE ? await liveScene() : await (await fetch(`data/${NAME}.json`)).json();
+const plainText = (es) => { for (const e of es) if (e.text) e.text = e.text.replace(/\b(intruder|emergency)_(\d+)\b/g, (_, k, n) => `${k} ${+n + 1}`); return es; };   // readable names in every message
+plainText(D.events || []);
+const nm = (id) => String(id).replace(/^(intruder|emergency)_(\d+)$/, (_, k, n) => `${k === 'intruder' ? 'Intruder' : 'Emergency'} ${+n + 1}`);   // a flight's name as people read it
 async function liveScene() {                       // the live UTM's scene, as a recording with no frames yet
   const s = await (await fetch('api/scene')).json(), off = [0, 0, -50];
   return { name: 'live', caption: 'Live: the UTM takes bookings from the operator consoles', live: s,
@@ -965,7 +972,7 @@ $('marks').innerHTML = D.events.filter(e => e.type !== 'alert' || e.risk === 'hi
 }).join('');
 const e7 = D.summary.e7 || {};
 $('run').innerHTML = [
-  [`${D.summary.arrived ?? '\u2013'}/${flights}`, 'arrived'], [`${(e7.delay_mean_s ?? 0).toFixed(1)} s`, 'mean wait'], [`${(e7.fairness_jain ?? 1).toFixed(2)}`, 'fairness'],
+  [`${D.summary.arrived ?? '\u2013'}/${flights}`, 'arrived'], [`${(e7.delay_mean_s ?? 0).toFixed(1)} s`, 'average wait'], [`${Math.round(100 * (e7.fairness_jain ?? 1))}%`, 'fair to all operators'],
 ].map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join('');
 $('title').innerHTML = `<b>${D.caption.replace('UTM demo: ', '')}</b>`;
 
@@ -1014,6 +1021,16 @@ function showTab(x) {
 document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 showTab('overview');
 $('inX').onclick = () => { select(-1); if (cam === 'follow') setCam('director'); };
+$('inFold').onclick = () => { const f = $('insp').classList.toggle('folded'); $('inFold').setAttribute('aria-expanded', String(!f));
+  $('inFold').innerHTML = f ? '&#43;' : '&#8722;'; $('inFold').title = $('inFold').ariaLabel = f ? 'Open the card' : 'Fold the card'; };
+// the open card covers the right of the map: move the view's centre into the part still visible, so a followed drone is not under it
+let shiftNow = -1;
+function frameShift() {
+  const r = stage.getBoundingClientRect(), ins = $('insp');
+  const want = !ins.hidden && !ins.classList.contains('folded') && r.width > 760 ? Math.round((ins.offsetWidth + 14) / 2) : 0;
+  if (want === shiftNow) return; shiftNow = want;
+  if (want) camera.setViewOffset(r.width, r.height, want, 0, r.width, r.height); else camera.clearViewOffset();
+}
 $('inSee').onclick = () => setSee(!see);
 $('inFollow').onclick = () => { if (selected >= 0) setCam('follow'); };
 $('play').onclick = () => setPlaying(!playing);
@@ -1259,12 +1276,13 @@ function updatePanels() {
   const f = frameAt(t), st = S[f];
   const fl = st.filter((s, i) => s === 1 && DR[i].kind !== 'intruder').length, wt = st.filter((s, i) => s === 0 && DR[i].kind !== 'intruder').length;
   const ld = LIVE ? liveFlights.filter(f => f.status === 'landed').length
-    : st.filter((s, i) => s === 2 && DR[i].kind !== 'intruder').length, al = hotAt(t).size;
+    : st.filter((s, i) => s === 2 && DR[i].kind !== 'intruder').length, al = [...hotAt(t)].filter(id => st[byId[id]] === 1).length;   // the same flights the Alerts list shows: still in the air
   const c = `${fl}|${wt}|${ld}|${al}`;
   if (c !== lastCounts) {
     lastCounts = c;
     $('counts').innerHTML = [[fl, 'flying'], [wt, 'on pad'], [ld, 'landed'], [al, 'alerts', al ? 'bad' : '']]
-      .map(([v, l, cls]) => `<div class="${cls || ''}"><b>${v}</b><span>${l}</span></div>`).join('');
+      .map(([v, l, cls]) => l === 'alerts' && v ? `<button type="button" class="bad" id="seeAlerts" title="Show the flights with an alert"><b>${v}</b><span>${l} &rsaquo;</span></button>` : `<div class="${cls || ''}"><b>${v}</b><span>${l}</span></div>`).join('');
+    if ($('seeAlerts')) $('seeAlerts').onclick = () => { showTab('flights'); document.querySelector('[data-ff="alert"]').click(); };
   }
   const seenAlert = new Set();                    // one line per flight's alert (it repeats as the state changes)
   const ev = D.events.filter(e => e.t <= t && (e.type !== 'alert' || e.risk === 'high')).reverse()
@@ -1303,7 +1321,7 @@ function updatePanels() {
     lastAlerts = akey; $('alertbox').hidden = !hotNow.length;
     $('alerts').innerHTML = hotNow.map(i => {
       const a = alertFor(DR[i].id, t), crit = sevOf(a) === 'critical';
-      return `<button type="button" data-fl="${i}"${i === selected ? ' aria-current="true"' : ''}><span class="fid">${DR[i].id}</span><span class="froute">${a ? a.text.replace(/^Alert: \S+ /, '') : ''}</span><span class="pill ${crit ? 'danger' : 'warn'}">${crit ? 'critical' : 'warning'}</span></button>`;
+      return `<button type="button" data-fl="${i}"${i === selected ? ' aria-current="true"' : ''}><span class="fid">${esc(nm(DR[i].id))}</span><span class="froute">${a ? a.text.replace(/^Alert: (?:(?:intruder|emergency) \d+|\S+) /, '') : ''}</span><span class="pill ${crit ? 'danger' : 'warn'}">${crit ? 'critical' : 'warning'}</span></button>`;
     }).join('');
   }
   const nA = hotNow.length; if ($('tabAlerts').textContent !== String(nA)) { $('tabAlerts').textContent = String(nA); $('tabAlerts').hidden = !nA; }
@@ -1319,8 +1337,8 @@ function updatePanels() {
     $('flights').innerHTML = grp.map(g => {
       const all = rows.filter(g.own), mine = keep.filter(g.own); if (!mine.length) return '';
       const fly = all.filter(x => x.s === 1).length, wait = all.filter(x => x.s === 0).length, done = all.filter(x => x.s >= 2).length, al = all.filter(x => x.a).length;
-      return `<details data-g="${esc(g.key)}" style="--op:${g.col}"${opened.has(g.key) || ffind ? ' open' : ''}><summary><span><b>${esc(g.title)}</b><small>${esc(g.role)}</small></span><span class="n">${al ? `<span class="pill danger">${al} alert${al > 1 ? 's' : ''}</span> ` : ''}${fly} flying${wait ? ` \u00b7 ${wait} on pad` : ''}<br>${done} finished</span></summary><div class="list">`
-        + mine.map(x => `<button type="button"${x.id.length > 5 ? ' class="long"' : ''} ${x.gone ? `data-gone="${esc(x.id)}"` : `data-fl="${x.i}"`}${x.id === selId ? ' aria-current="true"' : ''}><span class="fid">${esc(x.id)}</span><span class="froute" title="${esc(x.way)}">${esc(x.fr && x.to && hubOf(g.key) === x.fr ? 'to ' + x.to : x.way)}${x.sub ? `<small>${x.sub}</small>` : ''}</span><span class="pill ${x.a || x.s === 3 ? 'danger' : x.s === 1 ? 'data' : ''}">${x.a ? 'alert' : word[x.s]}</span></button>`).join('') + '</div></details>';
+      return `<details data-g="${esc(g.key)}" style="--op:${g.col}"${opened.has(g.key) || ffind || fshow !== 'all' ? ' open' : ''}><summary><span><b>${esc(g.title)}</b><small>${esc(g.role)}</small></span><span class="n">${al ? `<span class="pill danger">${al} alert${al > 1 ? 's' : ''}</span> ` : ''}${fly} flying${wait ? ` \u00b7 ${wait} on pad` : ''}<br>${done} finished</span></summary><div class="list">`
+        + mine.map(x => `<button type="button"${x.id.length > 5 ? ' class="long"' : ''} ${x.gone ? `data-gone="${esc(x.id)}"` : `data-fl="${x.i}"`}${x.id === selId ? ' aria-current="true"' : ''}><span class="fid">${esc(nm(x.id))}</span><span class="froute" title="${esc(x.way)}">${esc(x.fr && x.to && hubOf(g.key) === x.fr ? 'to ' + x.to : x.way)}${x.sub ? `<small>${x.sub}</small>` : ''}</span><span class="pill ${x.a || x.s === 3 ? 'danger' : x.s === 1 ? 'data' : ''}">${x.a ? 'alert' : word[x.s]}</span></button>`).join('') + '</div></details>';
     }).join('') || `<div class="none">${rows.length ? 'No flights match.' : 'No flights yet.'}</div>`;
   }
   const ch = chapterAt(t);
@@ -1409,7 +1427,7 @@ function updateInspector() {
   if (!d) { $('insp').hidden = true; selId = null; return; }
   const s = i >= 0 ? statusAt(i, t) : ['waiting', 'flying', 'landed', 'crashed', 'cancelled'].indexOf(f0.status), hot = i >= 0 && s === 1 && hotAt(t).has(d.id), al = hot ? alertFor(d.id, t) : null, sev = al ? sevOf(al) : null;
   const col = opColor(d.operator, d.kind), mine = D.events.filter(e => e.flight === d.id && e.t <= t), guard = i >= 0 && s === 1 && (LIVE ? !!guardSlot[i] : !!D.birds && guardAt(i, t));
-  $('insp').style.setProperty('--op', col); $('inDot').style.setProperty('--op', col); $('inId').textContent = d.id;
+  $('insp').style.setProperty('--op', col); $('inDot').style.setProperty('--op', col); $('inId').textContent = nm(d.id);
   const word = ['On its pad', 'Flying', 'Landed', 'Crashed', 'Cancelled'][s];
   $('inPill').textContent = sev ? (sev === 'critical' ? 'Critical' : 'Warning') : guard ? 'Avoiding a bird' : word; $('inPill').className = 'pill ' + (sev === 'critical' || s === 3 ? 'danger' : sev || guard ? 'warn' : s === 1 ? 'data' : '');
   const out = [];
@@ -1423,13 +1441,13 @@ function updateInspector() {
     let bird = null; for (const b of birdsNow) { const m = Math.hypot(b.pos[0] - q[0], b.pos[1] - q[1], b.pos[2] - q[2]); if (m < 60 && (!bird || m < bird)) bird = m; }
     facts.push([`${q[2].toFixed(1)} m`, 'height'], [`${sp.toFixed(1)} m/s`, 'speed']);
     if (d.kind !== 'intruder') facts.push([`${Math.round(left)} m`, 'left to fly'], [late == null ? '\u2013' : Math.abs(late) < 5 ? 'on time' : `${late > 0 ? '+' : '\u2212'}${Math.round(Math.abs(late))} s`, `arrives about ${fmt(Math.max(0, eta))}`, late > 15 ? 'late' : '']);
-    facts.push([near ? `${near[0].toFixed(1)} m` : '\u2013', near ? `nearest drone, ${esc(near[1])}` : 'no other drone', near && near[0] < 3 ? 'bad' : '']);
-    facts.push(bird != null ? [`${bird.toFixed(1)} m`, 'nearest bird', bird < 2 ? 'bad' : ''] : [String(mine.filter(e => e.type === 'replan' && e.status !== 'rejected').length), 're-plans']);
+    facts.push([near ? `${near[0].toFixed(1)} m` : '\u2013', near ? `nearest drone, ${esc(nm(near[1]))}` : 'no other drone', near && near[0] < 3 ? 'bad' : '']);
+    facts.push(bird != null ? [`${bird.toFixed(1)} m`, 'nearest bird', bird < 2 ? 'bad' : ''] : [String(mine.filter(e => e.type === 'replan' && e.status !== 'rejected').length), 'route changes']);
   } else if (d.kind !== 'intruder') {
     const done = mine.find(e => e.type === 'arrived'), at = done ? done.t : i >= 0 && !LIVE ? T[S.findIndex(x => x[i] === 2)] : null;
     facts.push([d.t_dep != null ? fmt(d.t_dep) : '\u2013', 'take-off'], [d.arrival != null ? fmt(d.arrival) : '\u2013', 'planned arrival']);
     if (s === 2 && at != null) facts.push([fmt(at), 'landed'], [d.arrival == null ? '\u2013' : Math.abs(at - d.arrival) < 5 ? 'on time' : `${at > d.arrival ? '+' : '\u2212'}${Math.round(Math.abs(at - d.arrival))} s`, 'against the plan', at - d.arrival > 15 ? 'late' : '']);
-    if (s === 0 && d.t_dep != null && d.t_dep > t) facts.push([`${Math.ceil(d.t_dep - t)} s`, 'until take-off'], [String(mine.filter(e => e.type === 'replan').length), 're-plans']);
+    if (s === 0 && d.t_dep != null && d.t_dep > t) facts.push([`${Math.ceil(d.t_dep - t)} s`, 'until take-off'], [String(mine.filter(e => e.type === 'replan').length), 'route changes']);
   }
   out.push(`<div><div class="way">${esc(route(d) || kindWord(d))}<small>${d.kind === 'flight' ? 'Delivery for ' + esc(d.operator) : d.kind === 'emergency' ? 'Emergency, ' + esc(nodeName(d.operator)) : 'No flight plan: the UTM steers the others clear'}</small></div>${d.kind === 'intruder' ? '' : `<div class="bar2"><i style="width:${(100 * prog).toFixed(0)}%"></i></div>`}</div>`);
   // the alert now, in words, with what the UTM is doing about it
@@ -1473,7 +1491,7 @@ function updateInspector() {
   $('inFoot').hidden = $('inTrack').hidden && $('inFollow').hidden;
 }
 
-function resize() { const r = stage.getBoundingClientRect(); renderer.setSize(r.width, r.height, false); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
+function resize() { const r = stage.getBoundingClientRect(); renderer.setSize(r.width, r.height, false); camera.aspect = r.width / r.height; shiftNow = -1; camera.clearViewOffset(); camera.updateProjectionMatrix(); }
 new ResizeObserver(resize).observe(stage);
 
 camera.position.set(acx + 40 * SC, 38 * SC, -acy + 40 * SC); camera.lookAt(look);
@@ -1488,7 +1506,7 @@ async function pollLive() {
   polling = true;
   try {
     const s = await (await fetch(`api/state?since=${since}`)).json();
-    since = s.n_events; liveFlights = s.flights; D.events.push(...s.events); D.hot = [{ t: 0, high: s.high || [] }];
+    since = s.n_events; liveFlights = s.flights; D.events.push(...plainText(s.events)); D.hot = [{ t: 0, high: s.high || [] }];
     for (const z of s.zones || []) if (!zones.some(q => q.z.id === z.id)) { D.zones.push(z); addZone(z); }
     birdsNow = s.birds || []; Object.assign(fleetNow, s.fleet || {});
     for (const b of birdsNow) { const h = birdHist.get(b.id) || []; h.push([s.t, b.pos]); h.splice(0, h.length - 12); birdHist.set(b.id, h); }
@@ -1681,7 +1699,7 @@ renderer.setAnimationLoop((now) => {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   if (LIVE) t = Math.max(0, END - 0.6);           // just behind the newest state, so motion is interpolated
   else if (playing) { t += dt * speed; if (t >= END) { t = END; setPlaying(false); } }
-  updateWorld(dt); frameCamera(dt); updateSee(); updatePanels(); notify();
+  updateWorld(dt); frameShift(); frameCamera(dt); updateSee(); updatePanels(); notify();
   if (shadowTick++ % 3 === 0) renderer.shadowMap.needsUpdate = true;
   sky.position.copy(camera.position); renderer.render(scene, camera);
 });

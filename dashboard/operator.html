@@ -89,7 +89,7 @@ td.id { font-family: var(--mono); }
     </section>
     <section class="card">
       <h2>Your flights</h2>
-      <div class="scroll"><table><thead><tr><th>Flight</th><th>Route</th><th>Status</th><th>Take-off</th><th>Arrival</th><th>Height</th><th>Re-plans</th></tr></thead>
+      <div class="scroll"><table><thead><tr><th>Flight</th><th>Route</th><th>Status</th><th>Take-off</th><th>Arrival</th><th>Height</th><th>Route changes</th></tr></thead>
         <tbody id="mine"><tr><td colspan="7" class="empty">No flights yet.</td></tr></tbody></table></div>
       <h2>Notices from the UTM</h2>
       <ol class="feed" id="feed"><li class="empty" style="grid-template-columns:1fr">Nothing yet.</li></ol>
@@ -141,7 +141,7 @@ $('go').onclick = async () => {
     const r = await (await fetch(emergency ? 'api/emergency' : 'api/request', { method: 'POST', body: JSON.stringify(body) })).json();
     if (r.status === 'approved') {
       $('reply').className = 'reply ok';
-      $('reply').innerHTML = `<b>${esc(r.flight)} approved</b>${esc(r.from)} \u2192 ${esc(r.to)}: take-off ${fmt(r.take_off)}, ${r.layer_m} m layer, arrival ${fmt(r.arrival)}` + (r.delay_s > 0 ? ` (waits ${r.delay_s} s for a free slot)` : '');
+      $('reply').innerHTML = `<b>${esc(r.flight)} approved</b>${esc(r.from)} \u2192 ${esc(r.to)}: take-off ${fmt(r.take_off)}, flying at ${r.layer_m} m, arrival ${fmt(r.arrival)}` + (r.delay_s > 0 ? ` (waits ${r.delay_s} s for a free slot)` : '');
     } else {
       $('reply').className = 'reply no';
       $('reply').innerHTML = `<b>Refused</b>${esc(r.reason || 'no plan')}`;

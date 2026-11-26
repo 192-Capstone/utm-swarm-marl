@@ -157,7 +157,9 @@ a.trk:hover { text-decoration: underline; }
 <script>
 (() => {
 // Scenes index.html can replay (its SCENES list); keep in sync. index.html reads only #<scene> from the URL.
-const NAMES = { ecity_city: '1. Full city', ecity_rooftops: '2. Before the fixes', ecity_rooftops_fixed: '2b. After the fixes', ecity_rush_hour_off: '3. Pad queue off', ecity_rush_hour_on: '4. Pad queue on', ecity_birds_off: '5. Birds, no guard', ecity_birds_on: '6. Birds, with the guard' };
+const NAMES = { ecity_city: '1. Full city', ecity_rooftops: '2. Before the fixes', ecity_rooftops_fixed: '2b. After the fixes', ecity_rush_hour_off: '3. Pad queue off', ecity_rush_hour_on: '4. Pad queue on', ecity_birds_off: '5. Birds, no guard', ecity_birds_on: '6. Birds, with the guard',
+  ecity_demo: 'Earlier demo', ecity_distant: 'Distant drop-offs', ecity_rush_hour: 'Rush hour' };
+const sceneName = (s) => NAMES[s] || String(s || '').replace(/^ecity_/, '').replace(/_/g, ' ');   // never a file name on screen
 const SCENES = ['ecity_city', 'ecity_rooftops', 'ecity_rooftops_fixed', 'ecity_rush_hour_off', 'ecity_rush_hour_on', 'ecity_birds_off', 'ecity_birds_on'];
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -180,15 +182,15 @@ const COLS = [
   { k: 'drone', h: 'Drone', v: f => f.drone },
   { k: 'operator', h: 'Operator', v: f => f.operator },
   { k: 'route', h: 'From → To', v: f => `${f.origin || ''} ${f.dest || ''}` },
-  { k: 'layer', h: 'Layer', v: f => f.layer, num: 1 },
-  { k: 'sdep', h: 'Sched dep', v: f => abs(f, f.sched_dep), num: 1 },
-  { k: 'adep', h: 'Actual dep', v: f => abs(f, f.act_dep), num: 1 },
-  { k: 'sarr', h: 'Sched arr', v: f => abs(f, f.sched_arr), num: 1 },
-  { k: 'aarr', h: 'Actual arr', v: f => abs(f, f.act_arr), num: 1 },
+  { k: 'layer', h: 'Height', v: f => f.layer, num: 1 },
+  { k: 'sdep', h: 'Planned take-off', v: f => abs(f, f.sched_dep), num: 1 },
+  { k: 'adep', h: 'Took off', v: f => abs(f, f.act_dep), num: 1 },
+  { k: 'sarr', h: 'Planned arrival', v: f => abs(f, f.sched_arr), num: 1 },
+  { k: 'aarr', h: 'Arrived', v: f => abs(f, f.act_arr), num: 1 },
   { k: 'dur', h: 'Duration', v: f => f.duration_s, num: 1 },
   { k: 'delay', h: 'Delay', v: f => delay(f), num: 1 },
   { k: 'status', h: 'Status', v: f => outcome(f).text },
-  { k: 'replans', h: 'Re-plans', v: f => f.n_replans, num: 1 },
+  { k: 'replans', h: 'Route changes', v: f => f.n_replans, num: 1 },
   { k: 'alerts', h: 'Alerts', v: f => f.n_alerts, num: 1 },
   { k: 'track', h: 'Track', v: f => (trackHref(f) ? 0 : 1), nosort: 1 },
 ];
@@ -205,9 +207,9 @@ const abs = (f, t) => {
 const clock = (e) => e == null ? '–' : new Date(e * 1000).toLocaleTimeString('en-GB', { hour12: false });
 const tplus = (t) => t == null ? '–' : `T+${t.toFixed(1)} s`;
 const delay = (f) => f.arr_delay != null ? f.arr_delay : f.dep_delay;
-const signed = (d) => d == null ? '–' : `${Math.round(d) > 0 ? '+' : ''}${Math.round(d)} s`;   // Math.round(-0.3) is -0: prints 0
+const signed = (d) => d == null ? '–' : `${Math.round(d) > 0 ? '+' : Math.round(d) < 0 ? '−' : ''}${Math.abs(Math.round(d))} s`;   // Math.round(-0.3) is -0: prints 0
 const at = (f, k) => f[k + '_x'] == null ? '' : `(${f[k + '_x']}, ${f[k + '_y']})`;
-const layerText = (f) => f.layer == null ? '–' : `L${f.layer}${f.cruise_z == null ? '' : ` · ${Number(f.cruise_z.toFixed(1))} m`}`;
+const layerText = (f) => f.layer == null ? '–' : f.cruise_z == null ? `layer ${f.layer}` : `${Number(f.cruise_z.toFixed(1))} m`;
 const dur = (s) => { if (s == null) return '–'; const n = Math.round(s); return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`; };
 const STATUS_CLASS = { Booked: 'grey', 'In flight': 'info', Crashed: 'bad', 'Forced down': 'bad', Returned: 'warn', Cancelled: 'grey', Rejected: 'grey',
   'In flight at end': 'info', 'Not departed': 'grey' };
@@ -245,7 +247,7 @@ function setLog(log) {
   const uniq = (xs) => [...new Set(xs)].sort().map(v => [v, v]);
   opts('f-op', 'All operators', uniq(ROWS.map(f => f.operator).filter(Boolean)), keep.op);
   opts('f-status', 'All statuses', uniq(ROWS.map(f => f.status)), keep.st);
-  opts('f-run', 'All runs', DB.runs.map(r => [r.run_id, `${NAMES[r.scenario] && r.source !== 'live' ? NAMES[r.scenario] : r.scenario}${r.source === 'live' ? ' (live)' : ''} · ${new Date(r.start_epoch * 1000).toLocaleString('en-GB', { hour12: false })}`]), keep.run);
+  opts('f-run', 'All runs', DB.runs.map(r => [r.run_id, `${sceneName(r.scenario)}${r.source === 'live' ? ' (live)' : ''} · ${new Date(r.start_epoch * 1000).toLocaleString('en-GB', { hour12: false })}`]), keep.run);
   $('live').hidden = !DB.live; $('live').classList.toggle('lost', feedLost);
   $('livetxt').textContent = feedLost ? 'LIVE FEED LOST' : 'LIVE';
 }
@@ -362,7 +364,7 @@ function draw() {
     const key = `${f.run_id}/${f.flight_id}`; tr.dataset.key = key;
     if (sel === key) tr.setAttribute('aria-selected', 'true');
     const cell = (text, cls) => { const td = el('td', cls || '', text); tr.append(td); return td; };
-    const c0 = cell('', ''); c0.append(el('span', 'cs', f.callsign)); c0.append(el('small', '', DB.runs.length > 1 ? `${f.flight_id} · ${RUNS[f.run_id].scenario}` : f.flight_id));
+    const c0 = cell('', ''); c0.append(el('span', 'cs', f.callsign)); c0.append(el('small', '', DB.runs.length > 1 ? `${f.flight_id} · ${sceneName(RUNS[f.run_id].scenario)}` : f.flight_id));
     cell(f.drone || '–', 'mono');
     cell(f.operator || '–');
     const route = cell(f.kind === 'intruder' ? `${f.origin || '?'} → ${f.dest || '?'} (intruder)` : `${f.origin || '?'} → ${f.dest || '?'}`);
@@ -399,15 +401,15 @@ function show(f) {
   const dl = el('dl');
   const row = (k, v) => { dl.append(el('dt', '', k), el('dd', '', v)); };
   const both = (t) => t == null ? '–' : `${clock(abs(f, t))} (${tplus(t)})`;
-  row('Run', `${run.scenario} · seed ${run.seed ?? '–'}`);
+  row('Run', `${sceneName(run.scenario)} · seed ${run.seed ?? '–'}`);
   row('Operator', f.operator || '–');
   row('Drone', f.drone || '–');
   const pad = (k) => `${f[k] || '?'}${f[k + '_x'] == null || f[k] === at(f, k) ? '' : ' ' + at(f, k)}`;
   row('From', pad('origin')); row('To', pad('dest'));
   row('Layer / height', layerText(f));
   row('Filed', f.t_request == null ? '–' : both(f.t_request));
-  row('Scheduled dep', both(f.sched_dep)); row('Actual dep', both(f.act_dep)); row('Departure delay', signed(f.dep_delay));
-  row('Scheduled arr', both(f.sched_arr)); row('Actual arr', both(f.act_arr)); row('Arrival delay', signed(f.arr_delay));
+  row('Planned take-off', both(f.sched_dep)); row('Took off', both(f.act_dep)); row('Take-off delay', signed(f.dep_delay));
+  row('Planned arrival', both(f.sched_arr)); row('Arrived', both(f.act_arr)); row('Arrival delay', signed(f.arr_delay));
   row('Duration', f.duration_s == null ? '–' : `${dur(f.duration_s)} (${f.duration_s.toFixed(1)} s)`);
   row('Distance flown', f.distance_m ? `${f.distance_m.toFixed(1)} m` : '–');
   row('Closest approach', f.min_sep_m == null ? '–' : `${f.min_sep_m.toFixed(2)} m to ${f.min_sep_with}`);

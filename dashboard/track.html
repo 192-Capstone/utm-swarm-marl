@@ -344,7 +344,7 @@ function paint(S, D) {
   rows.push(['Drone', (mode === 'live' ? `D${String(f.slot + 1).padStart(2, '0')}` : model.drone) || '–']);
   rows.push(['Operator', operator || '–']);
   rows.push(['From → To', `${from || '?'} → ${to || '?'}`]);
-  rows.push(['Layer / height', z == null ? '–' : `${layer != null ? 'L' + layer + ' · ' : ''}${Number(z.toFixed(1))} m`]);
+  rows.push(['Cruising height', z == null ? '–' : `${Number(z.toFixed(1))} m`]);
   rows.push(['Height now', `${v.pos[2].toFixed(1)} m`]);
   rows.push(['Speed', D.flying ? `${speedNow(S).toFixed(1)} m/s` : '–']);
   rows.push(['Distance left', D.flying || D.waiting ? `${Math.round(D.rem.dist_m)} m` : v.status === 'landed' && !D.returned ? '0 m' : '–']);
@@ -352,7 +352,7 @@ function paint(S, D) {
   rows.push(['Distance flown', `${Math.round(flown)} m`]);
   rows.push(['Booked take-off', v.t_dep == null ? '–' : clockText(S, v.t_dep)]);
   rows.push(['Booked arrival', v.arrival == null ? '–' : clockText(S, v.arrival)]);
-  if (v.replans) rows.push(['Re-plans', String(v.replans)]);
+  if (v.replans) rows.push(['Route changes', String(v.replans)]);
   const dk = rows.map(r => r.join(':')).join('|');
   if ($('dl').dataset.k !== dk) { $('dl').dataset.k = dk; $('dl').replaceChildren(...rows.flatMap(([k, val]) => [el('dt', '', k), el('dd', '', val)])); }
   set($('callsign'), cs || P.flight); set($('sub'), `${P.flight}${mode === 'replay' ? ' · replay' : ''}`);
@@ -364,7 +364,6 @@ function paint(S, D) {
     $('feed').dataset.k = fk;
     $('feed').replaceChildren(...(shownEvs.length ? shownEvs.map(e => {
       const li = el('li'), tm = el('time', '', S.clockOf ? TL.fmtClock(S.clockOf(e.t)) : `T+${Math.round(e.t)}`);
-      if (S.clockOf) tm.append(el('small', '', `T+${e.t.toFixed(0)} s`));
       li.append(tm, el('span', /crash|forced|refused|failure/.test(e.type) ? 'bad' : e.type === 'alert' ? 'warn' : '', e.text)); return li; })
       : [el('li', 'empty', 'Nothing yet.')]));
   }
