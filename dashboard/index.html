@@ -21,15 +21,15 @@
   --ground: #000000; --surface: #111111; --raised: #222222; --border: #1d1d1d; --text: #ffffff;
   --muted: #a8a8a8; --ink: #ffffff; --data: #5b9bff; --danger: #ff5a5f; --warn: #e5a93b;
   --data-soft: #0f1d33; --danger-soft: #2c1517; --warn-soft: #2b2414;
-  --scene-ground: #18211f; --scene-building: #4a525d; --scene-edge: #5d6672; --scene-pad: #39424d; --scene-mark: #d5dde6; --scene-street: #262c34;
-  --sky-top: #070b16; --sky-low: #1d2836; --window: #59636f; --tree: #24382a;
+  --scene-ground: #1d2b24; --scene-building: #565a66; --scene-edge: #5d6672; --scene-pad: #39424d; --scene-mark: #d5dde6; --scene-street: #262c34;
+  --sky-top: #060a1a; --sky-low: #2a2f4c; --window: #59636f; --tree: #24382a;
   color-scheme: dark } }
 :root[data-theme="dark"] {
   --ground: #000000; --surface: #111111; --raised: #222222; --border: #1d1d1d; --text: #ffffff;
   --muted: #a8a8a8; --ink: #ffffff; --data: #5b9bff; --danger: #ff5a5f; --warn: #e5a93b;
   --data-soft: #0f1d33; --danger-soft: #2c1517; --warn-soft: #2b2414;
-  --scene-ground: #18211f; --scene-building: #4a525d; --scene-edge: #5d6672; --scene-pad: #39424d; --scene-mark: #d5dde6; --scene-street: #262c34;
-  --sky-top: #070b16; --sky-low: #1d2836; --window: #59636f; --tree: #24382a;
+  --scene-ground: #1d2b24; --scene-building: #565a66; --scene-edge: #5d6672; --scene-pad: #39424d; --scene-mark: #d5dde6; --scene-street: #262c34;
+  --sky-top: #060a1a; --sky-low: #2a2f4c; --window: #59636f; --tree: #24382a;
   color-scheme: dark }
 html, body { height: 100%; }
 [hidden] { display: none !important; }
@@ -41,7 +41,7 @@ body { background: var(--ground); color: var(--text); font: 400 14px/1.45 var(--
 .grip:hover::after, .grip.drag::after { background: var(--muted); }
 .app.collapsed { grid-template-columns: minmax(0, 1fr); gap: 0; }
 .app.collapsed .side, .app.collapsed .grip { display: none; }
-.side { display: flex; flex-direction: column; gap: 22px; overflow-y: auto; padding: 8px 8px 8px 4px; min-width: 0; }
+.side { display: flex; flex-direction: column; gap: 22px; overflow-y: auto; overflow-x: hidden; padding: 8px 8px 8px 4px; min-width: 0; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand svg { flex: none; }
 .brand b { font-size: 16px; font-weight: 500; display: block; }
@@ -56,9 +56,55 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 .onoff[aria-checked="true"] i { background: var(--data); } .onoff[aria-checked="true"] i::after { left: 21px; }
 .onoff:disabled { opacity: .5; cursor: default; }
 .credit { position: absolute; right: 14px; bottom: 74px; font-size: 11px; color: var(--muted); background: color-mix(in srgb, var(--surface) 75%, transparent); padding: 2px 6px; border-radius: 4px; pointer-events: none; }
-.birdform { display: grid; gap: 8px; }
-.birdform label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
-.birdform select, .birdform input[type=range] { width: 100%; }
+select option, select optgroup { background: var(--surface); color: var(--text); font-weight: 400; }
+select optgroup { color: var(--muted); font-style: normal; }
+.side > * { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+.tabs { display: flex; gap: 4px; flex-wrap: nowrap !important; padding: 4px; background: var(--surface); border-radius: var(--r-card); position: sticky; top: -8px; z-index: 3; box-shadow: 0 6px 10px -8px rgba(0,0,0,.35); }
+.tabs button { flex: 1; height: 34px; border: 0; border-radius: var(--r-control); background: transparent; color: var(--muted); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.tabs button[aria-selected="true"] { background: var(--raised); color: var(--text); }
+.badge { background: var(--danger); color: #fff; border-radius: 999px; font-size: 11px; font-weight: 500; min-width: 18px; padding: 0 5px; line-height: 18px; text-align: center; }
+.side > [data-off] { display: none !important; }
+.ffind { display: grid; gap: 8px; margin-bottom: 8px; }
+.ffind input { width: 100%; box-sizing: border-box; height: 36px; border-radius: var(--r-control); border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; font-size: 13px; padding: 0 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips button { border: 0; border-radius: 999px; padding: 4px 11px; font: inherit; font-size: 12px; background: var(--surface); color: var(--muted); cursor: pointer; }
+.chips button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.groups { display: grid; gap: 10px; }
+.groups details { background: var(--surface); border-radius: var(--r-card); overflow: clip; border-left: 4px solid var(--op, var(--muted)); }
+.groups summary { list-style: none; cursor: pointer; padding: 10px 12px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; position: sticky; top: 34px; background: var(--raised); z-index: 2; }
+.groups summary::-webkit-details-marker { display: none; }
+.groups summary::before { content: ''; width: 7px; height: 7px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; }
+.groups details[open] summary::before { transform: rotate(45deg); }
+.groups summary b { font-size: 14px; font-weight: 600; } .groups summary small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+.groups summary .n { font-size: 12px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.groups .list { padding: 4px 0; }
+.groups .list button { width: 100%; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 8px; align-items: center; text-align: left; padding: 8px 12px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+.groups .list button:hover { background: var(--raised); } .groups .list button[aria-current="true"] { background: var(--raised); box-shadow: inset 3px 0 0 var(--ink); }
+.groups .fid { font-family: var(--mono); font-size: 12px; white-space: nowrap; } .groups .list button.long { grid-template-columns: minmax(0, 1fr) auto; } .groups .list button.long .fid { grid-column: 1 / -1; } .groups .froute { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.groups .froute small { display: block; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.groups .none { padding: 10px 12px; color: var(--muted); font-size: 13px; background: var(--surface); border-radius: var(--r-card); }
+.wide { width: 100%; height: 36px; border: 0; border-radius: var(--r-control); background: var(--danger-soft); color: var(--danger); font: inherit; font-weight: 500; cursor: pointer; }
+.insp { position: absolute; right: 14px; top: 64px; bottom: 100px; width: min(320px, calc(100% - 28px)); display: flex; flex-direction: column; background: var(--surface); border-radius: 12px; box-shadow: 0 10px 34px rgba(0,0,0,.28); z-index: 4; overflow: hidden; max-height: 620px; height: fit-content; animation: in .22s ease-out both; }
+.insp .inhead { display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: var(--raised); } .insp .inhead b { font-family: var(--mono); font-size: 15px; } .insp .inhead .pill { background: var(--surface); } .insp .inhead .pill.data { background: var(--data-soft); } .insp .inhead .pill.danger { background: var(--danger-soft); } .insp .inhead .pill.warn { background: var(--warn-soft); } .insp .inhead .pill { white-space: nowrap; }
+.insp .dot, .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--op, var(--muted)); flex: none; }
+.insp .x { margin-left: auto; width: 28px; height: 28px; border: 0; border-radius: var(--r-control); background: transparent; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; } .insp .x:hover { background: var(--surface); color: var(--text); }
+.insp .inbody { overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 14px; } .insp .inbody > * { flex: none; }
+.insp .way { font-size: 14px; font-weight: 500; } .insp .way small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; }
+.insp .bar2 { height: 6px; border-radius: 3px; background: var(--raised); overflow: hidden; margin-top: 8px; } .insp .bar2 i { display: block; height: 100%; background: var(--op, var(--data)); }
+.insp .now { border-radius: var(--r-control); padding: 9px 11px; font-size: 13px; display: grid; gap: 2px; } .insp .now.ok { background: var(--data-soft); color: var(--data); } .insp .now.warn { background: var(--warn-soft); color: var(--warn); } .insp .now.danger { background: var(--danger-soft); color: var(--danger); } .insp .now small { color: inherit; opacity: .85; font-size: 12px; } .insp .now b { font-weight: 600; }
+.insp .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); border-radius: var(--r-control); overflow: hidden; }
+.insp .facts div { background: var(--surface); padding: 8px 4px; display: grid; } .insp .facts b { font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; } .insp .facts span { color: var(--muted); font-size: 12px; } .insp .facts .bad b { color: var(--danger); } .insp .facts .late b { color: var(--warn); }
+.insp h4 { margin: 0 0 6px; font-size: 12px; font-weight: 500; color: var(--muted); display: flex; justify-content: space-between; }
+.insp ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; } .insp ol li { display: grid; grid-template-columns: 42px 12px minmax(0, 1fr); gap: 6px; font-size: 13px; padding: 4px 0; } .insp ol time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; padding-top: 1px; }
+.insp ol li i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin: 5px 2px 0; } .insp ol .danger i { background: var(--danger); } .insp ol .warn i { background: var(--warn); } .insp ol .data i { background: var(--data); } .insp ol .danger span { color: var(--danger); } .insp ol .warn span { color: var(--warn); }
+.insp svg.spark { width: 100%; height: 54px; display: block; } .insp svg.spark path { fill: none; stroke: var(--op, var(--data)); stroke-width: 1.6; vector-effect: non-scaling-stroke; } .insp svg.spark line { stroke: var(--border); vector-effect: non-scaling-stroke; }
+.insp footer { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); } .insp footer button, .insp footer a { flex: 1; height: 34px; border: 0; border-radius: var(--r-control); background: var(--raised); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; } .insp footer { flex-wrap: wrap; } .insp footer #inSee { flex: 1 0 100%; background: var(--data); color: #fff; font-weight: 500; } .insp footer #inSee[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.insp .sees { background: var(--raised); border-radius: var(--r-control); padding: 10px 11px; font-size: 13px; display: grid; gap: 8px; } .insp .sees p { margin: 0; display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 8px; } .insp .sees p i { width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; } .insp .sees small { display: block; color: var(--muted); font-size: 12px; } .insp .sees .fine { display: block; font-size: 11px; color: var(--muted); }
+.nbr { position: absolute; transform: translate(-50%, -50%); background: #14b8a6; color: #fff; font-size: 11px; font-weight: 500; padding: 1px 6px; border-radius: 999px; white-space: nowrap; pointer-events: none; }
+.birdform { display: grid; gap: 10px; background: var(--surface); border-radius: var(--r-card); padding: 12px; }
+.birdform label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.birdform select { width: 100%; height: 36px; box-sizing: border-box; border-radius: var(--r-control); border: 1px solid var(--border); background: var(--raised); color: var(--text); font: inherit; font-size: 13px; padding: 0 8px; }
+.birdform input[type=range] { width: 100%; accent-color: var(--data); }
 .birdform .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .birdform button { height: 36px; border: 0; border-radius: var(--r-control); background: var(--danger-soft); color: var(--danger); font: inherit; font-weight: 500; cursor: pointer; }
 .birdform button:hover:not(:disabled) { filter: brightness(.96); } .birdform button:disabled { opacity: .5; cursor: default; }
@@ -94,7 +140,7 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 .nodes .row .n b { color: var(--text); font-size: 13px; }
 .nodes .row.hit { box-shadow: inset 3px 0 0 var(--danger); }
 .nodes .row.hit small { color: var(--danger); }
-.flights { background: var(--surface); border-radius: var(--r-card); max-height: 252px; overflow-y: auto; padding: 4px 0; }
+.flights { background: var(--surface); border-radius: var(--r-card); padding: 4px 0; }
 .flights h3 { margin: 0; padding: 8px 12px 2px; font-size: 12px; font-weight: 500; color: var(--muted); position: sticky; top: 0; background: var(--surface); }
 .flights button { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; text-align: left; padding: 6px 12px;
   border: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; transition: background .14s ease; }
@@ -166,17 +212,22 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
 .tag.sel { outline: 1.5px solid var(--ink); }
 .place { position: absolute; transform: translate(-50%, 6px); font-size: 11px; color: var(--muted); white-space: nowrap;
   pointer-events: none; text-shadow: 0 0 3px var(--scene-ground), 0 0 3px var(--scene-ground); }
-.place.hub { color: var(--text); font-weight: 500; font-size: 12px; }
-.place.hospital { color: var(--danger); font-weight: 500; }
+.place i { font-style: normal; }
+.place.drop { color: var(--text); font-weight: 500; }
+.place.hub, .place.hospital { background: var(--op); color: #fff; font-weight: 600; font-size: 12px; padding: 2px 9px 2px 7px; border-radius: 999px; text-shadow: none; display: inline-flex; gap: 5px; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+.place.hub small { font-weight: 500; opacity: .85; font-size: 11px; }
 .legend { display: flex; flex-wrap: wrap; gap: 10px 14px; font-size: 12px; color: var(--muted); }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 :focus-visible { outline: 2px solid var(--data); outline-offset: 2px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @keyframes in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .feed li { animation: none; } * { transition: none !important; } }
+@media (max-width: 1240px) { .insp { top: 158px; } }
 @media (max-width: 860px) {
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 62svh auto; height: auto; min-height: 100%; }
   .grip { display: none; }
+  .insp { top: 60px; bottom: auto; max-height: 48svh; }
+  .groups summary, .tabs { position: static; }
   .stage { order: -1; }
   .side { overflow: visible; }
   .bar.top .title { display: none; }
@@ -204,39 +255,44 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
       <p class="note">Recorded flights. Choose Live to book and fly your own.</p>
       <p class="note"><a class="pill data" id="logLink" href="flight_log.html" style="display:inline-flex;align-items:center;gap:6px;padding:4px 12px;text-decoration:none"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 2.5h9M1.5 6h9M1.5 9.5h6"/></svg>Flight log</a></p>
     </section>
-    <section>
+    <div class="tabs" role="tablist" aria-label="Panel">
+      <button type="button" role="tab" data-tab="overview" aria-selected="true">Overview</button>
+      <button type="button" role="tab" data-tab="flights" aria-selected="false">Flights <b id="tabAlerts" class="badge" hidden></b></button>
+      <button type="button" role="tab" data-tab="control" aria-selected="false" hidden>Control</button>
+    </div>
+    <section data-in="overview">
       <h2>Story</h2>
       <ol class="story" id="story"></ol>
     </section>
-    <section>
+    <section data-in="overview">
       <div class="caption" id="caption" aria-live="polite"></div>
     </section>
-    <section>
+    <section data-in="overview flights">
       <h2>Right now</h2>
       <div class="counts" id="counts"></div>
     </section>
-    <section>
-      <h2>Client nodes</h2>
+    <section data-in="overview">
+      <h2>Operators</h2>
       <div class="nodes" id="nodes"></div>
     </section>
-    <section id="alertbox" hidden>
+    <section id="alertbox" data-in="flights" hidden>
       <h2>Active alerts</h2>
       <div class="flights" id="alerts"></div>
     </section>
-    <section>
+    <section data-in="flights">
       <h2>Flights</h2>
-      <div class="flights" id="flights"></div>
+      <div class="ffind">
+        <input type="search" id="fq" placeholder="Find a flight, operator or place" aria-label="Find a flight, operator or place">
+        <div class="chips" role="group" aria-label="Show"><button type="button" data-ff="all" aria-pressed="true">All</button><button type="button" data-ff="fly" aria-pressed="false">In the air</button><button type="button" data-ff="alert" aria-pressed="false">Alerts</button><button type="button" data-ff="done" aria-pressed="false">Finished</button></div>
+      </div>
+      <div class="groups" id="flights"></div>
     </section>
-    <section id="selbox" hidden>
-      <h2>Selected drone</h2>
-      <div class="sel" id="sel"></div>
-    </section>
-    <section id="queuebox" hidden>
+    <section id="queuebox" data-in="control" hidden>
       <h2>Pad queue</h2>
       <button type="button" class="onoff" id="queueBtn" role="switch" aria-checked="false"><i></i><span id="queueTxt">Off</span></button>
       <p class="note" id="queueMsg" aria-live="polite">Off: two drones bound for one pad may reach it together.</p>
     </section>
-    <section id="birdbox" hidden>
+    <section id="birdbox" data-in="control" hidden>
       <h2>Add bird</h2>
       <div class="birdform">
         <label>Where <select id="birdTarget" aria-label="A flying flight, or a place"></select></label>
@@ -251,17 +307,25 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
         <p class="note" id="birdMsg" aria-live="polite">Aimed to cross the flight's route ahead of it, timed to arrive with it (a place: to be there in 5 s).</p>
       </div>
     </section>
-    <section>
+    <section id="zonebox" data-in="control" hidden>
+      <h2>No-fly zone</h2>
+      <button type="button" class="wide" id="drawBtn2">Draw a zone on the map</button>
+      <p class="note">Click its corners, then Close zone. Flights in the way are re-routed; a drone caught inside leaves by the nearest way out.</p>
+    </section>
+    <section data-in="overview">
       <h2>What the UTM did</h2>
       <ol class="feed" id="feed"></ol>
     </section>
-    <section>
+    <section data-in="overview">
       <h2>This run</h2>
       <div class="run" id="run"></div>
     </section>
     <section>
       <div class="legend">
         <span><i style="background: var(--ink)"></i>Delivery drone</span>
+        <span><i style="background: none; color: var(--data); font-style: normal; margin-right: 8px">&#x2b22;</i>Hub (its operator's colour)</span>
+        <span><i style="background: none; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--muted)"></i>Drop-off</span>
+        <span><i style="background: none; color: var(--danger); font-style: normal; margin-right: 8px">&#x271a;</i>Hospital</span>
         <span><i style="background: var(--data); opacity: .55"></i>Booked airspace</span>
         <span><i style="background: var(--danger)"></i>Zone, emergency, alert</span>
         <span id="birdLegend" hidden><i style="background: #e5322d"></i>Bird &middot; <i style="background: #f28c28"></i>drone avoiding it</span>
@@ -296,6 +360,11 @@ h2 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
         </div>
       </div>
     </div>
+    <aside class="insp" id="insp" aria-label="Selected drone" hidden>
+      <div class="inhead"><span class="dot" id="inDot"></span><b id="inId"></b><span class="pill" id="inPill"></span><button type="button" class="x" id="inX" aria-label="Close (Esc)" title="Close (Esc)">&times;</button></div>
+      <div class="inbody" id="inBody"></div>
+      <footer id="inFoot"><button type="button" id="inSee" aria-pressed="false" title="Key V">See what it sees</button><button type="button" id="inFollow">Follow</button><a id="inTrack">Track page</a></footer>
+    </aside>
     <div class="toasts" id="toasts" aria-live="assertive"></div>
     <div class="drawbar" id="drawbar" hidden>
       <span id="drawHint">Click the corners of the zone</span>
@@ -349,6 +418,7 @@ async function liveScene() {                       // the live UTM's scene, as a
     frames: { t: [0], pos: [Array.from({ length: s.slots }, () => off)], status: [Array(s.slots).fill(4)] } };
 }
 const $ = (id) => document.getElementById(id);
+const esc = (x) => String(x ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 $('scene').value = NAME;
 $('scene').onchange = (e) => { location.hash = e.target.value; location.reload(); };
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -385,7 +455,11 @@ const skyU = { top: { value: new THREE.Color() }, low: { value: new THREE.Color(
 const sky = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), new THREE.ShaderMaterial({ side: THREE.BackSide, depthWrite: false, fog: false, uniforms: skyU,
   vertexShader: 'varying float h; void main() { h = normalize(position).y; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
   fragmentShader: 'uniform vec3 top; uniform vec3 low; varying float h; void main() { gl_FragColor = vec4(mix(low, top, pow(clamp(h * 1.6, 0.0, 1.0), 0.7)), 1.0);\n#include <colorspace_fragment>\n}' }));
-sky.renderOrder = -1; sky.frustumCulled = false; scene.add(sky);
+const stars = (() => { const a = []; let z = 5; const q = () => ((z = (z * 16807) % 2147483647) / 2147483647);
+  for (let k = 0; k < 700; k++) { const u = q() * 6.2832, h = 0.06 + 0.9 * q(), c = Math.sqrt(1 - h * h); a.push(c * Math.cos(u), h, c * Math.sin(u)); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(a, 3));
+  const m = new THREE.Points(g, new THREE.PointsMaterial({ color: '#cfdcff', size: 1.6, sizeAttenuation: false, transparent: true, opacity: 0.8, fog: false, depthWrite: false })); m.frustumCulled = false; m.renderOrder = -1; return m; })();
+sky.add(stars); sky.renderOrder = -2; sky.frustumCulled = false; scene.add(sky);
 const hemi = new THREE.HemisphereLight(0xffffff, 0xcfcac0, 1.25); scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(-40, 70, 30); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
@@ -428,7 +502,7 @@ const glassTex = canvasTex(128, 96, (g, w, h) => { const a = g.createLinearGradi
 const shopTex = canvasTex(256, 128, (g, w, h) => { g.fillStyle = '#b4aea4'; g.fillRect(0, 0, w, h); g.fillStyle = '#8d877d'; g.fillRect(0, 0, w, 16);             // the ground floor: 8 m of shop fronts and a door
   for (const x of [8, 72, 200]) { g.fillStyle = '#3d4f5c'; g.fillRect(x, 26, 50, 78); g.fillStyle = '#5d7686'; g.fillRect(x, 26, 50, 26); } g.fillStyle = '#4c3b2d'; g.fillRect(140, 30, 44, 98); g.fillStyle = '#6b8492'; g.fillRect(146, 36, 14, 60); g.fillRect(164, 36, 14, 60); });
 const litTex = canvasTex(512, 384, (g, w, h) => { g.fillStyle = '#000'; g.fillRect(0, 0, w, h);   // 8 x 8 of those tiles, some windows lit
-  for (let y = 0; y < 8; y++) for (let x = 0; x < 16; x++) if (rnd() < 0.28) { g.fillStyle = rnd() < 0.7 ? '#ffd9a0' : '#cfe0ff'; g.fillRect(x * 32 + 3.5, y * 48 + 12, 18, 21); } });
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 16; x++) { const d = rnd(); if (d < 0.42) { g.fillStyle = d < 0.2 ? '#ffcf8a' : d < 0.3 ? '#ffe7c2' : d < 0.36 ? '#bcd6ff' : '#8a6a44'; g.fillRect(x * 32 + 3.5, y * 48 + 12, 18, 22); } } });
 const groundMat = new THREE.MeshStandardMaterial({ roughness: 1, map: groundTex });
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(span * 4, span * 4), groundMat);
 ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; ground.position.set(cx, 0, -cy); scene.add(ground);
@@ -451,21 +525,26 @@ const wallAt = (x, y) => { let best = 1e9, nx = 0, ny = 0;
     if (d < best) { best = d; nx = eu * c - ew * s; ny = eu * s + ew * c; } }
   return [best, nx / (best || 1), ny / (best || 1)]; };
 // each place gets a paved yard round its pads and a drive to the nearest street it can reach without crossing a building
+const OPC = ['#2f7bd6', '#d9822b', '#2f9e68', '#8a5bd0', '#c2437a'], HUBOPS = [...new Set((D.places || []).filter(p => p.kind === 'hub').map(p => p.operator))].sort();
+const placeColor = (pl) => pl.kind === 'hub' ? OPC[Math.max(0, HUBOPS.indexOf(pl.operator)) % OPC.length] : pl.kind === 'hospital' ? '#d0312b' : '#5d6b78';
+// a hub is a large hexagon in its operator's colour, the hospital a circle with a red cross, a drop-off a plain circle
 const YARDS = (D.places || []).map(pl => {
   const x = pl.pads.reduce((a, q) => a + q[0], 0) / pl.pads.length, y = pl.pads.reduce((a, q) => a + q[1], 0) / pl.pads.length;
-  const R = Math.min(Math.max(...pl.pads.map(q => Math.hypot(q[0] - x, q[1] - y))) + (pl.kind === 'hub' ? 8.5 : 7.5), Math.max(4, wallAt(x, y)[0] - 1));
+  const R = Math.min(Math.max(...pl.pads.map(q => Math.hypot(q[0] - x, q[1] - y))) + (pl.kind === 'hub' ? 9 : pl.kind === 'hospital' ? 8.5 : 8), Math.max(4, wallAt(x, y)[0] - 1));
   let drive = null;
   if (OSM) { const ends = []; for (const q of OSM.roads) if (q.w >= 4 && q.k !== 'motorway') for (let k = 1; k < q.p.length; k++) { const a = q.p[k - 1], b = q.p[k], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 4)); for (let i = 0; i <= n; i++) ends.push([a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n]); }
     ends.sort((a, b) => Math.hypot(a[0] - x, a[1] - y) - Math.hypot(b[0] - x, b[1] - y));
     for (const e of ends.slice(0, 400)) { const L = Math.hypot(e[0] - x, e[1] - y), n = Math.ceil(L / 1.5); let ok = true; for (let i = 0; i <= n && ok; i++) ok = wallAt(x + (e[0] - x) * i / n, y + (e[1] - y) * i / n)[0] > 2; if (ok) { drive = [[x, y], e]; break; } } }
-  return { pl, x, y, R, drive };
+  const outline = (k = 1) => pl.kind === 'hub' ? Array.from({ length: 6 }, (_, i) => [x + k * R * Math.cos(i * Math.PI / 3 + Math.PI / 6), y + k * R * Math.sin(i * Math.PI / 3 + Math.PI / 6)])
+    : Array.from({ length: 40 }, (_, i) => [x + k * R * Math.cos(i * Math.PI / 20), y + k * R * Math.sin(i * Math.PI / 20)]);
+  return { pl, x, y, R, drive, outline };
 });
 const inYard = (x, y, m) => YARDS.some(v => Math.hypot(v.x - x, v.y - y) < v.R + m || (v.drive && segD(x, y, v.drive[0], v.drive[1]) < 2.4 + m));
 const AREAS = OSM ? OSM.areas.filter(a => a.k !== 'water' || !nearPad(a.p)) : [];      // (a pond at a pad is left out)
 const PX = 4, gc = document.createElement('canvas'); gc.width = Math.ceil(PX * (bx1 - bx0)); gc.height = Math.ceil(PX * (by1 - by0));
 const groundMapTex = new THREE.CanvasTexture(gc); groundMapTex.colorSpace = THREE.SRGBColorSpace; groundMapTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
 function drawGround(night) {
-  const C = night ? { ground: '#18211f', patch: ['#1b2622', '#151d1b'], plaza: '#252c31', yard: '#3b444d', street: '#333b45', kerb: '#5d6772', pave: '#454e58', dark: 'rgba(0,0,0,.16)', lane: 'rgba(225,230,236,.75)', water: '#14283a', green: '#1c3024', parking: '#2d343c' }
+  const C = night ? { ground: '#1d2b24', patch: ['#22322a', '#18241f', '#203029'], plaza: '#34393d', yard: '#4a4f57', street: '#23262c', kerb: '#6f7780', pave: '#474b50', dark: 'rgba(0,0,0,.10)', lane: 'rgba(255,226,160,.85)', water: '#12324a', green: '#234030', parking: '#2b2f36' }
     : { ground: '#9fb77f', patch: ['#a9bf87', '#93ad74', '#b2c48f'], plaza: '#cbc6b8', yard: '#bdb9b0', street: '#62686f', kerb: '#e4e2da', pave: '#b9b5ab', dark: 'rgba(40,40,30,.10)', lane: 'rgba(250,250,245,.9)', water: '#6ba6c9', green: '#83a862', parking: '#8f9295' };
   const g = gc.getContext('2d'); g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, gc.width, gc.height);
   if (OSM) { g.fillStyle = C.ground; g.fillRect(0, 0, gc.width, gc.height); }            // (opaque: no dark fringes at the edges)
@@ -491,8 +570,17 @@ function drawGround(night) {
   for (const q of R) if (cars(q)) { line(q.p); g.strokeStyle = C.street; g.lineWidth = q.w; g.stroke(); }
   for (const v of YARDS) {
     if (v.drive) { line(v.drive); g.strokeStyle = C.yard; g.lineWidth = 4.2; g.stroke(); }
-    g.beginPath(); g.arc(v.x, v.y, v.R, 0, 7); g.fillStyle = C.yard; g.fill(); g.strokeStyle = C.kerb; g.lineWidth = 0.7; g.stroke();
-    g.strokeStyle = v.pl.kind === 'hospital' ? '#c8463f' : v.pl.kind === 'hub' ? '#3f7fd0' : C.lane; g.lineWidth = 0.3; g.beginPath(); g.arc(v.x, v.y, v.R - 1, 0, 7); g.stroke();
+    const c = placeColor(v.pl), hub = v.pl.kind === 'hub', hosp = v.pl.kind === 'hospital', shape = (k) => { line(v.outline(k)); g.closePath(); };
+    shape(1); g.fillStyle = C.yard; g.fill(); g.strokeStyle = C.kerb; g.lineWidth = 0.8; g.stroke();
+    if (hub) {                                                      // filled in the operator's colour, a thick border and a lighter heart
+      g.globalAlpha = night ? 0.55 : 0.5; shape(0.96); g.fillStyle = c; g.fill(); g.globalAlpha = 1;
+      shape(0.93); g.strokeStyle = c; g.lineWidth = 1.5; g.stroke(); shape(0.8); g.strokeStyle = 'rgba(255,255,255,.85)'; g.lineWidth = 0.35; g.stroke();
+    } else if (hosp) {
+      shape(0.93); g.fillStyle = night ? '#6b6f75' : '#f4f4f2'; g.fill(); g.strokeStyle = c; g.lineWidth = 1; g.stroke();
+      g.globalAlpha = 0.9; g.fillStyle = c; g.fillRect(v.x - v.R * 0.17, v.y - v.R * 0.62, v.R * 0.34, v.R * 1.24); g.fillRect(v.x - v.R * 0.62, v.y - v.R * 0.17, v.R * 1.24, v.R * 0.34); g.globalAlpha = 1;
+    } else {                                                        // a drop-off: a plain circle with a white ring and a fainter one inside
+      shape(0.9); g.strokeStyle = C.lane; g.lineWidth = 0.6; g.stroke(); g.globalAlpha = 0.45; shape(0.62); g.lineWidth = 0.35; g.stroke(); g.globalAlpha = 1;
+    }
   }
   // zebra crossings where a street meets another
   g.lineCap = 'butt';
@@ -514,8 +602,17 @@ function drawGround(night) {
       }
     }
   }
+  if (night) {
+    g.globalCompositeOperation = 'lighter';
+    const pool = (x, y, rad, c, k) => { const q = g.createRadialGradient(x, y, 0, x, y, rad); q.addColorStop(0, `rgba(${c},${k})`); q.addColorStop(0.45, `rgba(${c},${k * 0.4})`); q.addColorStop(1, `rgba(${c},0)`); g.fillStyle = q; g.fillRect(x - rad, y - rad, 2 * rad, 2 * rad); };
+    for (const o of LAMPS) pool(o[0] + Math.cos(o[2]), o[1] + Math.sin(o[2]), 10, '255,176,92', 0.55);
+    for (const v of YARDS) { const c = new THREE.Color(placeColor(v.pl)).convertLinearToSRGB(), drop = v.pl.kind !== 'hub' && v.pl.kind !== 'hospital'; pool(v.x, v.y, v.R * (drop ? 1.5 : 1.8), drop ? '255,214,160' : [c.r, c.g, c.b].map(q => Math.round(255 * q)).join(), drop ? 0.22 : 0.4); }
+    for (const [w, k] of [[6, 0.05], [3.5, 0.07], [1.6, 0.1]]) foot(w, `rgba(255,190,120,${k})`);
+    g.globalCompositeOperation = 'source-over';
+  }
   groundMapTex.needsUpdate = true;
 }
+const LAMPS = [], GLOWS = [], BEAMS = [];
 const streetMat = new THREE.MeshStandardMaterial({ map: groundMapTex, roughness: 1, transparent: !OSM, depthWrite: !!OSM, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
 const streets = new THREE.Mesh(new THREE.PlaneGeometry(bx1 - bx0, by1 - by0), streetMat); streets.receiveShadow = true;
 streets.rotation.x = -Math.PI / 2; streets.position.set(cx, 0.009, -cy); scene.add(streets);
@@ -538,12 +635,11 @@ for (const [bi, b] of BL.entries()) {
   const g = new THREE.BoxGeometry(2 * b.h[0], b.z, 2 * b.h[1]);
   const tex = (glass ? glassTex : wallTex).clone(); tex.needsUpdate = true; tex.repeat.set(Math.max(1, Math.round((b.h[0] + b.h[1]) / 4)), Math.max(1, Math.round(b.z / 3)));
   const lit = litTex.clone(); lit.needsUpdate = true; lit.repeat.set(tex.repeat.x / 8, tex.repeat.y / 8); lit.offset.set(Math.floor(rnd() * 8) / 8, Math.floor(rnd() * 8) / 8);
-  const wall = new THREE.MeshStandardMaterial({ roughness: glass ? 0.35 : 0.85, metalness: glass ? 0.1 : 0, map: tex, emissiveMap: lit, emissive: '#000000' }); wall.userData.tint = glass ? '#ffffff' : look.tint; wallMats.push(wall);
+  const wall = new THREE.MeshStandardMaterial({ roughness: glass ? 0.35 : 0.85, metalness: glass ? 0.1 : 0, map: tex, emissiveMap: lit, emissive: '#000000' }); wall.userData.glass = glass; wall.userData.tint = glass ? '#ffffff' : look.tint; wallMats.push(wall);
   const ix = Array.from(g.index.array); g.setIndex([...ix.slice(0, 12), ...ix.slice(24, 36), ...ix.slice(12, 18)]); g.clearGroups(); g.addGroup(0, 24, 0); g.addGroup(24, 6, 1);      // four walls, then the roof: two draws, not six
   const m = new THREE.Mesh(g, [wall, roofM]); m.castShadow = m.receiveShadow = true;
   m.position.set(b.c[0], b.z / 2, -b.c[1]); m.rotation.y = b.yaw; scene.add(m);
   m.updateMatrix(); m.matrixAutoUpdate = false;
-  edgePts.push(...new THREE.EdgesGeometry(new THREE.BoxGeometry(2 * b.h[0], b.z, 2 * b.h[1])).applyMatrix4(m.matrix).attributes.position.array);
   // the ground floor's shop fronts, and a low wall round the roof (not where the next box of the building goes on)
   const c = Math.cos(b.yaw), n = Math.sin(b.yaw), W = (u, w) => [b.c[0] + u * c - w * n, b.c[1] + u * n + w * c];
   for (const [du, dw, half, len] of [[1, 0, b.h[0], b.h[1]], [-1, 0, b.h[0], b.h[1]], [0, 1, b.h[1], b.h[0]], [0, -1, b.h[1], b.h[0]]]) {
@@ -557,7 +653,6 @@ const bandGeo = new THREE.BufferGeometry(); bandGeo.setAttribute('position', new
 const bandMat = new THREE.MeshStandardMaterial({ map: shopTex, roughness: 0.7, side: THREE.DoubleSide, emissiveMap: shopTex, emissive: '#000000' }), band = new THREE.Mesh(bandGeo, bandMat); band.receiveShadow = true; scene.add(band);
 const paraMat = new THREE.MeshStandardMaterial({ roughness: 0.9 }), para = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.7, 0.36), paraMat, Math.max(1, parapets.length));
 parapets.forEach((q, i) => para.setMatrixAt(i, new THREE.Matrix4().compose(new THREE.Vector3(q[0], q[1] + 0.3, -q[2]), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), q[3]), new THREE.Vector3(q[4] + 0.02, 1, 1)))); para.frustumCulled = false; para.receiveShadow = true; scene.add(para);
-const edgeGeo = new THREE.BufferGeometry(); edgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgePts, 3)); scene.add(new THREE.LineSegments(edgeGeo, eMat));      // every building's edges in one draw
 
 // decoration only (the simulation has none of it): plant boxes on the roofs; low trees, street lamps and parked cars, all under 4 m and away from pads
 const roofMat = new THREE.MeshStandardMaterial({ roughness: 0.9 }), leafMat = new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true }), trunkMat = new THREE.MeshStandardMaterial({ roughness: 1, color: '#6b5440' });
@@ -595,12 +690,28 @@ const carMat = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.15
           out.push([x, y, Math.atan2(-ux * sg, uy * sg)]); }
         d -= L; } }
     return out; };
+  const beam = canvasTex(4, 128, (g, w, h) => { const q = g.createLinearGradient(0, 0, 0, h); q.addColorStop(0, 'rgba(255,255,255,0)'); q.addColorStop(1, 'rgba(255,255,255,.9)'); g.fillStyle = q; g.fillRect(0, 0, w, h); });
+  for (const v of YARDS) if (v.pl.kind === 'hub' || v.pl.kind === 'hospital') {
+    const H = v.pl.kind === 'hub' ? 34 : 24, geo = new THREE.CylinderGeometry(v.R * 0.93, v.R * 0.93, H, v.pl.kind === 'hub' ? 6 : 40, 1, true); if (v.pl.kind === 'hub') geo.rotateY(Math.PI / 3);
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: beam, color: placeColor(v.pl), transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false, fog: false })); m.position.set(v.x, H / 2, -v.y); scene.add(m); BEAMS.push(m);
+  }
   const unit = new THREE.BoxGeometry(1, 1, 1), kerb = (q) => q.w >= 4 && q.k !== 'motorway' && q.k !== 'trunk';
   const lampsAt = OSM ? along(q => q.w >= 4, 22, 1.1, 0, 0.6, 1, 420) : scatter(40000, 320, 2.4, 3.2, 15, 8);
   const carsAt = OSM ? [...along(q => kerb(q) && q.w >= 6, 12, -1.15, 1, 1.2, 3, 700), ...along(q => kerb(q) && q.w < 6, 18, -1.0, -1, 1.2, 3, 160)] : scatter(14000, 170, 4.2, 5.2, 8, 9);
   if (OSM) { const bush = scatter(26000, 520, 7.0, 7.7, 2.2, 10).filter(o => roadGap(o[0], o[1]) > 2 && !inYard(o[0], o[1], 1));      // hedges at the edge of the plots
     inst(new THREE.IcosahedronGeometry(0.75, 0), leafMat, bush.map(o => put(o, 0, 0.45, 0, 0.9, 0.75, 1.5)), false); }
   if (OSM) trees.push(...along(q => kerb(q) && q.w >= 6, 12, 2.6, 0, 2.5, 2, 260).map(o => [o[0], o[1], 0.75 + rnd() * 0.45]));
+  LAMPS.push(...lampsAt);
+  { const tex = canvasTex(64, 64, (g) => { const q = g.createRadialGradient(32, 32, 0, 32, 32, 32); q.addColorStop(0, 'rgba(255,255,255,1)'); q.addColorStop(0.25, 'rgba(255,255,255,.45)'); q.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = q; g.fillRect(0, 0, 64, 64); });
+    const glow = (list, color, size, op = 0.9) => { if (!list.length) return; const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(list.flat(), 3));
+      const m = new THREE.Points(g, new THREE.PointsMaterial({ map: tex, color, size, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true })); m.frustumCulled = false; m.visible = false; scene.add(m); GLOWS.push(m); };
+    const at3 = (o, dx, y, dz) => { const c = Math.cos(o[2]), n = Math.sin(o[2]); return [o[0] + dx * c - dz * n, y, -(o[1] + dx * n + dz * c)]; };
+    glow(lampsAt.map(o => at3(o, 1, 3.4, 0)), '#ffc37a', 4.2);
+    glow(carsAt.flatMap(o => [at3(o, 0.6, 0.6, 2.1), at3(o, -0.6, 0.6, 2.1)]), '#fff2d0', 1.5);
+    glow(carsAt.flatMap(o => [at3(o, 0.6, 0.6, -2.1), at3(o, -0.6, 0.6, -2.1)]), '#ff4a3a', 1.2);
+    const rim = (want) => YARDS.filter(want).flatMap(v => { const o = v.outline(0.95), n = v.pl.kind === 'hub' ? 4 : 1; return o.filter((_, i) => v.pl.kind === 'hub' || i % (v.pl.kind === 'hospital' ? 2 : 3) === 0).flatMap((a, i, L) => Array.from({ length: n }, (_, k) => { const b = L[(i + 1) % L.length], u = k / n; return [a[0] + (b[0] - a[0]) * u, 0.3, -(a[1] + (b[1] - a[1]) * u)]; })); });
+    HUBOPS.forEach((o, k) => glow(rim(v => v.pl.kind === 'hub' && v.pl.operator === o), OPC[k % OPC.length], 3.4)); glow(rim(v => v.pl.kind === 'hospital'), '#ff6a5f', 2.4); glow(rim(v => v.pl.kind !== 'hub' && v.pl.kind !== 'hospital'), '#ffd9a0', 1.4);
+    glow(BL.filter(b => b.z >= 18).map(b => [b.c[0], b.z + 1.2, -b.c[1]]), '#ff5a4a', 5); }
   inst(unit, lampPostMat, lampsAt.flatMap(o => [put(o, 0, 1.75, 0, 0.1, 3.5, 0.1), put(o, 0.5, 3.5, 0, 1.1, 0.08, 0.08)]), false);
   inst(unit, lampHeadMat, lampsAt.map(o => put(o, 1, 3.44, 0, 0.45, 0.1, 0.25)), false);
   const PAINT = ['#f2f2f0', '#c9ccd0', '#3b4047', '#8c2f2b', '#2d4f7c', '#d8c9a8', '#6e7c74'].map(x => new THREE.Color(x));
@@ -615,7 +726,7 @@ const carMat = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.15
     const pick = (R, not) => { let b = null; for (let k = 0; k < 16; k++) { const a = k * Math.PI / 8; if (not != null && Math.abs(Math.atan2(Math.sin(a - not), Math.cos(a - not))) < 0.8) continue; const f = room(a, R); if (!b || f > b[1]) b = [a, f]; } return b; };
     const [aB, fB] = pick(v.R + 1.5), [aS] = pick(v.R - 0.2, aB);
     const at = (a, R) => { const g = new THREE.Group(); g.position.set(v.x + R * Math.cos(a), 0, -(v.y + R * Math.sin(a))); g.rotation.y = a - Math.PI / 2; scene.add(g); return g; };      // local -z... +z faces the pads
-    const col = pl.kind === 'hospital' ? '#b3261e' : pl.kind === 'hub' ? '#1d5fbf' : '#37474f';
+    const col = pl.kind === 'hospital' ? '#b3261e' : pl.kind === 'hub' ? placeColor(pl) : '#37474f', tone = flat(placeColor(pl));
     const tex = canvasTex(512, 128, (g, w, h) => { g.fillStyle = col; g.fillRect(0, 0, w, h); g.strokeStyle = '#fff'; g.lineWidth = 6; g.strokeRect(8, 8, w - 16, h - 16); g.fillStyle = '#fff'; g.font = '600 62px "Segoe UI", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText((pl.kind === 'hospital' ? '+ ' : '') + pl.name, w / 2, h / 2 + 4, w - 40); });
     const face = new THREE.MeshBasicMaterial({ map: tex }), side = flat(col), sg = at(aS, v.R - 0.2);
     const board = new THREE.Mesh(new THREE.BoxGeometry(6, 1.5, 0.12), [side, side, side, side, face, face]); board.position.y = 2.6; board.castShadow = true; sg.add(board);
@@ -623,9 +734,9 @@ const carMat = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.15
     if (fB < 1.5) continue;                                                       // no room beside it
     const g = at(aB, v.R + 1.5), big = fB > 5;
     if (pl.kind === 'hub') {                                                      // a depot: shed, roller doors, parcels, two vans
-      const L = big ? 11 : 7; box(g, 0, 1.9, -1, L, 3.6, 4.6, white); box(g, 0, 3.75, -1, L + 0.6, 0.3, 5.2, blue); for (let k = -1; k <= 1; k++) box(g, k * L / 3.2, 1.3, 1.34, L / 4, 2.5, 0.08, steel, false);
+      const L = big ? 11 : 7; box(g, 0, 1.9, -1, L, 3.6, 4.6, white); box(g, 0, 3.75, -1, L + 0.6, 0.3, 5.2, tone); for (let k = -1; k <= 1; k++) box(g, k * L / 3.2, 1.3, 1.34, L / 4, 2.5, 0.08, steel, false);
       for (let k = 0; k < 7; k++) box(g, -L / 2 + 0.6 + (k % 4) * 0.75, 0.3 + (k > 3 ? 0.58 : 0), 2.2, 0.6, 0.56, 0.6, wood);
-      for (const x of [L / 2 + 1.7]) { box(g, x, 1.15, -0.4, 1.9, 1.7, 4.2, white); box(g, x, 0.95, 2.1, 1.8, 1.1, 1, blue); box(g, x, 0.3, 1.2, 1.95, 0.6, 0.7, cabinMat, false); box(g, x, 0.3, -1.6, 1.95, 0.6, 0.7, cabinMat, false); }
+      for (const x of [L / 2 + 1.7]) { box(g, x, 1.15, -0.4, 1.9, 1.7, 4.2, white); box(g, x, 0.95, 2.1, 1.8, 1.1, 1, tone); box(g, x, 0.3, 1.2, 1.95, 0.6, 0.7, cabinMat, false); box(g, x, 0.3, -1.6, 1.95, 0.6, 0.7, cabinMat, false); }
     } else if (pl.kind === 'hospital') {                                          // an entrance with a canopy and an ambulance
       const L = big ? 10 : 6; box(g, 0, 1.9, -1, L, 3.7, 4, white); box(g, 0, 1.5, 1.03, L * 0.5, 2.6, 0.06, glassM, false); box(g, 0, 3.1, 2, L * 0.6, 0.25, 2.2, red); for (const x of [-L * 0.26, L * 0.26]) box(g, x, 1.5, 2.9, 0.16, 3, 0.16, steel);
       box(g, 0, 3.85, -1, 1.9, 0.12, 0.6, red, false); box(g, 0, 3.86, -1, 0.6, 0.12, 1.9, red, false);
@@ -663,16 +774,17 @@ for (const d of LIVE ? [] : DR) for (const k of ['start', 'goal']) {
   pads.set(key, kind);
 }
 for (const [key, kind] of pads) {
-  const [x, y] = key.split(',').map(Number), r = (kind === 'depot' ? 1.15 : 0.75) * PS;
-  const pad = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.2, 40), padMat);
+  const [x, y] = key.split(',').map(Number), r = (kind === 'depot' ? 1.15 : 1.0) * PS;
+  const bay = kind === 'drop', pad = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.2, 40), padMat);
   pad.position.set(x, 0.12, -y); pad.receiveShadow = true; scene.add(pad);
   const ring = new THREE.Mesh(new THREE.RingGeometry(r * 0.78, r * 0.86, 40), kind === 'hospital' ? dangerMat : markMat);
   ring.rotation.x = -Math.PI / 2; ring.position.set(x, 0.26, -y); scene.add(ring);
-  const bars = kind === 'hospital' ? [[0.16, 0.7, 0], [0.7, 0.16, 0]] : [[0.1, 0.62, -0.2], [0.1, 0.62, 0.2], [0.42, 0.1, 0]];
+  const bars = kind === 'hospital' ? [[0.16, 0.7, 0], [0.7, 0.16, 0]] : bay ? [[0.16, 0.75, 0]] : [[0.1, 0.62, -0.2], [0.1, 0.62, 0.2], [0.42, 0.1, 0]];
   for (const [w, h, dx] of bars) {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(w * r, h * r), kind === 'hospital' ? dangerMat : markMat);
     m.rotation.x = -Math.PI / 2; m.position.set(x + dx * r, 0.28, -y); scene.add(m);
   }
+  if (bay) { const tip = new THREE.Mesh(new THREE.CircleGeometry(r * 0.34, 3), markMat); tip.rotation.set(-Math.PI / 2, 0, -Math.PI / 2); tip.position.set(x, 0.28, -y + r * 0.34); scene.add(tip); }
 }
 
 // booked airspace: one instanced hexagon prism per (cell, layer), shown while booked near now
@@ -690,6 +802,7 @@ const routeOf = (id, t) => { const v = D.routes[id] || []; let r = v[0]; for (co
 const routeMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.85 });
 const routeEm = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.9 });
 const routeIn = new THREE.LineDashedMaterial({ dashSize: 0.6 * SC, gapSize: 0.5 * SC, transparent: true, opacity: 0.7 });
+const routeOp = {}, routeFor = (d) => { const c = opColor(d.operator, d.kind); return routeOp[c] || (routeOp[c] = new THREE.LineBasicMaterial({ color: c, transparent: true, opacity: 0.95 })); };
 const routes = DR.map(() => { const l = new THREE.Line(new THREE.BufferGeometry(), routeMat); l.visible = false; scene.add(l); return { line: l, ver: null }; });
 
 // drones: a small quadcopter, drawn ~5x real size so it reads from far (near real size when the camera is close)
@@ -706,6 +819,7 @@ const birdMat = new THREE.MeshStandardMaterial({ roughness: 0.45, color: '#e5322
 const birdTrailMat = new THREE.LineBasicMaterial({ color: '#e5322d', transparent: true, opacity: 0.7 });
 const ringMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.9, side: THREE.DoubleSide });
 const selMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+const haloTex = canvasTex(64, 64, (g) => { const q = g.createRadialGradient(32, 32, 0, 32, 32, 32); q.addColorStop(0, 'rgba(255,255,255,.9)'); q.addColorStop(0.3, 'rgba(255,255,255,.35)'); q.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = q; g.fillRect(0, 0, 64, 64); });
 const drones = DR.map((d, i) => {
   const s = d.kind === 'emergency' ? 1.35 : 1, g = new THREE.Group(), mat = droneMat[d.kind];
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.17 * s, 0.22 * s, 0.11 * s, 8), mat); body.castShadow = true; g.add(body);
@@ -723,6 +837,7 @@ const drones = DR.map((d, i) => {
     const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.05 * s, 0.05 * s, 0.09 * s, 10), hullMat); motor.position.set(0.34 * s * x, 0.04 * s, 0.34 * s * z); g.add(motor);
     const lamp = new THREE.Mesh(lampGeo, x > 0 ? lampG : lampR); lamp.position.set(0.34 * s * x, -0.02 * s, 0.34 * s * z); g.add(lamp);
   }
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloTex, color: '#ffffff', transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false })); halo.scale.setScalar(3.2); halo.position.y = -0.1; halo.visible = false; g.add(halo);
   const ring = new THREE.Mesh(new THREE.RingGeometry(0.75, 0.84, 48), ringMat); ring.rotation.x = -Math.PI / 2; ring.visible = false; g.add(ring);
   const sel = new THREE.Mesh(new THREE.RingGeometry(0.62, 0.68, 48), selMat); sel.rotation.x = -Math.PI / 2; sel.visible = false; g.add(sel);
   const hit = new THREE.Mesh(new THREE.SphereGeometry(1.3, 12, 8), new THREE.MeshBasicMaterial({ visible: false }));
@@ -730,7 +845,7 @@ const drones = DR.map((d, i) => {
   body.userData.idx = i; g.scale.setScalar(DS); g.visible = false; scene.add(g);
   const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.35 }));
   scene.add(trail);
-  return { g, body, hit, rotors, ring, sel, trail, parts, mat, guard: false, k: DS };
+  return { g, halo, body, hit, rotors, ring, sel, trail, parts, mat, guard: false, k: DS };
 });
 
 // a delivered parcel stays on its pad (recordings only: a live drone's slot is used again)
@@ -766,8 +881,8 @@ function paint() {
   scene.fog = new THREE.Fog(css('--sky-low'), 150 * SC, 420 * SC);
   roofMat.color.set(night ? '#3a3f46' : '#c9c6bf'); leafMat.color.set(css('--tree')); hullMat.color.set(night ? '#8b929b' : '#2f343a');
   groundMat.color.set(css('--scene-ground')); plotMat.color.set(css('--scene-ground')).offsetHSL(0, 0, theme === 'dark' ? 0.02 : 0.015);
-  bMat.color.set(css('--scene-building')); roofMats.forEach(m => m.color.set(night ? '#4b545f' : m.userData.tint)); paraMat.color.set(night ? '#59636f' : '#ece8de'); bandMat.color.set(night ? '#6a737d' : '#ffffff'); bandMat.emissive.set(night ? '#4a3a22' : '#000000'); eMat.color.set(css('--scene-edge'));
-  wallMats.forEach(m => { m.color.set(css('--scene-building')).multiply(new THREE.Color(m.userData.tint)); m.emissive.set(night ? '#ffffff' : '#000000'); m.emissiveIntensity = 0.75; });
+  bMat.color.set(css('--scene-building')); roofMats.forEach(m => m.color.set(m.userData.tint).multiplyScalar(night ? 0.2 : 1)); paraMat.color.set(night ? '#545b66' : '#ece8de'); bandMat.color.set(night ? '#8a8078' : '#ffffff'); bandMat.emissive.set(night ? '#c98a45' : '#000000'); bandMat.emissiveIntensity = 0.55; stars.visible = night; GLOWS.forEach(m => { m.visible = night; }); BEAMS.forEach(m => { m.material.opacity = night ? 0.45 : 0.34; }); eMat.color.set(css('--scene-edge'));
+  wallMats.forEach(m => { m.color.set(css('--scene-building')).multiply(new THREE.Color(m.userData.tint)); if (night && m.userData.glass) m.color.set('#3d5f80'); m.emissive.set(night ? '#ffffff' : '#000000'); m.emissiveIntensity = m.userData.glass ? 1.15 : 1.0; });
   drawGround(night); lampHeadMat.emissiveIntensity = night ? 1.6 : 0; carMat.color.set(night ? '#7f8790' : '#ffffff');
   padMat.color.set(css('--scene-pad')); markMat.color.set(css('--scene-mark')); dangerMat.color.set(css('--danger'));
   hexMat.color.set(css('--data')); hexMat.opacity = theme === 'dark' ? 0.2 : 0.14;
@@ -776,7 +891,8 @@ function paint() {
   rotorMat.color.set(theme === 'dark' ? '#9a9a9a' : '#bdbdbd'); ringMat.color.set(css('--danger')); selMat.color.set(css('--data'));
   zoneMat.color.set(css('--danger')); zoneEdge.color.set(css('--danger'));
   drones.forEach((d, i) => d.trail.material.color.set(DR[i].kind === 'emergency' ? css('--danger') : css('--ink')));
-  hemi.intensity = night ? 2.1 : 1.5; sun.intensity = night ? 1.8 : 3.1; hemi.color.set(night ? '#9fb4d6' : '#dcebff'); sun.color.set(night ? '#b9cdf2' : '#ffe6bd');
+  hemi.intensity = night ? 1.35 : 1.5; sun.intensity = night ? 1.35 : 3.1; hemi.color.set(night ? '#8296c4' : '#dcebff'); sun.color.set(night ? '#9fb6ea' : '#ffe6bd');
+  streetMat.emissiveMap = groundMapTex; streetMat.emissive.set(night ? '#ffffff' : '#000000'); streetMat.emissiveIntensity = 0.42; streetMat.needsUpdate = true;
   hemi.groundColor.set(night ? '#11151b' : '#b9c2a6');
 }
 
@@ -806,11 +922,12 @@ const nodeName = (o) => !o || o === 'emergency' ? 'Emergency services' : o;
 const hubOf = (o) => (PLACES.find(p => p.kind === 'hub' && p.operator === o) || {}).name;
 const ops = LIVE ? D.live.operators.filter(hubOf) : [...new Set(DR.filter(d => d.kind === 'flight').map(d => d.operator))];
 const hubX = (o) => { const s = DR.filter(d => d.kind === 'flight' && d.operator === o).map(d => d.start[0]); return s.reduce((a, b) => a + b, 0) / s.length; };
-ops.sort((a, b) => hubX(a) - hubX(b));
+ops.sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }) || hubX(a) - hubX(b));
 const NODES = ops.map((o, k) => ({ id: o, name: o, role: hubOf(o) ? `delivery operator, ${hubOf(o)}`
-  : ops.length === 2 ? `delivery operator, ${k ? 'east' : 'west'} hub` : 'delivery operator' }));
+  : ops.length === 2 ? `delivery operator, ${hubX(o) > hubX(ops[1 - k]) ? 'east' : 'west'} hub` : 'delivery operator' }));
 if (LIVE) for (const o of D.live.operators) { if (!hubOf(o)) NODES.push({ id: o, name: o, role: 'files emergency flights' }); }
 else if (emIdx >= 0) NODES.push({ id: DR[emIdx].operator, name: nodeName(DR[emIdx].operator), role: 'files emergency flights' });
+const opColor = (o, kind) => kind === 'intruder' ? '#6b7280' : kind === 'emergency' || !NODES.some(n => n.id === o && n.role.startsWith('delivery')) ? '#c4242a' : OPC[[...NODES].filter(n => n.role.startsWith('delivery')).map(n => n.id).sort().indexOf(o) % OPC.length];
 const gaveWay = D.events.filter(e => e.type === 'replan' && e.status === 'approved' && (e.why || '').startsWith('displaced by'));
 const emNode = emIdx >= 0 ? nodeName(DR[emIdx].operator) : '';
 const wayText = gaveWay.length
@@ -867,16 +984,38 @@ function setCam(c) {
   $('follow').hidden = c !== 'follow';
   if (c === 'follow' && selected < 0) select(emIdx >= 0 ? emIdx : 0);
 }
-function select(i) {
-  selected = i; drones.forEach((d, k) => d.sel.visible = k === i); $('selbox').hidden = i < 0;
+let selId = null;
+function select(i, id) {                          // i: the drone's slot (-1: none); id: a flight that is no longer flying (live)
+  selected = i; selId = id || (i >= 0 ? DR[i].id : null); drones.forEach((d, k) => d.sel.visible = k === i);
   if (i >= 0) $('follow').value = String(i);
-  lastFlights = '';
+  if (see && (i < 0 || statusAt(i, t) !== 1)) setSee(false);
+  $('insp').hidden = selId == null; lastFlights = ''; lastSel = ''; updateInspector();
 }
 const kindWord = (d) => d.kind === 'emergency' ? `emergency, ${nodeName(d.operator)}` : d.kind === 'intruder' ? 'intruder' : `delivery, ${d.operator}`;
 $('follow').innerHTML = DR.map((d, i) => `<option value="${i}">Follow ${d.id} (${route(d) || kindWord(d)})</option>`).join('');
 $('follow').onchange = (e) => select(+e.target.value);
 
-$('alerts').onclick = $('flights').onclick = (e) => { const b = e.target.closest('[data-fl]'); if (!b) return; select(+b.dataset.fl); setCam('follow'); lastFlights = ''; };
+$('alerts').onclick = $('flights').onclick = (e) => {
+  const b = e.target.closest('[data-fl]'), g = e.target.closest('[data-gone]');
+  if (b) { select(+b.dataset.fl); if (statusAt(+b.dataset.fl, t) < 2) setCam('follow'); } else if (g) select(-1, g.dataset.gone);
+};
+// the flights list: what is typed, the chips, and which groups are folded
+let ffind = '', fshow = 'all'; const opened = new Set(); // groups start folded
+$('fq').oninput = (e) => { ffind = e.target.value.trim().toLowerCase(); lastFlights = ''; };
+document.querySelectorAll('[data-ff]').forEach(b => b.onclick = () => { fshow = b.dataset.ff; document.querySelectorAll('[data-ff]').forEach(x => x.setAttribute('aria-pressed', String(x === b))); lastFlights = ''; });
+$('flights').addEventListener('toggle', (e) => { const k = e.target.dataset && e.target.dataset.g; if (k && !ffind) opened[e.target.open ? 'add' : 'delete'](k); }, true);
+// the panel's tabs
+let tab = 'overview';
+function showTab(x) {
+  tab = x; document.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === x)));
+  document.querySelectorAll('.side > [data-in]').forEach(el => el.toggleAttribute('data-off', !el.dataset.in.split(' ').includes(x)));
+  document.querySelector('.side').scrollTop = 0;
+}
+document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+showTab('overview');
+$('inX').onclick = () => { select(-1); if (cam === 'follow') setCam('director'); };
+$('inSee').onclick = () => setSee(!see);
+$('inFollow').onclick = () => { if (selected >= 0) setCam('follow'); };
 $('play').onclick = () => setPlaying(!playing);
 $('speed').onclick = () => { speed = speeds[(speeds.indexOf(speed) + 1) % speeds.length]; $('speed').textContent = `${speed}\u00d7`; };
 $('time').oninput = (e) => { seek(+e.target.value); };
@@ -922,7 +1061,7 @@ canvas.addEventListener('click', (e) => {
 const look = new THREE.Vector3(acx, 2, -acy), wantPos = new THREE.Vector3(), wantLook = new THREE.Vector3();
 let hexClock = -1, lastFeed = null, lastSel = '', lastCounts = '', lastNodes = '', lastFlights = '', lastAlerts = '';
 const labels = $('labels'), tagEls = DR.map(() => { const el = document.createElement('div'); el.className = 'tag'; el.hidden = true; labels.appendChild(el); return el; });
-const placeEls = PLACES.map(p => { const el = document.createElement('div'); el.className = `place ${p.kind}`; el.textContent = p.name;
+const placeEls = PLACES.map(p => { const el = document.createElement('div'); el.className = `place ${p.kind}`; el.style.setProperty('--op', placeColor(p)); el.innerHTML = `${p.kind === 'hub' || p.kind === 'hospital' ? `<i>${p.kind === 'hub' ? '\u2b22' : p.kind === 'hospital' ? '\u271a' : ''}</i>` : ''}${esc(p.name)}${p.kind === 'hub' ? `<small>${esc(p.operator)}</small>` : ''}`;
   const c = p.pads.reduce((a, q) => [a[0] + q[0] / p.pads.length, a[1] + q[1] / p.pads.length], [0, 0]);
   labels.appendChild(el); return { el, at: new THREE.Vector3(c[0], 0.2, -c[1]) }; });
 
@@ -966,6 +1105,7 @@ function updateWorld(dt) {
       dr.k = Math.min(DS, Math.max(0.35, camera.position.distanceTo(dr.g.position) / 40));
       dr.g.scale.setScalar(dr.k); dr.hit.scale.setScalar(Math.max(1, 0.6 / dr.k)); dr.sel.scale.setScalar(Math.max(1, 0.4 / dr.k));
       if (!reduce) dr.rotors.forEach((r, k) => r.rotation.y += (k % 2 ? 1 : -1) * dt * 40);
+      dr.halo.visible = theme === 'dark'; if (dr.halo.visible) dr.halo.material.color.set(opColor(d.operator, d.kind));
       dr.ring.visible = hot.has(d.id);
       if (dr.ring.visible) { const p = (1 + 0.12 * Math.sin(performance.now() / 180)) * Math.max(1, 0.5 / dr.k); dr.ring.scale.set(p, p, p); }
       const pts = []; for (let k = 16; k >= 0; k--) { const tk = t - k * 0.25; if (tk >= 0 && statusAt(i, tk) === 1) pts.push(v3(posAt(i, tk))); }
@@ -975,7 +1115,7 @@ function updateWorld(dt) {
     r.line.visible = !!show;
     if (show && r.ver !== rv) {
       r.ver = rv; r.line.geometry.setFromPoints(rv.route.map(v3));
-      r.line.material = d.kind === 'emergency' ? routeEm : d.kind === 'intruder' ? routeIn : routeMat;
+      r.line.material = d.kind === 'emergency' ? routeEm : d.kind === 'intruder' ? routeIn : routeFor(d);
       if (d.kind === 'intruder') r.line.computeLineDistances();
     }
     const el = tagEls[i];
@@ -1151,7 +1291,7 @@ function updatePanels() {
   const nkey = nk.map(x => [x.fly, x.done, x.rb, x.hit && x.hit.flight, x.out, x.size].join()).join('|');
   if (nkey !== lastNodes) {
     lastNodes = nkey;
-    $('nodes').innerHTML = nk.map(x => `<div class="row${x.hit ? ' hit' : ''}"><b>${x.n.name}</b>
+    $('nodes').innerHTML = nk.map(x => `<div class="row${x.hit ? ' hit' : ''}"><b><span class="dot" style="--op:${opColor(x.n.id)};display:inline-block;margin-right:6px"></span>${x.n.name}</b>
       <span class="n"><b>${x.booked}</b> booked<br>${x.fly} flying &middot; ${x.done} landed</span>
       <small>${x.hit ? `${x.hit.flight} re-booked for the emergency` : x.rb ? `${x.n.role} &middot; ${x.rb} re-booked` : x.n.role}${LIVE ? ` &middot; <a href="operator.html?op=${encodeURIComponent(x.n.id)}" target="_blank" rel="noopener">open console</a>` : ''}</small>${x.size == null ? '' : `<span class="fleet">Drones <b>${x.out} of ${x.size} out</b>${ME.admin ? `<button type="button" data-fleet="${x.n.id}" data-size="${x.size - 1}" aria-label="One drone fewer for ${x.n.name}"${x.size < 1 ? ' disabled' : ''}>&minus;</button><button type="button" data-fleet="${x.n.id}" data-size="${x.size + 1}" aria-label="One more drone for ${x.n.name}"${x.size >= D.live.slots ? ' disabled' : ''}>+</button>` : ''}</span>`}</div>`).join('');
   }
@@ -1166,20 +1306,22 @@ function updatePanels() {
       return `<button type="button" data-fl="${i}"${i === selected ? ' aria-current="true"' : ''}><span class="fid">${DR[i].id}</span><span class="froute">${a ? a.text.replace(/^Alert: \S+ /, '') : ''}</span><span class="pill ${crit ? 'danger' : 'warn'}">${crit ? 'critical' : 'warning'}</span></button>`;
     }).join('');
   }
-  // every flight by operator; a click selects it and follows it
-  const rows = DR.map((d, i) => d.id && (LIVE ? st[i] < 2 : true) ? { i, d, s: st[i] } : null).filter(Boolean);
-  const gone = LIVE ? liveFlights.filter(f => f.slot == null || f.status === 'landed' || f.status === 'crashed' || f.status === 'cancelled').slice(-6) : [];
-  const fkey = rows.map(r => r.i + ':' + r.s).join() + '|' + selected + '|' + gone.map(f => f.id + f.status).join();
+  const nA = hotNow.length; if ($('tabAlerts').textContent !== String(nA)) { $('tabAlerts').textContent = String(nA); $('tabAlerts').hidden = !nA; }
+  // every flight, in a foldable group per operator; a click selects it and follows it
+  const hotSet = hotAt(t), word = ['on pad', 'flying', 'landed', 'crashed', 'cancelled'];
+  const rows = DR.map((d, i) => d.id && (LIVE ? st[i] < 2 : true) ? { i, id: d.id, op: d.operator, kind: d.kind, s: st[i], a: hotSet.has(d.id) && st[i] === 1, way: route(d) || kindWord(d), to: d.to, fr: d.from, sub: d.arrival == null ? '' : st[i] === 0 && d.t_dep != null ? `takes off ${fmt(d.t_dep)}` : st[i] === 1 ? `due ${fmt(d.arrival)}` : '' } : null).filter(Boolean);
+  if (LIVE) for (const f of [...liveFlights].reverse()) if (f.status === 'landed' || f.status === 'crashed' || f.status === 'cancelled') rows.push({ gone: true, id: f.id, op: f.operator, kind: f.kind, s: word.indexOf(f.status), a: false, way: `${f.from} \u2192 ${f.to}`, to: f.to, fr: f.from, sub: '' });
+  const keep = rows.filter(x => (fshow === 'all' || (fshow === 'fly' && x.s === 1) || (fshow === 'alert' && x.a) || (fshow === 'done' && x.s >= 2)) && (!ffind || `${x.id} ${x.op} ${x.way}`.toLowerCase().includes(ffind)));
+  const fkey = keep.map(x => x.id + x.s + x.a + x.sub).join() + '|' + selId + fshow + ffind;
   if (fkey !== lastFlights) {
     lastFlights = fkey;
-    const word = ['on pad', 'flying', 'landed', 'crashed', 'cancelled'];
-    const grp = [...NODES.map(n => ({ title: n.name, own: (d) => d.operator === n.id && d.kind !== 'intruder' })), { title: 'Intruders', own: (d) => d.kind === 'intruder' }];
-    const html = grp.map(g => {
-      const mine = rows.filter(r => g.own(r.d));
-      return mine.length ? `<h3>${g.title}</h3>` + mine.map(r => `<button type="button" data-fl="${r.i}"${r.i === selected ? ' aria-current="true"' : ''}>
-        <span class="fid">${r.d.id}</span><span class="froute">${route(r.d) || kindWord(r.d)}</span><span class="pill ${r.s === 1 ? 'data' : r.s === 3 ? 'danger' : ''}">${word[r.s]}</span></button>`).join('') : '';
-    }).join('') + (gone.length ? '<h3>Finished</h3>' + gone.map(f => `<button type="button" disabled><span class="fid">${f.id}</span><span class="froute">${f.from} \u2192 ${f.to}</span><span class="pill">${f.status}</span></button>`).join('') : '');
-    $('flights').innerHTML = html || '<div class="none">No flights yet.</div>';
+    const grp = [...NODES.map(n => ({ key: n.id, title: n.name, role: n.role.replace('delivery operator, ', ''), col: opColor(n.id), own: (x) => x.op === n.id && x.kind !== 'intruder' })), { key: '_i', title: 'Intruders', role: 'no flight plan', col: '#6b7280', own: (x) => x.kind === 'intruder' }];
+    $('flights').innerHTML = grp.map(g => {
+      const all = rows.filter(g.own), mine = keep.filter(g.own); if (!mine.length) return '';
+      const fly = all.filter(x => x.s === 1).length, wait = all.filter(x => x.s === 0).length, done = all.filter(x => x.s >= 2).length, al = all.filter(x => x.a).length;
+      return `<details data-g="${esc(g.key)}" style="--op:${g.col}"${opened.has(g.key) || ffind ? ' open' : ''}><summary><span><b>${esc(g.title)}</b><small>${esc(g.role)}</small></span><span class="n">${al ? `<span class="pill danger">${al} alert${al > 1 ? 's' : ''}</span> ` : ''}${fly} flying${wait ? ` \u00b7 ${wait} on pad` : ''}<br>${done} finished</span></summary><div class="list">`
+        + mine.map(x => `<button type="button"${x.id.length > 5 ? ' class="long"' : ''} ${x.gone ? `data-gone="${esc(x.id)}"` : `data-fl="${x.i}"`}${x.id === selId ? ' aria-current="true"' : ''}><span class="fid">${esc(x.id)}</span><span class="froute" title="${esc(x.way)}">${esc(x.fr && x.to && hubOf(g.key) === x.fr ? 'to ' + x.to : x.way)}${x.sub ? `<small>${x.sub}</small>` : ''}</span><span class="pill ${x.a || x.s === 3 ? 'danger' : x.s === 1 ? 'data' : ''}">${x.a ? 'alert' : word[x.s]}</span></button>`).join('') + '</div></details>';
+    }).join('') || `<div class="none">${rows.length ? 'No flights match.' : 'No flights yet.'}</div>`;
   }
   const ch = chapterAt(t);
   document.querySelectorAll('[data-ch]').forEach(b => b.toggleAttribute('aria-current', +b.dataset.ch === ch));
@@ -1189,19 +1331,146 @@ function updatePanels() {
   } else if ($('caption').dataset.ch !== String(ch)) { $('caption').dataset.ch = String(ch); $('caption').textContent = chapters[ch].cap; }
   $('clock').innerHTML = LIVE ? `<b>live</b> ${fmt(END)}` : `<b>${fmt(t)}</b> / ${fmt(END)}`;
   if (document.activeElement !== $('time')) $('time').value = String(t);
-  if (selected >= 0) {
-    const d = DR[selected], s = st[selected], hot = hotAt(t).has(d.id);
-    const word = ['On its pad', 'Flying', 'Landed', 'Crashed', 'Cancelled'][s];
-    const cls = s === 3 ? 'danger' : hot ? 'danger' : s === 1 ? 'data' : '';
-    const nre = D.events.filter(e => e.flight === d.id && e.type === 'replan' && e.t <= t).length;
-    const html = `<div style="display:flex;justify-content:space-between;align-items:center"><span class="id">${d.id}</span><span class="pill ${cls}">${hot && s === 1 ? 'High-risk alert' : word}</span></div>
-      <dl><dt>Kind</dt><dd>${d.kind === 'flight' ? 'Delivery, ' + d.operator : d.kind === 'emergency' ? 'Emergency, ' + nodeName(d.operator) : 'Intruder, no plan'}</dd>
-      ${route(d) ? `<dt>Route</dt><dd>${route(d)}</dd>` : ''}
-      <dt>Departs</dt><dd>${d.t_dep != null ? fmt(d.t_dep) : 'when filed'}</dd>
-      <dt>Planned arrival</dt><dd>${d.arrival != null ? fmt(d.arrival) : '\u2013'}</dd>
-      <dt>Re-plans so far</dt><dd>${nre}</dd></dl>`;
-    if (html !== lastSel) { lastSel = html; $('sel').innerHTML = html; }
+  if (Math.floor(performance.now() / 250) !== inspClock) { inspClock = Math.floor(performance.now() / 250); updateInspector(); }
+}
+
+// what a drone sees: its 46 LiDAR rays (as envs/lidar.py: 32 level, 14 tilted, 6 m, ray 0 along its way) against the map's
+// buildings, the ground and the other drones, and the up to 5 neighbours within 30 m that its network gets
+let see = false;
+const SEEN = { wall: 6, nbr: [] }, RANGE = 6, SENSE = 30, NBR = 5;
+const TILT = [[0, 0], [180, 0], [90, 0], [-90, 0], [0, 90], [0, -90], [-45, 45], [135, 45], [45, 45], [-135, 45], [-45, -45], [135, -45], [45, -45], [-135, -45]];
+const seeG = new THREE.Group(); seeG.visible = false; scene.add(seeG);
+const rayPos = new Float32Array(46 * 6), rayCol = new Float32Array(46 * 6), rayGeo = new THREE.BufferGeometry();
+rayGeo.setAttribute('position', new THREE.BufferAttribute(rayPos, 3)); rayGeo.setAttribute('color', new THREE.BufferAttribute(rayCol, 3));
+const rayLines = new THREE.LineSegments(rayGeo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9, depthWrite: false, fog: false })); rayLines.frustumCulled = false; seeG.add(rayLines);
+const hitGeo = new THREE.BufferGeometry(), hitDots = new THREE.Points(hitGeo, new THREE.PointsMaterial({ color: '#ff3b30', size: 7, sizeAttenuation: false, depthTest: false, transparent: true })); hitDots.frustumCulled = false; seeG.add(hitDots);
+const fanGeo = new THREE.BufferGeometry(), fan = new THREE.Mesh(fanGeo, new THREE.MeshBasicMaterial({ color: '#38bdf8', transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false, fog: false })); fan.frustumCulled = false; seeG.add(fan);
+const ring30 = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(Array.from({ length: 96 }, (_, k) => new THREE.Vector3(SENSE * Math.cos(k * Math.PI / 48), 0, SENSE * Math.sin(k * Math.PI / 48)))), new THREE.LineBasicMaterial({ color: '#14b8a6', transparent: true, opacity: 0.6, fog: false })); seeG.add(ring30);
+const nbrTubes = Array.from({ length: NBR }, () => { const m = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 8, 1, true), new THREE.MeshBasicMaterial({ color: '#14b8a6', transparent: true, opacity: 0.75, depthWrite: false, fog: false })); m.visible = false; seeG.add(m); return m; });
+const nbrEls = Array.from({ length: NBR }, () => { const el = document.createElement('div'); el.className = 'nbr'; el.hidden = true; $('labels').appendChild(el); return el; });
+function setSee(on) {
+  see = on && selected >= 0 && statusAt(selected, t) === 1; seeG.visible = see; hexes.visible = !see; BEAMS.forEach(m => { m.visible = !see; }); nbrEls.forEach(e => { e.hidden = true; });
+  if (see) { setCam('follow'); fPitch = 0.5; fDist = 0.75; fYaw = 0.5; }
+  lastSel = ''; updateInspector();
+}
+function castRay(o, v, boxes, others) {            // metres to the first thing hit, at most RANGE
+  let best = RANGE;
+  if (v[2] < -1e-6) best = Math.min(best, o[2] / -v[2]);
+  for (const b of boxes) {
+    const c = Math.cos(b.yaw), n = Math.sin(b.yaw), dx = o[0] - b.c[0], dy = o[1] - b.c[1], P0 = [dx * c + dy * n, -dx * n + dy * c, o[2] - b.z / 2], D0 = [v[0] * c + v[1] * n, -v[0] * n + v[1] * c, v[2]], H = [b.h[0], b.h[1], b.z / 2];
+    let t0 = 0, t1 = best, ok = true;
+    for (let k = 0; k < 3 && ok; k++) { if (Math.abs(D0[k]) < 1e-9) { ok = Math.abs(P0[k]) <= H[k]; continue; } let a = (-H[k] - P0[k]) / D0[k], z = (H[k] - P0[k]) / D0[k]; if (a > z) [a, z] = [z, a]; t0 = Math.max(t0, a); t1 = Math.min(t1, z); ok = t0 <= t1; }
+    if (ok && t0 < best) best = t0;
   }
+  for (const q of others) { const d = [q[0] - o[0], q[1] - o[1], q[2] - o[2]], a = d[0] * v[0] + d[1] * v[1] + d[2] * v[2]; if (a > 0 && a < best && Math.hypot(d[0] - a * v[0], d[1] - a * v[1], d[2] - a * v[2]) < 0.15) best = a; }
+  return best;
+}
+function updateSee() {
+  if (!see) return;
+  const i = selected; if (i < 0 || statusAt(i, t) !== 1) { setSee(false); return; }
+  const o = posAt(i, t), c = v3(o), rv = routeOf(DR[i].id, t), goal = rv && rv.route ? rv.route[rv.route.length - 1] : DR[i].goal;
+  let yaw = Math.atan2(goal[1] - o[1], goal[0] - o[0]);                       // along its route: the point 6 m further on
+  if (rv && rv.route) { let best = [1e9, null]; for (let k = 1; k < rv.route.length; k++) { const a = rv.route[k - 1], b = rv.route[k], L = Math.hypot(b[0] - a[0], b[1] - a[1]); if (L < 0.5) continue; const u = Math.min(1, Math.max(0, ((o[0] - a[0]) * (b[0] - a[0]) + (o[1] - a[1]) * (b[1] - a[1])) / (L * L))), m = Math.hypot(o[0] - a[0] - u * (b[0] - a[0]), o[1] - a[1] - u * (b[1] - a[1])); if (m < best[0]) best = [m, [b[0] - a[0], b[1] - a[1]]]; } if (best[1] && Math.hypot(goal[0] - o[0], goal[1] - o[1]) > 3) yaw = Math.atan2(best[1][1], best[1][0]); }
+  const boxes = BL.filter(b => Math.hypot(b.c[0] - o[0], b.c[1] - o[1]) < Math.hypot(b.h[0], b.h[1]) + RANGE + 1), air = [];
+  for (let k = 0; k < N; k++) if (k !== i && statusAt(k, t) === 1) { const q = posAt(k, t), d = Math.hypot(q[0] - o[0], q[1] - o[1], q[2] - o[2]); air.push({ k, q, d, id: DR[k].id }); }
+  const near = air.filter(a => a.d < RANGE + 1).map(a => a.q), hits = [], fp = [c.x, c.y, c.z], far = new THREE.Color('#38bdf8'), red = new THREE.Color('#ff3b30'), col = new THREE.Color();
+  let wall = RANGE;
+  for (let k = 0; k < 46; k++) {
+    const level = k < 32, az = level ? yaw + k * Math.PI / 16 : yaw + TILT[k - 32][0] * Math.PI / 180, el = level ? 0 : TILT[k - 32][1] * Math.PI / 180, v = [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)], m = castRay(o, v, boxes, near), e = v3([o[0] + v[0] * m, o[1] + v[1] * m, o[2] + v[2] * m]);
+    if (m < RANGE - 0.02) { hits.push(e.x, e.y, e.z); wall = Math.min(wall, m); }
+    col.copy(far).lerp(red, m < RANGE - 0.02 ? Math.min(1, 0.35 + (RANGE - m) / RANGE) : 0);
+    rayPos.set([c.x, c.y, c.z, e.x, e.y, e.z], k * 6); rayCol.set([col.r, col.g, col.b, col.r, col.g, col.b], k * 6);
+    if (level) fp.push(e.x, e.y, e.z);
+  }
+  rayGeo.attributes.position.needsUpdate = rayGeo.attributes.color.needsUpdate = true;
+  hitGeo.setAttribute('position', new THREE.Float32BufferAttribute(hits, 3));
+  fanGeo.setAttribute('position', new THREE.Float32BufferAttribute(fp, 3)); fanGeo.setIndex(Array.from({ length: 32 }, (_, k) => [0, 1 + k, 1 + (k + 1) % 32]).flat());
+  ring30.position.copy(c);
+  SEEN.wall = wall; SEEN.nbr = air.filter(a => a.d < SENSE).sort((a, b) => a.d - b.d).slice(0, NBR);
+  const rect = stage.getBoundingClientRect(), up = new THREE.Vector3(0, 1, 0);
+  nbrTubes.forEach((m, k) => {
+    const a = SEEN.nbr[k]; m.visible = !!a; nbrEls[k].hidden = !a; if (!a) return;
+    const z = v3(a.q), d = z.clone().sub(c), L = d.length(), w = 0.03 + 0.07 * (1 - a.d / SENSE); m.position.copy(c).addScaledVector(d, 0.5); m.scale.set(w, L, w); m.quaternion.setFromUnitVectors(up, d.normalize());
+    const s2 = c.clone().lerp(z, 0.5).project(camera); nbrEls[k].hidden = s2.z > 1 || Math.abs(s2.x) > 1 || Math.abs(s2.y) > 1; nbrEls[k].textContent = `${a.id} ${a.d.toFixed(0)} m`; nbrEls[k].style.left = `${(s2.x + 1) / 2 * rect.width}px`; nbrEls[k].style.top = `${(1 - s2.y) / 2 * rect.height}px`;
+  });
+}
+
+// the selected drone: what it is doing, its alerts now, and everything that happened to it
+let inspClock = 0;
+function wayLeft(rt, q) {                          // along the route from the nearest point of it: [flat metres left, whole flat length]
+  let best = [1e9, 0], done = 0, all = 0;
+  for (let k = 1; k < rt.length; k++) { const a = rt[k - 1], b = rt[k], L = Math.hypot(b[0] - a[0], b[1] - a[1]); if (L > 0.01) { const u = Math.min(1, Math.max(0, ((q[0] - a[0]) * (b[0] - a[0]) + (q[1] - a[1]) * (b[1] - a[1])) / (L * L))), d = Math.hypot(q[0] - a[0] - u * (b[0] - a[0]), q[1] - a[1] - u * (b[1] - a[1])); if (d < best[0]) best = [d, done + u * L]; } done += L; all = done; }
+  return [all - best[1], all];
+}
+function updateInspector() {
+  if (selId == null) return;
+  if (selected >= 0 && DR[selected].id !== selId) { drones[selected].sel.visible = false; selected = -1; }      // live: its slot flies another flight now
+  const f0 = LIVE ? liveFlights.find(x => x.id === selId) : null, i = selected, d = i >= 0 ? DR[i] : f0 && { id: f0.id, kind: f0.kind, operator: f0.operator, from: f0.from, to: f0.to, t_dep: f0.t_off ?? f0.t_dep, arrival: f0.arrival };
+  if (!d) { $('insp').hidden = true; selId = null; return; }
+  const s = i >= 0 ? statusAt(i, t) : ['waiting', 'flying', 'landed', 'crashed', 'cancelled'].indexOf(f0.status), hot = i >= 0 && s === 1 && hotAt(t).has(d.id), al = hot ? alertFor(d.id, t) : null, sev = al ? sevOf(al) : null;
+  const col = opColor(d.operator, d.kind), mine = D.events.filter(e => e.flight === d.id && e.t <= t), guard = i >= 0 && s === 1 && (LIVE ? !!guardSlot[i] : !!D.birds && guardAt(i, t));
+  $('insp').style.setProperty('--op', col); $('inDot').style.setProperty('--op', col); $('inId').textContent = d.id;
+  const word = ['On its pad', 'Flying', 'Landed', 'Crashed', 'Cancelled'][s];
+  $('inPill').textContent = sev ? (sev === 'critical' ? 'Critical' : 'Warning') : guard ? 'Avoiding a bird' : word; $('inPill').className = 'pill ' + (sev === 'critical' || s === 3 ? 'danger' : sev || guard ? 'warn' : s === 1 ? 'data' : '');
+  const out = [];
+  let prog = s >= 2 ? 1 : 0; const facts = [];
+  if (i >= 0 && s === 1) {
+    const q = posAt(i, t), b4 = posAt(i, Math.max(0, t - 1)), was = statusAt(i, Math.max(0, t - 1)) === 1, rv = routeOf(d.id, t), [left, all] = rv && rv.route ? wayLeft(rv.route, q) : [0, 0], sp = was && t > 1 ? Math.hypot(q[0] - b4[0], q[1] - b4[1], q[2] - b4[2]) : 0;
+    prog = all > 0 ? Math.min(1, Math.max(0, 1 - left / all)) : 0;
+    const v = D.speeds || (D.live && D.live.speeds) || {}, top = rv && rv.route ? Math.max(...rv.route.map(w => w[2])) : q[2], climb = all > 0 && left > all - 1 ? Math.max(0, top - q[2]) : 0;
+    const eta = t + climb / (v.v_climb || 1) + left / (v.v_cruise || 1.5) + Math.max(0, Math.min(3, (left > 2 ? top : q[2]) - 1)) / (v.v_descent || 0.5) + Math.max(0, (left > 2 ? top : q[2]) - 4) / (v.v_descent_high || v.v_climb || 1), late = d.arrival != null ? eta - d.arrival : null;
+    let near = null; for (let k = 0; k < N; k++) if (k !== i && statusAt(k, t) === 1) { const z = posAt(k, t), m = Math.hypot(z[0] - q[0], z[1] - q[1], z[2] - q[2]); if (!near || m < near[0]) near = [m, DR[k].id]; }
+    let bird = null; for (const b of birdsNow) { const m = Math.hypot(b.pos[0] - q[0], b.pos[1] - q[1], b.pos[2] - q[2]); if (m < 60 && (!bird || m < bird)) bird = m; }
+    facts.push([`${q[2].toFixed(1)} m`, 'height'], [`${sp.toFixed(1)} m/s`, 'speed']);
+    if (d.kind !== 'intruder') facts.push([`${Math.round(left)} m`, 'left to fly'], [late == null ? '\u2013' : Math.abs(late) < 5 ? 'on time' : `${late > 0 ? '+' : '\u2212'}${Math.round(Math.abs(late))} s`, `arrives about ${fmt(Math.max(0, eta))}`, late > 15 ? 'late' : '']);
+    facts.push([near ? `${near[0].toFixed(1)} m` : '\u2013', near ? `nearest drone, ${esc(near[1])}` : 'no other drone', near && near[0] < 3 ? 'bad' : '']);
+    facts.push(bird != null ? [`${bird.toFixed(1)} m`, 'nearest bird', bird < 2 ? 'bad' : ''] : [String(mine.filter(e => e.type === 'replan' && e.status !== 'rejected').length), 're-plans']);
+  } else if (d.kind !== 'intruder') {
+    const done = mine.find(e => e.type === 'arrived'), at = done ? done.t : i >= 0 && !LIVE ? T[S.findIndex(x => x[i] === 2)] : null;
+    facts.push([d.t_dep != null ? fmt(d.t_dep) : '\u2013', 'take-off'], [d.arrival != null ? fmt(d.arrival) : '\u2013', 'planned arrival']);
+    if (s === 2 && at != null) facts.push([fmt(at), 'landed'], [d.arrival == null ? '\u2013' : Math.abs(at - d.arrival) < 5 ? 'on time' : `${at > d.arrival ? '+' : '\u2212'}${Math.round(Math.abs(at - d.arrival))} s`, 'against the plan', at - d.arrival > 15 ? 'late' : '']);
+    if (s === 0 && d.t_dep != null && d.t_dep > t) facts.push([`${Math.ceil(d.t_dep - t)} s`, 'until take-off'], [String(mine.filter(e => e.type === 'replan').length), 're-plans']);
+  }
+  out.push(`<div><div class="way">${esc(route(d) || kindWord(d))}<small>${d.kind === 'flight' ? 'Delivery for ' + esc(d.operator) : d.kind === 'emergency' ? 'Emergency, ' + esc(nodeName(d.operator)) : 'No flight plan: the UTM steers the others clear'}</small></div>${d.kind === 'intruder' ? '' : `<div class="bar2"><i style="width:${(100 * prog).toFixed(0)}%"></i></div>`}</div>`);
+  // the alert now, in words, with what the UTM is doing about it
+  const lastRe = [...mine].reverse().find(e => e.type === 'replan');
+  const doing = lastRe && t - lastRe.t < 12 ? lastRe.text.replace(new RegExp('^' + d.id + ':? '), '') : '';
+  if (sev) out.push(`<div class="now ${sev === 'critical' ? 'danger' : 'warn'}"><b>${esc(al.text.replace(/^Alert: \S+ /, '').replace(/^./, c => c.toUpperCase()))}</b><small>since ${fmt(al.t)}${al.other && !/^zone:|^blocked/.test(al.other) ? ` \u00b7 with ${esc(al.other)}` : ''}</small>${doing ? `<small>UTM: ${esc(doing)}</small>` : ''}</div>`);
+  else if (guard) out.push('<div class="now warn"><b>Avoiding a bird</b><small>The bird guard has the controls for a moment.</small></div>');
+  else if (s === 1) out.push(`<div class="now ok"><b>No alert now</b><small>${doing ? `UTM, ${Math.max(1, Math.round(t - lastRe.t))} s ago: ` + esc(doing) : d.kind === 'intruder' ? 'Nobody is in its way' : 'Flying its booked route'}</small></div>`);
+  else if (s === 3) out.push('<div class="now danger"><b>Crashed</b><small>It is out of the air.</small></div>');
+  if (see && i >= 0 && s === 1) {
+    const nb = SEEN.nbr, who = guard ? 'The bird guard, for a moment' : 'The learned pilot';
+    out.push(`<div class="sees"><p><i style="background:${guard ? '#f28c28' : 'var(--op)'}"></i><span><b>Flying now: ${who}</b><small>${guard ? 'Simple rules; they hand control back once the bird is past' : 'A neural network on the drone, 31 decisions a second'}</small></span></p>
+      <p><i style="background:#38bdf8"></i><span><b>LiDAR: ${SEEN.wall < 5.95 ? `something ${SEEN.wall.toFixed(1)} m away` : 'nothing within 6 m'}</b><small>46 rays: 32 level, 14 tilted, aimed along its route</small></span></p>
+      <p><i style="background:#14b8a6"></i><span><b>Neighbours: ${nb.length ? `${nb.length} of at most 5` : 'none within 30 m'}</b><small>${nb.length ? nb.map(q => `${esc(q.id)} at ${q.d.toFixed(0)} m`).join(', ') : 'Alone: its attention has nothing to look at. This is where the original pilot changed speed with its direction.'}</small></span></p>
+      <span class="fine">Drawn from the map and the recorded positions: the sensor noise is not shown, and nearer neighbours have thicker lines (not the network's weights).</span></div>`);
+  }
+  if (facts.length) out.push(`<div class="facts">${facts.map(([v, l, c]) => `<div class="${c || ''}"><b>${v}</b><span>${l}</span></div>`).join('')}</div>`);
+  // its height over the last two minutes
+  if (i >= 0 && s === 1) {
+    const pts = []; for (let x = Math.max(0, t - 120); x <= t; x += 2) if (statusAt(i, x) === 1) pts.push([x, posAt(i, x)[2]]);
+    if (pts.length > 4) { const hi = Math.max(8, ...pts.map(q => q[1])) * 1.1, x0 = pts[0][0], dx = Math.max(1, t - x0); out.push(`<div><h4><span>Height, last ${Math.round(dx)} s</span><span>up to ${hi.toFixed(0)} m</span></h4><svg class="spark" viewBox="0 0 100 50" preserveAspectRatio="none"><line x1="0" y1="49" x2="100" y2="49"/><path d="${pts.map((q, k) => (k ? 'L' : 'M') + (100 * (q[0] - x0) / dx).toFixed(1) + ' ' + (49 - 47 * q[1] / hi).toFixed(1)).join('')}"/></svg></div>`); }
+  }
+  // its history, newest first
+  const hist = []; let lastA = null;
+  for (const e of mine) {
+    if (e.type === 'alert') { const v = e.risk === 'high' ? sevOf(e) : null; if (!v) continue; const k = e.text; if (lastA && lastA.k === k && e.t - lastA.t < 20) { lastA.t = e.t; continue; } lastA = { k, t: e.t }; hist.push([e.t, v === 'critical' ? 'danger' : 'warn', e.text.replace(/^Alert: \S+ /, '')]); }
+    else if (e.type === 'replan') { const tx = e.text.replace(new RegExp('^' + d.id + ':? '), ''), L = hist[hist.length - 1]; if (L && L[2].replace(/ \(\d+ times\)$/, '') === tx) { L[3] = (L[3] || 1) + 1; L[2] = `${tx} (${L[3]} times)`; } else hist.push([e.t, 'data', tx]); }
+    else if (e.text) hist.push([e.t, e.type === 'crashed' ? 'danger' : 'data', e.text.replace(new RegExp('^(\\S+: )?' + d.id + ' '), '')]);
+  }
+  if (d.t_dep != null && d.t_dep <= t && d.kind !== 'intruder' && s !== 0) hist.push([d.t_dep, '', 'took off']);
+  if (!LIVE && i >= 0 && s === 2 && !mine.some(e => e.type === 'arrived')) hist.push([T[S.findIndex(x => x[i] === 2)], 'data', `landed${d.to ? ' at ' + d.to : ''}`]);
+  hist.sort((a, b) => b[0] - a[0]);
+  const nAl = hist.filter(h => h[1] === 'danger' || h[1] === 'warn').length;
+  out.push(`<div><h4><span>History</span><span>${nAl ? `${nAl} alert${nAl > 1 ? 's' : ''}` : 'no alerts'}</span></h4><ol>${hist.slice(0, 30).map(h => `<li class="${h[1]}"><time>${fmt(h[0])}</time><i></i><span>${esc(h[2])}</span></li>`).join('') || '<li><time></time><i></i><span>Nothing yet.</span></li>'}</ol></div>`);
+  const html = out.join('');
+  if (html !== lastSel) { lastSel = html; const sc = $('inBody').scrollTop; $('inBody').innerHTML = html; $('inBody').scrollTop = sc; }
+  const showTrack = d.kind !== 'intruder'; $('inTrack').hidden = !showTrack; $('inFollow').hidden = !(i >= 0 && s < 2);
+  $('inTrack').href = (LIVE ? `track.html?flight=${encodeURIComponent(d.id)}` : `track.html?scene=${encodeURIComponent(NAME)}&flight=${encodeURIComponent(d.id)}&t=${Math.round(t)}`) + `&from=${encodeURIComponent(`index.html?sel=${encodeURIComponent(d.id)}#${NAME}`)}`;   // same tab; its back link returns here
+  $('inSee').hidden = !(i >= 0 && s === 1 && d.kind !== 'intruder'); if (see && $('inSee').hidden) setSee(false);
+  $('inSee').textContent = see ? 'Hide what it sees' : 'See what it sees'; $('inSee').setAttribute('aria-pressed', String(see));
+  $('inFoot').hidden = $('inTrack').hidden && $('inFollow').hidden;
 }
 
 function resize() { const r = stage.getBoundingClientRect(); renderer.setSize(r.width, r.height, false); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
@@ -1293,7 +1562,6 @@ function fillBirdTargets(flights) {            // the flights in the air (or abo
   if (key === lastTargets) return;
   lastTargets = key;
   const sel = $('birdTarget'), keep = sel.value;
-  const esc = (x) => String(x).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   sel.innerHTML = `<optgroup label="Flights">${fl.map(f => `<option value="flight:${esc(f.id)}">${esc(f.id)} \u00b7 ${esc(f.operator)} \u00b7 ${esc(f.from)} \u2192 ${esc(f.to)}${f.status === 'waiting' ? ' (on its pad)' : ''}</option>`).join('')}</optgroup>`
     + `<optgroup label="Places">${PLACES.map(p => `<option value="place:${esc(p.name)}">${esc(p.name)}</option>`).join('')}</optgroup>`;
   if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
@@ -1303,7 +1571,8 @@ if (LIVE) {
   document.querySelector('.brand span').textContent = 'E-City, Bengaluru \u00b7 live';
   document.querySelector('.field .note').textContent = 'Operators book from their consoles (operator.html); this view follows the UTM server.';
   for (const el of document.querySelectorAll('#play, #speed, .track')) el.hidden = true;
-  $('title').innerHTML = '<b>Live UTM</b> &middot; <a href="operator.html" target="_blank" rel="noopener">open an operator console</a>';
+  $('title').innerHTML = ME.admin ? '<b>Live UTM</b> &middot; <a href="operator.html" target="_blank" rel="noopener">open an operator console</a>'
+    : '<b>Live UTM</b> &middot; <a href="operator.html">&larr; my console</a>';   // an operator: back to its own console, same tab
   setInterval(pollLive, 250);
 }
 
@@ -1359,6 +1628,7 @@ async function fileZone() {
     if (r.status === 'approved') { drawMode(false); setCam('director'); } else { $('drawHint').textContent = r.reason || 'The UTM refused the zone'; $('drawGo').disabled = false; }
   } catch { $('drawHint').textContent = 'The UTM server did not answer'; $('drawGo').disabled = false; }
 }
+if (LIVE && ME.admin) { document.querySelector('[data-tab=control]').hidden = false; $('zonebox').hidden = false; $('drawBtn2').onclick = () => drawMode(true); }
 if (LIVE && ME.admin) {                                        // zones are the admin's to close (the server checks too)
   $('drawBtn').hidden = false;
   $('drawBtn').onclick = () => drawMode(!draw.on);
@@ -1367,6 +1637,13 @@ if (LIVE && ME.admin) {                                        // zones are the 
   $('drawGo').onclick = fileZone;
   addEventListener('keydown', (e) => { if (!draw.on) return; if (e.key === 'Escape') drawMode(false); if (e.key === 'Enter' && draw.pts.length > 2) fileZone(); });
 }
+// ---------------------------------------------------------------- keys: / find, V what the drone sees, Esc close (space, arrows and 1-4: above)
+addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey || draw.on || /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) { if (e.key === 'Escape' && e.target.id === 'fq') { e.target.value = ''; e.target.oninput(e); e.target.blur(); } return; }
+  if (e.key === 'v' && selected >= 0) setSee(!see);
+  else if (e.key === '/') { e.preventDefault(); showTab('flights'); $('fq').focus(); }
+  else if (e.key === 'Escape' && selId != null) $('inX').onclick();
+});
 // ---------------------------------------------------------------- the left panel: drag its edge to resize, the button hides it
 const appEl = document.querySelector('.app'), grip = $('grip');
 let sideW = 300;
@@ -1404,8 +1681,14 @@ renderer.setAnimationLoop((now) => {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   if (LIVE) t = Math.max(0, END - 0.6);           // just behind the newest state, so motion is interpolated
   else if (playing) { t += dt * speed; if (t >= END) { t = END; setPlaying(false); } }
-  updateWorld(dt); frameCamera(dt); updatePanels(); notify();
+  updateWorld(dt); frameCamera(dt); updateSee(); updatePanels(); notify();
   if (shadowTick++ % 3 === 0) renderer.shadowMap.needsUpdate = true;
   sky.position.copy(camera.position); renderer.render(scene, camera);
 });
+{ // back from a Track page (index.html?t=150&sel=f2#scene): the replay resumes there, paused, with that flight selected
+  const q = new URLSearchParams(location.search), qt = +q.get('t'), qs = q.get('sel');
+  if (!LIVE && q.has('t') && isFinite(qt)) { seek(qt); setPlaying(false); }
+  if (qs) { const i = DR.findIndex(d => d.id === qs); if (i >= 0) select(i); }
+  if (q.has('t') || qs) history.replaceState(null, '', location.pathname + location.hash);   // a reload starts fresh
+}
 </script>
