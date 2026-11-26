@@ -146,7 +146,13 @@ const TL = TrackLogic;
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const Q = new URLSearchParams(location.search);
-const P = { flight: Q.get('flight'), scene: Q.get('scene'), run: Q.get('run') };
+const P = { flight: Q.get('flight'), scene: Q.get('scene'), run: Q.get('run'), t: Q.has('t') ? +Q.get('t') : null,
+  from: /^[A-Za-z0-9_.-]+\.html([?#][^\s]*)?$/.test(Q.get('from') || '') ? Q.get('from') : null };   // the page that opened this one, and the moment it was at
+function backLink(me) {                            // back to where you came from; else the admin's flight log or the operator's console
+  const to = P.from || (me.admin ? 'flight_log.html' : 'operator.html'), page = to.split(/[?#]/)[0];
+  const back = () => page === 'index.html' && mode === 'replay' && model ? to.replace('index.html?', `index.html?t=${Math.round(rp.t)}&`) : to;   // the console resumes at this moment
+  $('back').href = to; $('back').onclick = (e) => { e.preventDefault(); location.href = back(); }; $('back').innerHTML = '&larr; ' + (page === 'index.html' ? 'UTM console' : page === 'operator.html' ? 'My console' : 'Flight log');
+}
 const getJSON = async (u) => { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok) { const e = new Error(`${u}: ${r.status}`); e.status = r.status; throw e; } return r.json(); };
 const notYours = () => showMsg('This is not your flight', 'You are logged in as an operator and can only track your own deliveries. Open one from <a href="operator.html">your console</a> or <a href="flight_log.html">your flight log</a>.');
 
@@ -179,7 +185,6 @@ async function start() {
   try {
     if (P.scene && P.flight) {                                                    // replay from dashboard/data/
       mode = 'replay'; model = await TL.loadReplay(getJSON, '', P);
-      $('back').href = 'flight_log.html';
     } else if (P.run && P.flight) {                                               // a delivery the live server logged
       mode = 'replay';
       const [tr, sc] = await Promise.all([getJSON(`api/track?run=${encodeURIComponent(P.run)}&flight=${encodeURIComponent(P.flight)}`), getJSON('api/scene').catch(() => null)]);
@@ -191,7 +196,6 @@ async function start() {
       const r = TL.resolveSpeeds(sc.speeds); speeds = r.speeds; approximate = r.approximate;
       live.knots = Array.isArray(sc.clock) ? sc.clock.slice() : [];
       live.simSpeed = sc.speed > 0 ? sc.speed : 1;                             // the server's pace, so the clock is right from the first poll
-      $('back').href = 'operator.html'; $('back').textContent = '← Operator console';
       if (!(await pollLive(true))) return;
       setInterval(() => pollLive(false).catch(() => { }), 250);
     } else {
@@ -215,7 +219,7 @@ function beginReplay() {
     return;
   }
   geo = model.geo; speeds = model.speeds; approximate = model.approximate;
-  rp.t = model.t0; $('player').hidden = false;
+  rp.t = P.t != null && P.t > model.t0 && P.t < model.t1 ? P.t : model.t0; $('player').hidden = false;   // opened from the console: start where it was
   const sc = $('scrub'); sc.oninput = () => { rp.t = model.t0 + (model.t1 - model.t0) * sc.value / 1000; eta.reset(); };
   $('play').onclick = () => { rp.playing = !rp.playing; if (rp.playing && rp.t >= model.t1) rp.t = model.t0; };
   const speedsList = [1, 2, 4, 8, 16];
@@ -515,7 +519,7 @@ function paintRejected() {
   $('feed').replaceChildren(...model.events.map(e => { const li = el('li'); li.append(el('time', '', `T+${Math.round(e.t)}`), el('span', 'bad', e.text)); return li; }));
 }
 
-Auth.init().then(start);
+Auth.init().then((me) => { backLink(me); return start(); });
 })();
 </script>
 </body>

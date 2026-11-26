@@ -319,8 +319,9 @@ def test_an_unknown_role_costs_one_hash_like_a_wrong_passcode(monkeypatch):
 
 
 def test_public_static_is_strict():
-    ok = ['/', '/index.html', '/operator.html', '/track_logic.js', '/auth.js']
-    bad = ['/data/flight_log.json', '/data', '/a/b.html', '/..%2fx.html', '/x.json', '/.hidden.html', '/x.html::$DATA', '/\\data\\x.js']
+    ok = ['/', '/index.html', '/operator.html', '/track_logic.js', '/auth.js', '/vendor/three/three.module.js', '/osm_roads.json']
+    bad = ['/data/flight_log.json', '/data', '/a/b.html', '/..%2fx.html', '/x.json', '/.hidden.html', '/x.html::$DATA', '/\\data\\x.js',
+           '/vendor/three/LICENSE', '/vendor/../data/x.json', '/vendor/three/three.module.js/x', '/osm_roads.json.bak']
     assert all(acc.public_static(p) for p in ok) and not any(acc.public_static(p) for p in bad)
 
 

@@ -155,14 +155,19 @@ def may_see_track(track, role, admin=False):
 # Pages and scripts that every visitor may load (they hold no data: it all comes from the API). Anything else in the
 # dashboard folder (data/*.json: every operator's flights) is for the admin only.
 PUBLIC_FILE = ('.html', '.js', '.css', '.ico')
+# the console's map needs these too, whoever is logged in: the 3D library (served locally) and the OpenStreetMap streets
+PUBLIC_EXTRA = frozenset({'vendor/three/three.module.js', 'vendor/three/OrbitControls.js', 'osm_roads.json'})
 
 
 def public_static(path):
-    """True for '/', and for a single top-level .html/.js/.css/.ico file name (strict: no folders, no tricks)."""
+    """True for '/', a single top-level .html/.js/.css/.ico file name (strict: no folders, no tricks), and the exact
+    names in PUBLIC_EXTRA."""
     p = path.replace('\\', '/')
     if p in ('', '/'):
         return True
     name = p[1:] if p.startswith('/') else p
+    if name in PUBLIC_EXTRA:                             # exact names only
+        return True
     ok = name and '/' not in name and all(c.isalnum() or c in '._-' for c in name) and not name.startswith('.')
     return bool(ok and name.lower().endswith(PUBLIC_FILE))
 

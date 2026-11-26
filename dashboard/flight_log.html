@@ -122,8 +122,8 @@ a.trk:hover { text-decoration: underline; }
     </div>
     <div class="top">
       <span class="livepill" id="live" hidden><i></i><span id="livetxt">LIVE</span></span>
-      <a href="index.html">&larr; UTM console</a>
-      <a href="operator.html" id="opLink" hidden>Operator console</a>
+      <a href="operator.html" id="opLink" hidden>&larr; My console</a>
+      <a href="index.html" id="mapLink">&larr; UTM console</a>
       <div class="seg" role="group" aria-label="Theme">
         <button type="button" data-theme-set="light" aria-pressed="true">Light</button>
         <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
@@ -300,7 +300,8 @@ function checkScenes() {
   Promise.all(scenes.map(s => fetch(`data/${s}.json`, { method: 'HEAD' }).then(r => { SCENE_OK[s] = r.ok; }).catch(() => { SCENE_OK[s] = false; })))
     .then(() => { if (tableBuilt) draw(); });
 }
-function trackHref(f) {
+function trackHref(f) { const h = trackHref0(f); return h && `${h}&from=${encodeURIComponent('flight_log.html' + location.search)}`; }   // its back link returns here
+function trackHref0(f) {
   const run = RUNS[f.run_id], id = encodeURIComponent(f.flight_id);
   if (run.source === 'live') {
     if (!SERVED_LIVE) return null;
@@ -435,7 +436,8 @@ function show(f) {
 }
 
 // An operator sees only its own flights (the server filters them), so there is no operator filter; the admin has it.
-Auth.init().then((me) => { if (!me.admin) { $('f-op').closest('label').hidden = true; $('opLink').hidden = false; } load(); });   // operators: a way back to their console
+{ const sc = new URLSearchParams(location.search).get('scene'); if (sc && /^[A-Za-z0-9_-]+$/.test(sc)) $('mapLink').href = 'index.html#' + sc; }   // back to the scene it was opened from
+Auth.init().then((me) => { if (!me.admin) { $('f-op').closest('label').hidden = true; $('opLink').hidden = false; $('mapLink').textContent = 'Live map'; $('mapLink').href = 'index.html#live'; } load(); });   // operators: a way back to their console
 })();
 </script>
 </body>
